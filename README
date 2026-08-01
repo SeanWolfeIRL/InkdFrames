@@ -1,3 +1,29 @@
 # InkdFrames
 
-Portable frame-by-frame animation for Galaxy Ultras.
+> Turn your Galaxy Ultra into a portable animation studio.
+
+InkdFrames is a mobile-first frame-by-frame animation and rotoscoping application designed specifically around the Samsung S Pen.
+
+## Vision
+
+Most professional rotoscoping software requires:
+
+- A desktop computer
+- A graphics tablet
+- Expensive software
+
+InkdFrames removes those barriers by turning a Galaxy Ultra into a portable animation studio.
+
+## MVP Features
+
+- Import video
+- Draw over individual frames
+- Pressure-sensitive S Pen drawing
+- Onion skinning
+- Timeline scrubbing
+- Playback
+- Export animation
+
+## Status
+
+🚧 Early Development
