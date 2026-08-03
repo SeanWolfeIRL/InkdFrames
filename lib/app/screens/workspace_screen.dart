@@ -255,13 +255,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                     painter: AnimationCanvasPainter(
                       strokes: _frames[_selectedFrameIndex],
                       currentStroke: _draftStroke.isEmpty ? null : _draftStroke,
-                      onionSkinStroke: previousFrameStrokes.isEmpty
-                          ? null
-                          : VectorStroke(
-                              points: previousFrameStrokes
-                                  .expand((stroke) => stroke.points)
-                                  .toList(),
-                            ),
+                      onionSkinStrokes: previousFrameStrokes,
                       strokeColor: Colors.white,
                       onionSkinColor: Colors.redAccent.withValues(alpha: 0.45),
                     ),

@@ -9,14 +9,14 @@ class AnimationCanvasPainter extends CustomPainter {
   AnimationCanvasPainter({
     required this.strokes,
     required this.currentStroke,
-    required this.onionSkinStroke,
+    required this.onionSkinStrokes,
     required this.strokeColor,
     required this.onionSkinColor,
   });
 
   final List<VectorStroke> strokes;
   final List<VectorPoint>? currentStroke;
-  final VectorStroke? onionSkinStroke;
+  final List<VectorStroke> onionSkinStrokes;
   final Color strokeColor;
   final Color onionSkinColor;
 
@@ -28,19 +28,20 @@ class AnimationCanvasPainter extends CustomPainter {
     canvas.drawRect(Offset.zero & size, backgroundPaint);
 
     for (final stroke in strokes) {
-      _paintStroke(canvas, stroke.points, strokeColor);
+      _paintStroke(canvas, stroke, strokeColor);
     }
 
     if (currentStroke != null && currentStroke!.isNotEmpty) {
-      _paintStroke(canvas, currentStroke!, strokeColor);
+      _paintStroke(canvas, VectorStroke(points: currentStroke!), strokeColor);
     }
 
-    if (onionSkinStroke != null && onionSkinStroke!.points.isNotEmpty) {
-      _paintStroke(canvas, onionSkinStroke!.points, onionSkinColor);
+    for (final stroke in onionSkinStrokes) {
+      _paintStroke(canvas, stroke, onionSkinColor);
     }
   }
 
-  void _paintStroke(Canvas canvas, List<VectorPoint> points, Color color) {
+  void _paintStroke(Canvas canvas, VectorStroke stroke, Color color) {
+    final points = stroke.points;
     if (points.length < 2) {
       final point = points.first;
       final paint = Paint()
@@ -62,9 +63,9 @@ class AnimationCanvasPainter extends CustomPainter {
     final path = Path();
     path.moveTo(points.first.dx, points.first.dy);
     for (var i = 1; i < points.length; i++) {
-      final previous = points[i - 1];
       final current = points[i];
       path.lineTo(current.dx, current.dy);
+      final previous = points[i - 1];
       if (previous.pressure > 0 && current.pressure > 0) {
         final width = 1.5 + (current.pressure * 2.5);
         paint.strokeWidth = width;
