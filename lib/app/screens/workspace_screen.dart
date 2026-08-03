@@ -30,12 +30,16 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
   }
 
   void _addFrame() {
-    setState(() {
-      _frames.add(<VectorStroke>[]);
-      _selectedFrameIndex = _frames.length - 1;
-      _draftStroke = const <VectorPoint>[];
-    });
-  }
+  setState(() {
+    final copiedFrame = _frames[_selectedFrameIndex]
+        .map((stroke) => stroke.copy())
+        .toList();
+
+    _frames.add(copiedFrame);
+    _selectedFrameIndex = _frames.length - 1;
+    _draftStroke = const <VectorPoint>[];
+  });
+}
 
   void _selectFrame(int index) {
     if (index < 0 || index >= _frames.length) {
