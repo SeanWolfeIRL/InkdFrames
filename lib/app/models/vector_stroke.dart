@@ -5,4 +5,10 @@ class VectorStroke {
     : points = List<VectorPoint>.from(points);
 
   final List<VectorPoint> points;
+
+  VectorStroke copy() {
+      return VectorStroke(
+          points: points.map((point) => point.copy()).toList(),
+        );
+     }
 }
