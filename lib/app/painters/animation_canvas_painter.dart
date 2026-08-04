@@ -23,22 +23,28 @@ class AnimationCanvasPainter extends CustomPainter {
   @override
   void paint(Canvas canvas, Size size) {
     final backgroundPaint = Paint()
-      ..color = const Color(0xFF1F1B24)
-      ..style = PaintingStyle.fill;
-    canvas.drawRect(Offset.zero & size, backgroundPaint);
+        ..color = const Color(0xFF1F1B24)
+            ..style = PaintingStyle.fill;
 
-    for (final stroke in strokes) {
-      _paintStroke(canvas, stroke, strokeColor);
-    }
+              canvas.drawRect(Offset.zero & size, backgroundPaint);
 
-    if (currentStroke != null && currentStroke!.isNotEmpty) {
-      _paintStroke(canvas, VectorStroke(points: currentStroke!), strokeColor);
-    }
+                for (final stroke in onionSkinStrokes) {
+                    _paintStroke(canvas, stroke, onionSkinColor);
+                      }
 
-    for (final stroke in onionSkinStrokes) {
-      _paintStroke(canvas, stroke, onionSkinColor);
-    }
-  }
+                    
+                for (final stroke in strokes) {
+                            _paintStroke(canvas, stroke, strokeColor);
+                              }
+
+                if (currentStroke != null && currentStroke!.isNotEmpty) {
+                                    _paintStroke(
+                                          canvas,
+                                                VectorStroke(points: currentStroke!),
+                                                      strokeColor,
+                                                          );
+                                                            }
+                                                }
 
   void _paintStroke(Canvas canvas, VectorStroke stroke, Color color) {
     final points = stroke.points;

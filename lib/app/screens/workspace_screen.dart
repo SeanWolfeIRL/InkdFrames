@@ -38,9 +38,8 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                               _frames.add(copiedFrame);
                                   _selectedFrameIndex = _frames.length - 1;
                                       _draftStroke = const <VectorPoint>[];
-                                        });
-                                        }
-  }
+                                    });
+   }
 
   void _selectFrame(int index) {
     if (index < 0 || index >= _frames.length) {
