@@ -49,6 +49,19 @@ void _duplicateFrame() {
   });
 }
 
+void _deleteFrame() {
+    if (_frames.length <= 1) return;
+
+      setState(() {
+          _frames.removeAt(_selectedFrameIndex);
+
+              if (_selectedFrameIndex >= _frames.length) {
+                    _selectedFrameIndex = _frames.length - 1;
+                        }
+
+                            _draftStroke = const <VectorPoint>[];
+                        });
+ }
 void _selectFrame(int index) {
   if (index < 0 || index >= _frames.length) {
     return;
@@ -184,6 +197,11 @@ Widget build(BuildContext context) {
                 onPressed: _duplicateFrame,
                 icon: const Icon(Icons.copy),
                 label: const Text('Duplicate'),
+              ),
+              OutlinedButton.icon(
+                  onPressed: _deleteFrame,
+                    icon: const Icon(Icons.delete_outline),
+                      label: const Text('Delete'),
               ),
               OutlinedButton.icon(
                 onPressed: _clearCurrentFrame,
