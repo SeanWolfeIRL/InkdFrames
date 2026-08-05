@@ -21,7 +21,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
   List<VectorPoint> _draftStroke = const <VectorPoint>[];
   Timer? _playbackTimer;
   bool _isPlaying = false;
-  bool_showOnionSkin = true;4
+  bool_showOnionSkin = true;
   double _fps = 8;
 
   @override
