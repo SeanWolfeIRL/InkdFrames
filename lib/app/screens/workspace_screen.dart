@@ -22,6 +22,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
   Timer? _playbackTimer;
   bool _isPlaying = false;
   bool _showOnionSkin = true;
+  bool _isEraserActive = false;
   double _fps = 8;
 
   @override
@@ -121,10 +122,33 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     );
   }
 
+  void _eraseAt(Offset position) {
+    const double eraserRadius = 20;
+    const double eraserRadiusSquared = eraserRadius * eraserRadius;
+
+    _frames[_selectedFrameIndex].removeWhere((stroke) {
+      return stroke.points.any((point) {
+        final double dx = point.dx - position.dx;
+        final double dy = point.dy - position.dy;
+        final double distanceSquared = (dx * dx) + (dy * dy);
+
+        return distanceSquared <= eraserRadiusSquared;
+      });
+    });
+  }
+
   void _handlePointerDown(PointerDownEvent event) {
     if (_isPlaying) {
       return;
     }
+
+    if (_isEraserActive) {
+      setState(() {
+        _eraseAt(event.localPosition);
+      });
+      return;
+    }
+
     setState(() {
       _draftStroke = <VectorPoint>[
         VectorPoint(
@@ -137,9 +161,21 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
   }
 
   void _handlePointerMove(PointerMoveEvent event) {
-    if (_isPlaying || _draftStroke.isEmpty) {
+    if (_isPlaying) {
       return;
     }
+
+    if (_isEraserActive) {
+      setState(() {
+        _eraseAt(event.localPosition);
+      });
+      return;
+    }
+
+    if (_draftStroke.isEmpty) {
+      return;
+    }
+
     setState(() {
       _draftStroke = <VectorPoint>[
         ..._draftStroke,
@@ -220,6 +256,20 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                   onPressed: _togglePlayback,
                   icon: Icon(_isPlaying ? Icons.pause : Icons.play_arrow),
                   label: Text(_isPlaying ? 'Pause' : 'Play'),
+                ),
+                OutlinedButton.icon(
+                  onPressed: () {
+                    setState(() {
+                      _isEraserActive = !_isEraserActive;
+                    });
+                  },
+                  icon: Icon(
+                    Icons.auto_fix_off,
+                    color: _isEraserActive
+                        ? Colors.deepPurpleAccent
+                        : Colors.white38,
+                  ),
+                  label: Text(_isEraserActive ? 'Eraser On' : 'Eraser Off'),
                 ),
                 OutlinedButton.icon(
                   onPressed: _toggleOnionSkin,
@@ -310,7 +360,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                       currentStroke: _draftStroke.isEmpty ? null : _draftStroke,
                       onionSkinStrokes: _showOnionSkin
                           ? previousFrameStrokes
-                              : const <VectorStroke>[],
+                          : const <VectorStroke>[],
                       strokeColor: Colors.white,
                       onionSkinColor: Colors.redAccent.withValues(alpha: 0.45),
                     ),
