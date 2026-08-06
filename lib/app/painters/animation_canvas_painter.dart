@@ -23,28 +23,23 @@ class AnimationCanvasPainter extends CustomPainter {
   @override
   void paint(Canvas canvas, Size size) {
     final backgroundPaint = Paint()
-        ..color = const Color(0xFF1F1B24)
-            ..style = PaintingStyle.fill;
+      ..color = const Color(0xFF1F1B24)
+      ..style = PaintingStyle.fill;
 
-              canvas.drawRect(Offset.zero & size, backgroundPaint);
+    canvas.drawRect(Offset.zero & size, backgroundPaint);
 
-                for (final stroke in onionSkinStrokes) {
-                    _paintStroke(canvas, stroke, onionSkinColor);
-                      }
+    for (final stroke in onionSkinStrokes) {
+      _paintStroke(canvas, stroke, onionSkinColor);
+    }
 
-                    
-                for (final stroke in strokes) {
-                            _paintStroke(canvas, stroke, strokeColor);
-                              }
+    for (final stroke in strokes) {
+      _paintStroke(canvas, stroke, strokeColor);
+    }
 
-                if (currentStroke != null && currentStroke!.isNotEmpty) {
-                                    _paintStroke(
-                                          canvas,
-                                                VectorStroke(points: currentStroke!),
-                                                      strokeColor,
-                                                          );
-                                                            }
-                                                }
+    if (currentStroke != null && currentStroke!.isNotEmpty) {
+      _paintStroke(canvas, VectorStroke(points: currentStroke!), strokeColor);
+    }
+  }
 
   void _paintStroke(Canvas canvas, VectorStroke stroke, Color color) {
     final points = stroke.points;
@@ -52,8 +47,9 @@ class AnimationCanvasPainter extends CustomPainter {
       final point = points.first;
       final paint = Paint()
         ..color = color
-        ..strokeWidth = 2.0
+        ..strokeWidth = stroke.strokeWidth
         ..strokeCap = StrokeCap.round;
+
       canvas.drawPoints(ui.PointMode.points, [
         Offset(point.dx, point.dy),
       ], paint);
@@ -62,7 +58,7 @@ class AnimationCanvasPainter extends CustomPainter {
 
     final paint = Paint()
       ..color = color
-      ..strokeWidth = 2.0
+      ..strokeWidth = stroke.strokeWidth
       ..strokeCap = StrokeCap.round
       ..style = PaintingStyle.stroke;
 
@@ -72,21 +68,18 @@ class AnimationCanvasPainter extends CustomPainter {
       final current = points[i];
       path.lineTo(current.dx, current.dy);
       final previous = points[i - 1];
-      if (previous.pressure > 0 && current.pressure > 0) {
-        final width = 1.5 + (current.pressure * 2.5);
-        paint.strokeWidth = width;
-        canvas.drawLine(
-          Offset(previous.dx, previous.dy),
-          Offset(current.dx, current.dy),
-          paint,
-        );
-      }
+      paint.strokeWidth = stroke.strokeWidth;
+      canvas.drawLine(
+        Offset(previous.dx, previous.dy),
+        Offset(current.dx, current.dy),
+        paint,
+      );
     }
 
     if (path.getBounds().size != Size.zero) {
       final strokePaint = Paint()
         ..color = color
-        ..strokeWidth = 2.0
+        ..strokeWidth = stroke.strokeWidth
         ..strokeCap = StrokeCap.round
         ..style = PaintingStyle.stroke;
       canvas.drawPath(path, strokePaint);

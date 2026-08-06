@@ -24,6 +24,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
   bool _showOnionSkin = true;
   bool _isEraserActive = false;
   double _fps = 8;
+  double _brushSize = 4.0;
 
   @override
   void dispose() {
@@ -192,7 +193,10 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     if (_isPlaying || _draftStroke.isEmpty) {
       return;
     }
-    final stroke = VectorStroke(points: List<VectorPoint>.from(_draftStroke));
+    final stroke = VectorStroke(
+      points: List<VectorPoint>.from(_draftStroke),
+      strokeWidth: _brushSize,
+    );
     setState(() {
       _frames[_selectedFrameIndex] = <VectorStroke>[
         ..._frames[_selectedFrameIndex],
@@ -302,6 +306,29 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                   ),
                 ),
                 Text(_fps.toStringAsFixed(0)),
+              ],
+            ),
+          ),
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16),
+            child: Row(
+              children: [
+                const Text('Brush'),
+                Expanded(
+                  child: Slider(
+                    value: _brushSize,
+                    min: 1,
+                    max: 20,
+                    divisions: 19,
+                    label: _brushSize.toStringAsFixed(0),
+                    onChanged: (value) {
+                      setState(() {
+                        _brushSize = value;
+                      });
+                    },
+                  ),
+                ),
+                Text(_brushSize.toStringAsFixed(0)),
               ],
             ),
           ),
