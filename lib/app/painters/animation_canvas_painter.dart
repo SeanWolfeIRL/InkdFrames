@@ -66,16 +66,27 @@ class AnimationCanvasPainter extends CustomPainter {
     path.moveTo(points.first.dx, points.first.dy);
     for (var i = 1; i < points.length; i++) {
       final current = points[i];
-      path.lineTo(current.dx, current.dy);
       final previous = points[i - 1];
-      paint.strokeWidth = stroke.strokeWidth;
-      canvas.drawLine(
-        Offset(previous.dx, previous.dy),
-        Offset(current.dx, current.dy),
-        paint,
+      final midpoint = Offset(
+        (previous.dx + current.dx) / 2,
+        (previous.dy + current.dy) / 2,
       );
-    }
 
+      path.quadraticBezierTo(
+        previous.dx,
+        previous.dy,
+        midpoint.dx,
+        midpoint.dy,
+      );
+
+      paint.strokeWidth = stroke.strokeWidth;
+    }
+      
+    path.lineTo(
+      points.last.dx,
+      points.last.dy
+    );
+    
     if (path.getBounds().size != Size.zero) {
       final strokePaint = Paint()
         ..color = color
