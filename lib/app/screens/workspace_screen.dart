@@ -25,6 +25,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
   bool _isEraserActive = false;
   double _fps = 8;
   double _brushSize = 4.0;
+  Color _brushColor = Colors.white;
 
   @override
   void dispose() {
@@ -196,6 +197,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     final stroke = VectorStroke(
       points: List<VectorPoint>.from(_draftStroke),
       strokeWidth: _brushSize,
+      color: _brushColor,
     );
     setState(() {
       _frames[_selectedFrameIndex] = <VectorStroke>[
@@ -332,6 +334,164 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
               ],
             ),
           ),
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16),
+            child: Row(
+              children: [
+                const Text('Colour'),
+                const SizedBox(width: 12),
+
+                GestureDetector(
+                  onTap: () {
+                    setState(() {
+                      _brushColor = Colors.red;
+                    });
+                  },
+                  child: Container(
+                    width: 28,
+                    height: 28,
+                    decoration: BoxDecoration(
+                      color: Colors.red,
+                      shape: BoxShape.circle,
+                      border: Border.all(
+                        color: _brushColor == Colors.red
+                            ? Colors.deepPurpleAccent
+                            : Colors.white38,
+                        width: 2,
+                      ),
+                    ),
+                  ),
+                ),
+                GestureDetector(
+                  onTap: () {
+                    setState(() {
+                      _brushColor = Colors.white;
+                    });
+                  },
+                  child: Container(
+                    width: 28,
+                    height: 28,
+                    decoration: BoxDecoration(
+                      color: Colors.white,
+                      shape: BoxShape.circle,
+                      border: Border.all(
+                        color: _brushColor == Colors.white
+                            ? Colors.deepPurpleAccent
+                            : Colors.white38,
+                        width: 2,
+                      ),
+                    ),
+                  ),
+                ),
+                GestureDetector(
+                  onTap: () {
+                    setState(() {
+                      _brushColor = Colors.blue;
+                    });
+                  },
+                  child: Container(
+                    width: 28,
+                    height: 28,
+                    decoration: BoxDecoration(
+                      color: Colors.blue,
+                      shape: BoxShape.circle,
+                      border: Border.all(
+                        color: _brushColor == Colors.blue
+                            ? Colors.deepPurpleAccent
+                            : Colors.white38,
+                        width: 2,
+                      ),
+                    ),
+                  ),
+                ),
+                GestureDetector(
+                  onTap: () {
+                    setState(() {
+                      _brushColor = Colors.green;
+                    });
+                  },
+                  child: Container(
+                    width: 28,
+                    height: 28,
+                    decoration: BoxDecoration(
+                      color: Colors.green,
+                      shape: BoxShape.circle,
+                      border: Border.all(
+                        color: _brushColor == Colors.green
+                            ? Colors.deepPurpleAccent
+                            : Colors.white38,
+                        width: 2,
+                      ),
+                    ),
+                  ),
+                ),
+                GestureDetector(
+                  onTap: () {
+                    setState(() {
+                      _brushColor = Colors.yellow;
+                    });
+                  },
+                  child: Container(
+                    width: 28,
+                    height: 28,
+                    decoration: BoxDecoration(
+                      color: Colors.yellow,
+                      shape: BoxShape.circle,
+                      border: Border.all(
+                        color: _brushColor == Colors.yellow
+                            ? Colors.deepPurpleAccent
+                            : Colors.white38,
+                        width: 2,
+                      ),
+                    ),
+                  ),
+                ),
+                GestureDetector(
+                  onTap: () {
+                    setState(() {
+                      _brushColor = Colors.purple;
+                    });
+                  },
+                  child: Container(
+                    width: 28,
+                    height: 28,
+                    decoration: BoxDecoration(
+                      color: Colors.purple,
+                      shape: BoxShape.circle,
+                      border: Border.all(
+                        color: _brushColor == Colors.purple
+                            ? Colors.deepPurpleAccent
+                            : Colors.white38,
+                        width: 2,
+                      ),
+                    ),
+                  ),
+                ),
+                GestureDetector(
+                  onTap: () {
+                    setState(() {
+                      _brushColor = Colors.black;
+                    });
+                  },
+                  child: Container(
+                    width: 28,
+                    height: 28,
+                    decoration: BoxDecoration(
+                      color: Colors.black,
+                      shape: BoxShape.circle,
+                      border: Border.all(
+                        color: _brushColor == Colors.black
+                            ? Colors.deepPurpleAccent
+                            : Colors.white38,
+                        width: 2,
+                      ),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+
           SizedBox(
             height: 72,
             child: ListView.builder(
@@ -388,7 +548,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                       onionSkinStrokes: _showOnionSkin
                           ? previousFrameStrokes
                           : const <VectorStroke>[],
-                      strokeColor: Colors.white,
+                      strokeColor: _brushColor,
                       onionSkinColor: Colors.redAccent.withValues(alpha: 0.45),
                     ),
                     child: Container(color: Colors.transparent),

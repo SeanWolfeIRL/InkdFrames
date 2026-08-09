@@ -33,7 +33,7 @@ class AnimationCanvasPainter extends CustomPainter {
     }
 
     for (final stroke in strokes) {
-      _paintStroke(canvas, stroke, strokeColor);
+      _paintStroke(canvas, stroke, stroke.color);
     }
 
     if (currentStroke != null && currentStroke!.isNotEmpty) {
