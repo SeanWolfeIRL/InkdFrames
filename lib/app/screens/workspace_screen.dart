@@ -26,6 +26,8 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
   double _fps = 8;
   double _brushSize = 4.0;
   Color _brushColor = Colors.white;
+  final List<List<VectorStroke>> _undoStack = [];
+  final List<List<VectorStroke>> _redoStack = [];
 
   @override
   void dispose() {
@@ -88,6 +90,15 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
       _frames[_selectedFrameIndex] = <VectorStroke>[];
       _draftStroke = const <VectorPoint>[];
     });
+  }
+
+  void _saveUndoState() {
+    final snapshot = _frames[_selectedFrameIndex]
+        .map((stroke) => stroke.copy())
+        .toList();
+
+    _undoStack.add(snapshot);
+    _redoStack.clear();
   }
 
   void _togglePlayback() {
@@ -190,10 +201,41 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     });
   }
 
+  void _undo() {
+    if (_undoStack.isEmpty) return;
+
+    setState(() {
+      final currentSnapshot = _frames[_selectedFrameIndex]
+          .map((stroke) => stroke.copy())
+          .toList();
+
+      _redoStack.add(currentSnapshot);
+
+      _frames[_selectedFrameIndex] = _undoStack.removeLast();
+    });
+  }
+
+  void _redo() {
+    if (_redoStack.isEmpty) return;
+
+    setState(() {
+      final currentSnapshot = _frames[_selectedFrameIndex]
+          .map((stroke) => stroke.copy())
+          .toList();
+
+      _undoStack.add(currentSnapshot);
+
+      _frames[_selectedFrameIndex] = _redoStack.removeLast();
+    });
+  }
+
   void _handlePointerUp(PointerUpEvent event) {
     if (_isPlaying || _draftStroke.isEmpty) {
       return;
     }
+
+    _saveUndoState();
+
     final stroke = VectorStroke(
       points: List<VectorPoint>.from(_draftStroke),
       strokeWidth: _brushSize,
@@ -257,6 +299,16 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                   onPressed: _clearCurrentFrame,
                   icon: const Icon(Icons.clear),
                   label: const Text('Clear Frame'),
+                ),
+                OutlinedButton.icon(
+                  onPressed: _undo,
+                  icon: const Icon(Icons.undo),
+                  label: const Text('Undo'),
+                ),
+                OutlinedButton.icon(
+                  onPressed: _redo,
+                  icon: const Icon(Icons.redo),
+                  label: const Text('Redo'),
                 ),
                 OutlinedButton.icon(
                   onPressed: _togglePlayback,
