@@ -27,8 +27,8 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
   double _fps = 8;
   double _brushSize = 4.0;
   Color _brushColor = Colors.white;
-  final List<List<VectorStroke>> _undoStack = [];
-  final List<List<VectorStroke>> _redoStack = [];
+  final List<List<List<VectorStroke>>> _undoStacks = [[]];
+  final List<List<List<VectorStroke>>> _redoStacks = [[]];
 
   @override
   void dispose() {
@@ -39,6 +39,9 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
   void _addFrame() {
     setState(() {
       _frames.add(<VectorStroke>[]);
+      _undoStacks.add([]);
+      _redoStacks.add([]);
+
       _selectedFrameIndex = _frames.length - 1;
       _draftStroke = const <VectorPoint>[];
     });
@@ -51,6 +54,9 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
           .toList();
 
       _frames.add(copiedFrame);
+      _undoStacks.add([]);
+      _redoStacks.add([]);
+
       _selectedFrameIndex = _frames.length - 1;
       _draftStroke = const <VectorPoint>[];
     });
@@ -61,6 +67,8 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
 
     setState(() {
       _frames.removeAt(_selectedFrameIndex);
+      _undoStacks.removeAt(_selectedFrameIndex);
+      _redoStacks.removeAt(_selectedFrameIndex);
 
       if (_selectedFrameIndex >= _frames.length) {
         _selectedFrameIndex = _frames.length - 1;
@@ -98,8 +106,8 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
         .map((stroke) => stroke.copy())
         .toList();
 
-    _undoStack.add(snapshot);
-    _redoStack.clear();
+    _undoStacks[_selectedFrameIndex].add(snapshot);
+    _redoStacks[_selectedFrameIndex].clear();
   }
 
   void _togglePlayback() {
@@ -203,30 +211,36 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
   }
 
   void _undo() {
-    if (_undoStack.isEmpty) return;
+    final undoStack = _undoStacks[_selectedFrameIndex];
+    final redoStack = _redoStacks[_selectedFrameIndex];
+
+    if (undoStack.isEmpty) return;
 
     setState(() {
       final currentSnapshot = _frames[_selectedFrameIndex]
           .map((stroke) => stroke.copy())
           .toList();
 
-      _redoStack.add(currentSnapshot);
+      redoStack.add(currentSnapshot);
 
-      _frames[_selectedFrameIndex] = _undoStack.removeLast();
+      _frames[_selectedFrameIndex] = undoStack.removeLast();
     });
   }
 
   void _redo() {
-    if (_redoStack.isEmpty) return;
+    final undoStack = _undoStacks[_selectedFrameIndex];
+    final redoStack = _redoStacks[_selectedFrameIndex];
+
+    if (redoStack.isEmpty) return;
 
     setState(() {
       final currentSnapshot = _frames[_selectedFrameIndex]
           .map((stroke) => stroke.copy())
           .toList();
 
-      _undoStack.add(currentSnapshot);
+      undoStack.add(currentSnapshot);
 
-      _frames[_selectedFrameIndex] = _redoStack.removeLast();
+      _frames[_selectedFrameIndex] = redoStack.removeLast();
     });
   }
 
