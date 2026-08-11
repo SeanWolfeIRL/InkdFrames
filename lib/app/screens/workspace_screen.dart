@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import '../models/vector_point.dart';
 import '../models/vector_stroke.dart';
 import '../painters/animation_canvas_painter.dart';
+import '../painters/frame_thumbnail_painter.dart';
 
 class WorkspaceScreen extends StatefulWidget {
   const WorkspaceScreen({super.key});
@@ -572,9 +573,9 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                         ),
                       ),
                       alignment: Alignment.center,
-                      child: Text(
-                        '${index + 1}',
-                        style: const TextStyle(fontWeight: FontWeight.bold),
+                      child: CustomPaint(
+                        painter: FrameThumbnailPainter(strokes: _frames[index]),
+                        child: const SizedBox.expand(),
                       ),
                     ),
                   ),
