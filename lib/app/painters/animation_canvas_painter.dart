@@ -12,6 +12,7 @@ class AnimationCanvasPainter extends CustomPainter {
     required this.onionSkinStrokes,
     required this.strokeColor,
     required this.onionSkinColor,
+    required this.strokeWidth,
   });
 
   final List<VectorStroke> strokes;
@@ -19,6 +20,7 @@ class AnimationCanvasPainter extends CustomPainter {
   final List<VectorStroke> onionSkinStrokes;
   final Color strokeColor;
   final Color onionSkinColor;
+  final double strokeWidth;
 
   @override
   void paint(Canvas canvas, Size size) {
@@ -37,7 +39,12 @@ class AnimationCanvasPainter extends CustomPainter {
     }
 
     if (currentStroke != null && currentStroke!.isNotEmpty) {
-      _paintStroke(canvas, VectorStroke(points: currentStroke!), strokeColor);
+      _paintStroke(canvas,
+       VectorStroke(points: currentStroke!,
+       strokeWidth: strokeWidth,
+       ),
+      strokeColor,
+    );
     }
   }
 

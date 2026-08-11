@@ -602,6 +602,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                           ? previousFrameStrokes
                           : const <VectorStroke>[],
                       strokeColor: _brushColor,
+                      strokeWidth: _brushSize,
                       onionSkinColor: Colors.redAccent.withValues(alpha: 0.45),
                     ),
                     child: Container(color: Colors.transparent),
