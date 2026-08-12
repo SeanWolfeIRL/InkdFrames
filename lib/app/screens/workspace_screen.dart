@@ -110,6 +110,25 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     _redoStacks[_selectedFrameIndex].clear();
   }
 
+  void _startPlaybackTimer() {
+    _playbackTimer?.cancel();
+
+    _playbackTimer = Timer.periodic(
+      Duration(milliseconds: (1000 / _fps).round().clamp(40, 1000)),
+      (_) {
+        if (!mounted) return;
+
+        setState(() {
+          if (_selectedFrameIndex < _frames.length - 1) {
+            _selectedFrameIndex += 1;
+          } else {
+            _selectedFrameIndex = 0;
+          }
+        });
+      },
+    );
+  }
+
   void _togglePlayback() {
     if (_frames.length < 2) {
       return;
@@ -126,22 +145,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
       _draftStroke = const <VectorPoint>[];
     });
 
-    _playbackTimer?.cancel();
-    _playbackTimer = Timer.periodic(
-      Duration(milliseconds: (1000 / _fps).round().clamp(40, 1000)),
-      (_) {
-        if (!mounted) {
-          return;
-        }
-        setState(() {
-          if (_selectedFrameIndex < _frames.length - 1) {
-            _selectedFrameIndex += 1;
-          } else {
-            _selectedFrameIndex = 0;
-          }
-        });
-      },
-    );
+    _startPlaybackTimer();
   }
 
   void _eraseAt(Offset position) {
@@ -371,6 +375,10 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                     label: _fps.toStringAsFixed(0),
                     onChanged: (value) {
                       setState(() => _fps = value);
+
+                      if (_isPlaying) {
+                        _startPlaybackTimer();
+                      }
                     },
                   ),
                 ),
