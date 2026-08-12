@@ -300,32 +300,32 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
               runSpacing: 8,
               children: [
                 ElevatedButton.icon(
-                  onPressed: _addFrame,
+                  onPressed: _isPlaying ? null : _addFrame,
                   icon: const Icon(Icons.add),
                   label: const Text('Add Frame'),
                 ),
                 OutlinedButton.icon(
-                  onPressed: _duplicateFrame,
+                  onPressed: _isPlaying ? null : _duplicateFrame,
                   icon: const Icon(Icons.copy),
                   label: const Text('Duplicate'),
                 ),
                 OutlinedButton.icon(
-                  onPressed: _deleteFrame,
+                  onPressed: _isPlaying ? null : _deleteFrame,
                   icon: const Icon(Icons.delete_outline),
                   label: const Text('Delete'),
                 ),
                 OutlinedButton.icon(
-                  onPressed: _clearCurrentFrame,
+                  onPressed: _isPlaying ? null : _clearCurrentFrame,
                   icon: const Icon(Icons.clear),
                   label: const Text('Clear Frame'),
                 ),
                 OutlinedButton.icon(
-                  onPressed: _undo,
+                  onPressed: _isPlaying ? null : _undo,
                   icon: const Icon(Icons.undo),
                   label: const Text('Undo'),
                 ),
                 OutlinedButton.icon(
-                  onPressed: _redo,
+                  onPressed: _isPlaying ? null : _redo,
                   icon: const Icon(Icons.redo),
                   label: const Text('Redo'),
                 ),
@@ -611,10 +611,10 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
             child: Padding(
               padding: const EdgeInsets.all(16),
               child: Listener(
-                onPointerDown: _handlePointerDown,
-                onPointerMove: _handlePointerMove,
-                onPointerUp: _handlePointerUp,
-                onPointerCancel: _handlePointerCancel,
+                onPointerDown: _isPlaying ? null : _handlePointerDown,
+                onPointerMove: _isPlaying ? null : _handlePointerMove,
+                onPointerUp: _isPlaying ? null : _handlePointerUp,
+                onPointerCancel: _isPlaying ? null : _handlePointerCancel,
                 child: ClipRRect(
                   borderRadius: BorderRadius.circular(24),
                   child: CustomPaint(
