@@ -15,6 +15,20 @@ class FrameThumbnailPainter extends CustomPainter {
 
     if (allPoints.isEmpty) return;
 
+    if (allPoints.length == 1) {
+      final stroke = strokes.firstWhere((stroke) => stroke.points.isNotEmpty);
+
+      canvas.drawCircle(
+        Offset(size.width / 2, size.height / 2),
+        (stroke.strokeWidth / 2).clamp(1.0, 4.0),
+        Paint()
+          ..color = stroke.color
+          ..style = PaintingStyle.fill,
+      );
+
+      return;
+    }
+
     double minX = allPoints.first.dx;
     double maxX = allPoints.first.dx;
     double minY = allPoints.first.dy;
@@ -27,8 +41,37 @@ class FrameThumbnailPainter extends CustomPainter {
       if (point.dy > maxY) maxY = point.dy;
     }
 
+    double maxStrokeWidth = 1.0;
+
+    for (final stroke in strokes) {
+      if (stroke.strokeWidth > maxStrokeWidth) {
+        maxStrokeWidth = stroke.strokeWidth;
+      }
+    }
+
+    final strokePadding = maxStrokeWidth / 2;
+
+    minX -= strokePadding;
+    maxX += strokePadding;
+    minY -= strokePadding;
+    maxY += strokePadding;
+
     final drawingWidth = maxX - minX;
     final drawingHeight = maxY - minY;
+
+    if (drawingWidth < 2 && drawingHeight < 2) {
+      final stroke = strokes.firstWhere((stroke) => stroke.points.isNotEmpty);
+
+      canvas.drawCircle(
+        Offset(size.width / 2, size.height / 2),
+        (stroke.strokeWidth / 2).clamp(1.0, 4.0),
+        Paint()
+          ..color = stroke.color
+          ..style = PaintingStyle.fill,
+      );
+
+      return;
+    }
 
     final scaleX = drawingWidth == 0 ? 1.0 : size.width / drawingWidth;
     final scaleY = drawingHeight == 0 ? 1.0 : size.height / drawingHeight;
@@ -43,6 +86,27 @@ class FrameThumbnailPainter extends CustomPainter {
 
     for (final stroke in strokes) {
       if (stroke.points.isEmpty) continue;
+
+      if (stroke.points.length == 1) {
+        final point = stroke.points.first;
+
+        final center = Offset(
+          (point.dx - minX) * scale + offsetX,
+          (point.dy - minY) * scale + offsetY,
+        );
+
+        final radius = (stroke.strokeWidth * scale / 2).clamp(1.0, 4.0);
+
+        canvas.drawCircle(
+          center,
+          radius,
+          Paint()
+            ..color = stroke.color
+            ..style = PaintingStyle.fill,
+        );
+
+        continue;
+      }
 
       final paint = Paint()
         ..color = stroke.color
@@ -61,12 +125,19 @@ class FrameThumbnailPainter extends CustomPainter {
       );
 
       for (var i = 1; i < stroke.points.length; i++) {
-        final point = stroke.points[i];
+        final current = stroke.points[i];
+        final previous = stroke.points[i - 1];
 
-        path.lineTo(
-          (point.dx - minX) * scale + offsetX,
-          (point.dy - minY) * scale + offsetY,
-        );
+        final previousX = (previous.dx - minX) * scale + offsetX;
+        final previousY = (previous.dy - minY) * scale + offsetY;
+
+        final currentX = (current.dx - minX) * scale + offsetX;
+        final currentY = (current.dy - minY) * scale + offsetY;
+
+        final midpointX = (previousX + currentX) / 2;
+        final midpointY = (previousY + currentY) / 2;
+
+        path.quadraticBezierTo(previousX, previousY, midpointX, midpointY);
       }
 
       canvas.drawPath(path, paint);

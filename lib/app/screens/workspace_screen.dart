@@ -583,6 +583,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                     borderRadius: BorderRadius.circular(16),
                     child: Container(
                       width: 72,
+                      clipBehavior: Clip.antiAlias,
                       decoration: BoxDecoration(
                         color: isSelected
                             ? Theme.of(context).colorScheme.primary
