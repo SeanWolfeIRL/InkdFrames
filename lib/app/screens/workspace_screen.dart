@@ -1,11 +1,12 @@
 import 'dart:async';
-
+import 'dart:convert';
 import 'package:flutter/material.dart';
-
+import '../models/inkdframes_project.dart';
 import '../models/vector_point.dart';
 import '../models/vector_stroke.dart';
 import '../painters/animation_canvas_painter.dart';
 import '../painters/frame_thumbnail_painter.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 class WorkspaceScreen extends StatefulWidget {
   const WorkspaceScreen({super.key});
@@ -34,6 +35,51 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
   void dispose() {
     _playbackTimer?.cancel();
     super.dispose();
+  }
+
+  Future<void> _saveProject() async {
+    final project = InkdFramesProject(
+      name: 'My Animation',
+      fps: _fps,
+      frames: _frames,
+    );
+
+    final jsonString = jsonEncode(project.toJson());
+
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString('saved_project', jsonString);
+
+    if (!mounted) return;
+
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(const SnackBar(content: Text('Project saved!')));
+  }
+
+  Future<void> _loadProject() async {
+    final prefs = await SharedPreferences.getInstance();
+    final jsonString = prefs.getString('saved_project');
+
+    if (jsonString == null) {
+      return;
+    }
+
+    final json = jsonDecode(jsonString) as Map<String, dynamic>;
+    final project = InkdFramesProject.fromJson(json);
+
+    setState(() {
+      _frames
+        ..clear()
+        ..addAll(
+          project.frames
+              .map((frame) => frame.map((stroke) => stroke.copy()).toList())
+              .toList(),
+        );
+
+      _fps = project.fps;
+      _selectedFrameIndex = 0;
+      _draftStroke = const <VectorPoint>[];
+    });
   }
 
   void _addFrame() {
@@ -303,6 +349,16 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                   onPressed: _isPlaying ? null : _addFrame,
                   icon: const Icon(Icons.add),
                   label: const Text('Add Frame'),
+                ),
+                OutlinedButton.icon(
+                  onPressed: _saveProject,
+                  icon: const Icon(Icons.save),
+                  label: const Text('Save Project'),
+                ),
+                OutlinedButton.icon(
+                  onPressed: _loadProject,
+                  icon: const Icon(Icons.folder_open),
+                  label: const Text('Load Project'),
                 ),
                 OutlinedButton.icon(
                   onPressed: _isPlaying ? null : _duplicateFrame,

@@ -10,10 +10,18 @@ class VectorPoint {
   final double pressure;
 
   VectorPoint copy() {
+    return VectorPoint(dx: dx, dy: dy, pressure: pressure);
+  }
+
+  Map<String, dynamic> toJson() {
+    return {'dx': dx, 'dy': dy, 'pressure': pressure};
+  }
+
+  factory VectorPoint.fromJson(Map<String, dynamic> json) {
     return VectorPoint(
-      dx: dx,
-      dy: dy,
-      pressure: pressure,
+      dx: (json['dx'] as num).toDouble(),
+      dy: (json['dy'] as num).toDouble(),
+      pressure: (json['pressure'] as num).toDouble(),
     );
   }
 }

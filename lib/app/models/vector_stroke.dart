@@ -8,9 +8,30 @@ class VectorStroke {
     this.color = Colors.white,
   }) : points = List<VectorPoint>.from(points);
 
+  factory VectorStroke.fromJson(Map<String, dynamic> json) {
+    return VectorStroke(
+      points: (json['points'] as List)
+          .map(
+            (point) =>
+                VectorPoint.fromJson(Map<String, dynamic>.from(point as Map)),
+          )
+          .toList(),
+      strokeWidth: (json['strokeWidth'] as num).toDouble(),
+      color: Color(json['color'] as int),
+    );
+  }
+
   final List<VectorPoint> points;
   final double strokeWidth;
   final Color color;
+
+  Map<String, dynamic> toJson() {
+    return {
+      'points': points.map((point) => point.toJson()).toList(),
+      'strokeWidth': strokeWidth,
+      'color': color.toARGB32(),
+    };
+  }
 
   VectorStroke copy() {
     return VectorStroke(
