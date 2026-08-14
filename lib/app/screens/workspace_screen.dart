@@ -9,9 +9,10 @@ import '../painters/frame_thumbnail_painter.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 class WorkspaceScreen extends StatefulWidget {
-  const WorkspaceScreen({super.key, this.projectId});
+  const WorkspaceScreen({super.key, this.projectId, this.projectName});
 
   final String? projectId;
+  final String? projectName;
 
   static const routeName = '/workspace';
 
@@ -34,6 +35,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
   final List<List<List<VectorStroke>>> _redoStacks = [[]];
 
   String _projectId = '';
+  String _projectName = 'Untitled Animation';
 
   @override
   void dispose() {
@@ -50,13 +52,14 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
       _loadProject();
     } else {
       _projectId = _generateProjectId();
+      _projectName = widget.projectName ?? 'Untitled Animation';
     }
   }
 
   Future<void> _saveProject() async {
     final project = InkdFramesProject(
       id: _projectId,
-      name: 'My Animation',
+      name: _projectName,
       fps: _fps,
       frames: _frames,
     );
@@ -121,6 +124,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     final json = jsonDecode(jsonString) as Map<String, dynamic>;
     final project = InkdFramesProject.fromJson(json);
     _projectId = project.id;
+    _projectName = project.name;
 
     setState(() {
       _frames
