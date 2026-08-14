@@ -9,7 +9,9 @@ import '../painters/frame_thumbnail_painter.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 class WorkspaceScreen extends StatefulWidget {
-  const WorkspaceScreen({super.key});
+  const WorkspaceScreen({super.key, this.projectId});
+
+  final String? projectId;
 
   static const routeName = '/workspace';
 
@@ -42,7 +44,13 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
   @override
   void initState() {
     super.initState();
-    _projectId = _generateProjectId();
+
+    if (widget.projectId != null) {
+      _projectId = widget.projectId!;
+      _loadProject();
+    } else {
+      _projectId = _generateProjectId();
+    }
   }
 
   Future<void> _saveProject() async {
@@ -104,7 +112,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
 
   Future<void> _loadProject() async {
     final prefs = await SharedPreferences.getInstance();
-    final jsonString = prefs.getString('project_project-1');
+    final jsonString = prefs.getString('project_$_projectId');
 
     if (jsonString == null) {
       return;
