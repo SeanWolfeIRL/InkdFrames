@@ -1,5 +1,5 @@
 import 'package:flutter/material.dart';
-
+import 'project_library_screen.dart';
 import 'workspace_screen.dart';
 
 class HomeScreen extends StatelessWidget {
@@ -39,6 +39,17 @@ class HomeScreen extends StatelessWidget {
                   textStyle: const TextStyle(fontSize: 16),
                 ),
                 child: const Text('Blank Animation'),
+              ),
+              const SizedBox(height: 16),
+              TextButton(
+                onPressed: () {
+                  Navigator.of(context).push(
+                    MaterialPageRoute<void>(
+                      builder: (context) => const ProjectLibraryScreen(),
+                    ),
+                  );
+                },
+                child: const Text('Project Library'),
               ),
             ],
           ),

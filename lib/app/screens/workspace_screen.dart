@@ -31,14 +31,23 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
   final List<List<List<VectorStroke>>> _undoStacks = [[]];
   final List<List<List<VectorStroke>>> _redoStacks = [[]];
 
+  String _projectId = '';
+
   @override
   void dispose() {
     _playbackTimer?.cancel();
     super.dispose();
   }
 
+  @override
+  void initState() {
+    super.initState();
+    _projectId = _generateProjectId();
+  }
+
   Future<void> _saveProject() async {
     final project = InkdFramesProject(
+      id: _projectId,
       name: 'My Animation',
       fps: _fps,
       frames: _frames,
@@ -47,7 +56,14 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     final jsonString = jsonEncode(project.toJson());
 
     final prefs = await SharedPreferences.getInstance();
-    await prefs.setString('saved_project', jsonString);
+    await prefs.setString('project_${project.id}', jsonString);
+
+    final projectIds = prefs.getStringList('project_ids') ?? [];
+
+    if (!projectIds.contains(project.id)) {
+      projectIds.add(project.id);
+      await prefs.setStringList('project_ids', projectIds);
+    }
 
     if (!mounted) return;
 
@@ -56,9 +72,39 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     ).showSnackBar(const SnackBar(content: Text('Project saved!')));
   }
 
+  String _generateProjectId() {
+    return DateTime.now().microsecondsSinceEpoch.toString();
+  }
+
+  Future<void> _showSavedProjectIds() async {
+    final prefs = await SharedPreferences.getInstance();
+    final projectIds = prefs.getStringList('project_ids') ?? [];
+    final projects = <InkdFramesProject>[];
+
+    for (final id in projectIds) {
+      final jsonString = prefs.getString('project_$id');
+
+      if (jsonString != null) {
+        final json = jsonDecode(jsonString) as Map<String, dynamic>;
+        projects.add(InkdFramesProject.fromJson(json));
+      }
+    }
+
+    if (!mounted) return;
+
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          'Loaded ${projects.length} projects: '
+          '${projects.map((project) => project.name).join(', ')}',
+        ),
+      ),
+    );
+  }
+
   Future<void> _loadProject() async {
     final prefs = await SharedPreferences.getInstance();
-    final jsonString = prefs.getString('saved_project');
+    final jsonString = prefs.getString('project_project-1');
 
     if (jsonString == null) {
       return;
@@ -66,6 +112,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
 
     final json = jsonDecode(jsonString) as Map<String, dynamic>;
     final project = InkdFramesProject.fromJson(json);
+    _projectId = project.id;
 
     setState(() {
       _frames
@@ -359,6 +406,11 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                   onPressed: _loadProject,
                   icon: const Icon(Icons.folder_open),
                   label: const Text('Load Project'),
+                ),
+                OutlinedButton.icon(
+                  onPressed: _showSavedProjectIds,
+                  icon: const Icon(Icons.list),
+                  label: const Text('Show Projects'),
                 ),
                 OutlinedButton.icon(
                   onPressed: _isPlaying ? null : _duplicateFrame,

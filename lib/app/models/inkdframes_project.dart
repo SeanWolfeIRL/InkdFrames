@@ -2,6 +2,7 @@ import 'vector_stroke.dart';
 
 class InkdFramesProject {
   InkdFramesProject({
+    required this.id,
     required this.name,
     required this.fps,
     required this.frames,
@@ -9,6 +10,7 @@ class InkdFramesProject {
 
   factory InkdFramesProject.fromJson(Map<String, dynamic> json) {
     return InkdFramesProject(
+      id: json['id'] as String,
       name: json['name'] as String,
       fps: (json['fps'] as num).toDouble(),
       frames: (json['frames'] as List)
@@ -25,12 +27,14 @@ class InkdFramesProject {
     );
   }
 
+  final String id;
   final String name;
   final double fps;
   final List<List<VectorStroke>> frames;
 
   Map<String, dynamic> toJson() {
     return {
+      'id': id,
       'name': name,
       'fps': fps,
       'frames': frames
