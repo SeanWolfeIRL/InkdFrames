@@ -3,6 +3,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../models/inkdframes_project.dart';
 import 'dart:convert';
 import 'workspace_screen.dart';
+import '../painters/frame_thumbnail_painter.dart';
 
 class ProjectLibraryScreen extends StatefulWidget {
   const ProjectLibraryScreen({super.key});
@@ -55,9 +56,25 @@ class _ProjectLibraryScreenState extends State<ProjectLibraryScreen> {
 
           return Card(
             child: ListTile(
-              leading: const Icon(Icons.movie_outlined),
+              leading: SizedBox(
+                width: 72,
+                height: 72,
+                child: ClipRRect(
+                  borderRadius: BorderRadius.circular(8),
+                  child: CustomPaint(
+                    painter: project.frames.isNotEmpty
+                        ? FrameThumbnailPainter(strokes: project.frames.first)
+                        : null,
+                    child: project.frames.isEmpty
+                        ? const Center(child: Icon(Icons.movie_outlined))
+                        : const SizedBox.expand(),
+                  ),
+                ),
+              ),
               title: Text(project.name),
-              subtitle: Text('${project.frames.length} frames'),
+              subtitle: Text(
+                '${project.frames.length} frames • ${project.fps} FPS',
+              ),
               trailing: Row(
                 mainAxisSize: MainAxisSize.min,
                 children: [
