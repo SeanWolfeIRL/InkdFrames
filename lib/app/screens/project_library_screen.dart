@@ -177,12 +177,14 @@ class _ProjectLibraryScreenState extends State<ProjectLibraryScreen> {
                   ),
                 ],
               ),
-              onTap: () {
-                Navigator.of(context).push(
+              onTap: () async {
+                await Navigator.of(context).push(
                   MaterialPageRoute(
                     builder: (_) => WorkspaceScreen(projectId: project.id),
                   ),
                 );
+
+                _loadProjectIds();
               },
             ),
           );
