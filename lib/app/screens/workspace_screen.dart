@@ -25,6 +25,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
   int _selectedFrameIndex = 0;
   List<VectorPoint> _draftStroke = const <VectorPoint>[];
   Timer? _playbackTimer;
+  Timer? _autosaveTimer;
   bool _isPlaying = false;
   bool _showOnionSkin = true;
   bool _isEraserActive = false;
@@ -40,6 +41,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
   @override
   void dispose() {
     _playbackTimer?.cancel();
+    _autosaveTimer?.cancel();
     super.dispose();
   }
 
@@ -54,6 +56,12 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
       _projectId = _generateProjectId();
       _projectName = widget.projectName ?? 'Untitled Animation';
     }
+  }
+
+  void _scheduleAutosave() {
+    _autosaveTimer?.cancel();
+
+    _autosaveTimer = Timer(const Duration(seconds: 2), _saveProject);
   }
 
   Future<void> _saveProject() async {
@@ -150,6 +158,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
       _selectedFrameIndex = _frames.length - 1;
       _draftStroke = const <VectorPoint>[];
     });
+    _scheduleAutosave();
   }
 
   void _duplicateFrame() {
@@ -165,6 +174,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
       _selectedFrameIndex = _frames.length - 1;
       _draftStroke = const <VectorPoint>[];
     });
+    _scheduleAutosave();
   }
 
   void _deleteFrame() {
@@ -181,6 +191,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
 
       _draftStroke = const <VectorPoint>[];
     });
+    _scheduleAutosave();
   }
 
   void _toggleOnionSkin() {
@@ -204,6 +215,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
       _frames[_selectedFrameIndex] = <VectorStroke>[];
       _draftStroke = const <VectorPoint>[];
     });
+    _scheduleAutosave();
   }
 
   void _saveUndoState() {
@@ -334,6 +346,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
 
       _frames[_selectedFrameIndex] = undoStack.removeLast();
     });
+    _scheduleAutosave();
   }
 
   void _redo() {
@@ -351,6 +364,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
 
       _frames[_selectedFrameIndex] = redoStack.removeLast();
     });
+    _scheduleAutosave();
   }
 
   void _handlePointerUp(PointerUpEvent event) {
@@ -372,6 +386,8 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
       ];
       _draftStroke = const <VectorPoint>[];
     });
+
+    _scheduleAutosave();
   }
 
   void _handlePointerCancel(PointerCancelEvent event) {
