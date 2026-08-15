@@ -58,6 +58,108 @@ class _ProjectLibraryScreenState extends State<ProjectLibraryScreen> {
               leading: const Icon(Icons.movie_outlined),
               title: Text(project.name),
               subtitle: Text('${project.frames.length} frames'),
+              trailing: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  IconButton(
+                    icon: const Icon(Icons.edit_outlined),
+                    onPressed: () async {
+                      final controller = TextEditingController(
+                        text: project.name,
+                      );
+
+                      final newName = await showDialog<String>(
+                        context: context,
+                        builder: (context) {
+                          return AlertDialog(
+                            title: const Text('Rename project'),
+                            content: TextField(
+                              controller: controller,
+                              autofocus: true,
+                            ),
+                            actions: [
+                              TextButton(
+                                onPressed: () => Navigator.pop(context),
+                                child: const Text('Cancel'),
+                              ),
+                              FilledButton(
+                                onPressed: () {
+                                  final name = controller.text.trim();
+
+                                  if (name.isNotEmpty) {
+                                    Navigator.pop(context, name);
+                                  }
+                                },
+                                child: const Text('Rename'),
+                              ),
+                            ],
+                          );
+                        },
+                      );
+
+                      controller.dispose();
+                      if (newName == null) return;
+
+                      final prefs = await SharedPreferences.getInstance();
+
+                      final renamedProject = InkdFramesProject(
+                        id: project.id,
+                        name: newName,
+                        fps: project.fps,
+                        frames: project.frames,
+                      );
+
+                      await prefs.setString(
+                        'project_${project.id}',
+                        jsonEncode(renamedProject.toJson()),
+                      );
+
+                      setState(() {
+                        _projects[index] = renamedProject;
+                      });
+                    },
+                  ),
+                  IconButton(
+                    icon: const Icon(Icons.delete_outline),
+                    onPressed: () async {
+                      final shouldDelete = await showDialog<bool>(
+                        context: context,
+                        builder: (context) {
+                          return AlertDialog(
+                            title: const Text('Delete project?'),
+                            content: Text(
+                              'Are you sure you want to delete "${project.name}"?',
+                            ),
+                            actions: [
+                              TextButton(
+                                onPressed: () => Navigator.pop(context, false),
+                                child: const Text('Cancel'),
+                              ),
+                              FilledButton(
+                                onPressed: () => Navigator.pop(context, true),
+                                child: const Text('Delete'),
+                              ),
+                            ],
+                          );
+                        },
+                      );
+
+                      if (shouldDelete != true) return;
+                      final prefs = await SharedPreferences.getInstance();
+
+                      await prefs.remove('project_${project.id}');
+                      final projectIds =
+                          prefs.getStringList('project_ids') ?? [];
+                      projectIds.remove(project.id);
+                      await prefs.setStringList('project_ids', projectIds);
+
+                      setState(() {
+                        _projects.removeAt(index);
+                      });
+                    },
+                  ),
+                ],
+              ),
               onTap: () {
                 Navigator.of(context).push(
                   MaterialPageRoute(
