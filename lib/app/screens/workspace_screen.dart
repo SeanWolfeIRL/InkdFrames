@@ -171,6 +171,10 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     });
   }
 
+  void _resetCanvasView() {
+    _transformationController.value = Matrix4.identity();
+  }
+
   void _addFrame() {
     setState(() {
       _frames.add(<VectorStroke>[]);
@@ -532,6 +536,12 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                   onPressed: _togglePlayback,
                   icon: Icon(_isPlaying ? Icons.pause : Icons.play_arrow),
                   label: Text(_isPlaying ? 'Pause' : 'Play'),
+                ),
+                const SizedBox(width: 8),
+                FloatingActionButton.small(
+                  heroTag: 'resetView',
+                  onPressed: _resetCanvasView,
+                  child: const Icon(Icons.center_focus_strong),
                 ),
               ],
             ),
