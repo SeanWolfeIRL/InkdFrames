@@ -507,43 +507,9 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                   label: const Text('Clear Frame'),
                 ),
                 OutlinedButton.icon(
-                  onPressed: _isPlaying ? null : _undo,
-                  icon: const Icon(Icons.undo),
-                  label: const Text('Undo'),
-                ),
-                OutlinedButton.icon(
-                  onPressed: _isPlaying ? null : _redo,
-                  icon: const Icon(Icons.redo),
-                  label: const Text('Redo'),
-                ),
-                OutlinedButton.icon(
                   onPressed: _togglePlayback,
                   icon: Icon(_isPlaying ? Icons.pause : Icons.play_arrow),
                   label: Text(_isPlaying ? 'Pause' : 'Play'),
-                ),
-                OutlinedButton.icon(
-                  onPressed: () {
-                    setState(() {
-                      _isEraserActive = !_isEraserActive;
-                    });
-                  },
-                  icon: Icon(
-                    Icons.auto_fix_off,
-                    color: _isEraserActive
-                        ? Colors.deepPurpleAccent
-                        : Colors.white38,
-                  ),
-                  label: Text(_isEraserActive ? 'Eraser On' : 'Eraser Off'),
-                ),
-                OutlinedButton.icon(
-                  onPressed: _toggleOnionSkin,
-                  icon: Icon(
-                    Icons.layers,
-                    color: _showOnionSkin
-                        ? Colors.deepPurpleAccent
-                        : Colors.white38,
-                  ),
-                  label: Text(_showOnionSkin ? 'Onion On' : 'Onion Off'),
                 ),
               ],
             ),
@@ -882,9 +848,47 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                 Positioned(
                   top: 16,
                   right: 16,
-                  child: FloatingActionButton.small(
-                    onPressed: () {},
-                    child: const Icon(Icons.zoom_in),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      FloatingActionButton.small(
+                        heroTag: 'undo',
+                        onPressed: _undo,
+                        child: const Icon(Icons.undo),
+                      ),
+                      const SizedBox(width: 8),
+                      FloatingActionButton.small(
+                        heroTag: 'redo',
+                        onPressed: _redo,
+                        child: const Icon(Icons.redo),
+                      ),
+                      const SizedBox(width: 8),
+                      FloatingActionButton.small(
+                        heroTag: 'onionSkin',
+                        onPressed: _toggleOnionSkin,
+                        child: Icon(
+                          Icons.layers,
+                          color: _showOnionSkin
+                              ? Colors.deepPurpleAccent
+                              : Colors.white,
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      FloatingActionButton.small(
+                        heroTag: 'eraser',
+                        onPressed: () {
+                          setState(() {
+                            _isEraserActive = !_isEraserActive;
+                          });
+                        },
+                        child: Icon(
+                          Icons.auto_fix_off,
+                          color: _isEraserActive
+                              ? Colors.deepPurpleAccent
+                              : Colors.white,
+                        ),
+                      ),
+                    ],
                   ),
                 ),
               ],
