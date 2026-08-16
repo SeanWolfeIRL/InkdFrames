@@ -326,8 +326,11 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
   }
 
   void _eraseAt(Offset position) {
-    const double eraserRadius = 20;
-    const double eraserRadiusSquared = eraserRadius * eraserRadius;
+    final double currentScale = _transformationController.value
+        .getMaxScaleOnAxis();
+
+    final double eraserRadius = 8 / currentScale;
+    final double eraserRadiusSquared = eraserRadius * eraserRadius;
 
     _frames[_selectedFrameIndex].removeWhere((stroke) {
       return stroke.points.any((point) {
@@ -340,7 +343,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     });
   }
 
-  void _handlePointerDown(PointerDownEvent event) {
+  void _handlePointerDown(PointerDownEvent event, BuildContext canvasContext) {
     _activePointerCount += 1;
     if (_activePointerCount > 1) {
       setState(() {
@@ -352,9 +355,12 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
       return;
     }
 
+    final renderBox = canvasContext.findRenderObject() as RenderBox;
+    final canvasPosition = renderBox.globalToLocal(event.position);
+
     if (_isEraserActive) {
       setState(() {
-        _eraseAt(event.localPosition);
+        _eraseAt(canvasPosition);
       });
       return;
     }
@@ -362,15 +368,15 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     setState(() {
       _draftStroke = <VectorPoint>[
         VectorPoint(
-          dx: event.localPosition.dx,
-          dy: event.localPosition.dy,
+          dx: canvasPosition.dx,
+          dy: canvasPosition.dy,
           pressure: event.pressure,
         ),
       ];
     });
   }
 
-  void _handlePointerMove(PointerMoveEvent event) {
+  void _handlePointerMove(PointerMoveEvent event, BuildContext canvasContext) {
     if (_isPlaying) {
       return;
     }
@@ -379,9 +385,12 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
       return;
     }
 
+    final renderBox = canvasContext.findRenderObject() as RenderBox;
+    final canvasPosition = renderBox.globalToLocal(event.position);
+
     if (_isEraserActive) {
       setState(() {
-        _eraseAt(event.localPosition);
+        _eraseAt(canvasPosition);
       });
       return;
     }
@@ -394,8 +403,8 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
       _draftStroke = <VectorPoint>[
         ..._draftStroke,
         VectorPoint(
-          dx: event.localPosition.dx,
-          dy: event.localPosition.dy,
+          dx: canvasPosition.dx,
+          dy: canvasPosition.dy,
           pressure: event.pressure,
         ),
       ];
@@ -854,31 +863,41 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                     transformationController: _transformationController,
                     minScale: 0.5,
                     maxScale: 5.0,
-                    panEnabled: true,
+                    panEnabled: false,
                     scaleEnabled: true,
-                    child: Listener(
-                      onPointerDown: _isPlaying ? null : _handlePointerDown,
-                      onPointerMove: _isPlaying ? null : _handlePointerMove,
-                      onPointerUp: _isPlaying ? null : _handlePointerUp,
-                      onPointerCancel: _isPlaying ? null : _handlePointerCancel,
-                      child: ClipRRect(
-                        borderRadius: BorderRadius.circular(24),
-                        child: CustomPaint(
-                          painter: AnimationCanvasPainter(
-                            strokes: _frames[_selectedFrameIndex],
-                            currentStroke: _draftStroke.isEmpty
-                                ? null
-                                : _draftStroke,
-                            onionSkinStrokes: _showOnionSkin
-                                ? previousFrameStrokes
-                                : const <VectorStroke>[],
-                            strokeColor: _brushColor,
-                            strokeWidth: _brushSize,
-                            onionSkinColor: Colors.redAccent.withValues(
-                              alpha: 0.45,
+                    child: Builder(
+                      builder: (canvasContext) => Listener(
+                        onPointerDown: _isPlaying
+                            ? null
+                            : (event) =>
+                                  _handlePointerDown(event, canvasContext),
+                        onPointerMove: _isPlaying
+                            ? null
+                            : (event) =>
+                                  _handlePointerMove(event, canvasContext),
+                        onPointerUp: _isPlaying ? null : _handlePointerUp,
+                        onPointerCancel: _isPlaying
+                            ? null
+                            : _handlePointerCancel,
+                        child: ClipRRect(
+                          borderRadius: BorderRadius.circular(24),
+                          child: CustomPaint(
+                            painter: AnimationCanvasPainter(
+                              strokes: _frames[_selectedFrameIndex],
+                              currentStroke: _draftStroke.isEmpty
+                                  ? null
+                                  : _draftStroke,
+                              onionSkinStrokes: _showOnionSkin
+                                  ? previousFrameStrokes
+                                  : const <VectorStroke>[],
+                              strokeColor: _brushColor,
+                              strokeWidth: _brushSize,
+                              onionSkinColor: Colors.redAccent.withValues(
+                                alpha: 0.45,
+                              ),
                             ),
+                            child: Container(color: Colors.transparent),
                           ),
-                          child: Container(color: Colors.transparent),
                         ),
                       ),
                     ),
