@@ -24,6 +24,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
   final List<List<VectorStroke>> _frames = [<VectorStroke>[]];
   final List<int> _frameDurations = [1];
   int _selectedFrameIndex = 0;
+  int _activePointerCount = 0;
   List<VectorPoint> _draftStroke = const <VectorPoint>[];
   Timer? _playbackTimer;
   Timer? _autosaveTimer;
@@ -36,6 +37,9 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
   final List<List<List<VectorStroke>>> _undoStacks = [[]];
   final List<List<List<VectorStroke>>> _redoStacks = [[]];
 
+  final TransformationController _transformationController =
+      TransformationController();
+
   String _projectId = '';
   String _projectName = 'Untitled Animation';
 
@@ -43,6 +47,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
   void dispose() {
     _playbackTimer?.cancel();
     _autosaveTimer?.cancel();
+    _transformationController.dispose();
     super.dispose();
   }
 
@@ -332,6 +337,13 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
   }
 
   void _handlePointerDown(PointerDownEvent event) {
+    _activePointerCount += 1;
+    if (_activePointerCount > 1) {
+      setState(() {
+        _draftStroke = const <VectorPoint>[];
+      });
+      return;
+    }
     if (_isPlaying) {
       return;
     }
@@ -356,6 +368,10 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
 
   void _handlePointerMove(PointerMoveEvent event) {
     if (_isPlaying) {
+      return;
+    }
+
+    if (_activePointerCount != 1) {
       return;
     }
 
@@ -419,6 +435,9 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
   }
 
   void _handlePointerUp(PointerUpEvent event) {
+    if (_activePointerCount > 0) {
+      _activePointerCount -= 1;
+    }
     if (_isPlaying || _draftStroke.isEmpty) {
       return;
     }
@@ -442,6 +461,9 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
   }
 
   void _handlePointerCancel(PointerCancelEvent event) {
+    if (_activePointerCount > 0) {
+      _activePointerCount -= 1;
+    }
     if (_isPlaying) {
       return;
     }
@@ -818,29 +840,36 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
               children: [
                 Padding(
                   padding: const EdgeInsets.all(16),
-                  child: Listener(
-                    onPointerDown: _isPlaying ? null : _handlePointerDown,
-                    onPointerMove: _isPlaying ? null : _handlePointerMove,
-                    onPointerUp: _isPlaying ? null : _handlePointerUp,
-                    onPointerCancel: _isPlaying ? null : _handlePointerCancel,
-                    child: ClipRRect(
-                      borderRadius: BorderRadius.circular(24),
-                      child: CustomPaint(
-                        painter: AnimationCanvasPainter(
-                          strokes: _frames[_selectedFrameIndex],
-                          currentStroke: _draftStroke.isEmpty
-                              ? null
-                              : _draftStroke,
-                          onionSkinStrokes: _showOnionSkin
-                              ? previousFrameStrokes
-                              : const <VectorStroke>[],
-                          strokeColor: _brushColor,
-                          strokeWidth: _brushSize,
-                          onionSkinColor: Colors.redAccent.withValues(
-                            alpha: 0.45,
+                  child: InteractiveViewer(
+                    transformationController: _transformationController,
+                    minScale: 0.5,
+                    maxScale: 5.0,
+                    panEnabled: true,
+                    scaleEnabled: true,
+                    child: Listener(
+                      onPointerDown: _isPlaying ? null : _handlePointerDown,
+                      onPointerMove: _isPlaying ? null : _handlePointerMove,
+                      onPointerUp: _isPlaying ? null : _handlePointerUp,
+                      onPointerCancel: _isPlaying ? null : _handlePointerCancel,
+                      child: ClipRRect(
+                        borderRadius: BorderRadius.circular(24),
+                        child: CustomPaint(
+                          painter: AnimationCanvasPainter(
+                            strokes: _frames[_selectedFrameIndex],
+                            currentStroke: _draftStroke.isEmpty
+                                ? null
+                                : _draftStroke,
+                            onionSkinStrokes: _showOnionSkin
+                                ? previousFrameStrokes
+                                : const <VectorStroke>[],
+                            strokeColor: _brushColor,
+                            strokeWidth: _brushSize,
+                            onionSkinColor: Colors.redAccent.withValues(
+                              alpha: 0.45,
+                            ),
                           ),
+                          child: Container(color: Colors.transparent),
                         ),
-                        child: Container(color: Colors.transparent),
                       ),
                     ),
                   ),
