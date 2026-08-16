@@ -794,25 +794,52 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                   child: InkWell(
                     onTap: () => _selectFrame(index),
                     borderRadius: BorderRadius.circular(16),
-                    child: Container(
-                      width: 72,
-                      clipBehavior: Clip.antiAlias,
-                      decoration: BoxDecoration(
-                        color: isSelected
-                            ? Theme.of(context).colorScheme.primary
-                            : const Color(0xFF2A2439),
-                        borderRadius: BorderRadius.circular(16),
-                        border: Border.all(
-                          color: isSelected
-                              ? Colors.cyanAccent
-                              : Colors.white24,
+                    child: Stack(
+                      children: [
+                        Container(
+                          width: 72,
+                          clipBehavior: Clip.antiAlias,
+                          decoration: BoxDecoration(
+                            color: isSelected
+                                ? Theme.of(context).colorScheme.primary
+                                : const Color(0xFF2A2439),
+                            borderRadius: BorderRadius.circular(16),
+                            border: Border.all(
+                              color: isSelected
+                                  ? Colors.cyanAccent
+                                  : Colors.white24,
+                            ),
+                          ),
+                          alignment: Alignment.center,
+                          child: CustomPaint(
+                            painter: FrameThumbnailPainter(
+                              strokes: _frames[index],
+                            ),
+                            child: const SizedBox.expand(),
+                          ),
                         ),
-                      ),
-                      alignment: Alignment.center,
-                      child: CustomPaint(
-                        painter: FrameThumbnailPainter(strokes: _frames[index]),
-                        child: const SizedBox.expand(),
-                      ),
+                        Positioned(
+                          right: 4,
+                          bottom: 4,
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 6,
+                              vertical: 2,
+                            ),
+                            decoration: BoxDecoration(
+                              color: Colors.black54,
+                              borderRadius: BorderRadius.circular(8),
+                            ),
+                            child: Text(
+                              '${_frameDurations[index]}x',
+                              style: const TextStyle(
+                                fontSize: 11,
+                                color: Colors.white,
+                              ),
+                            ),
+                          ),
+                        ),
+                      ],
                     ),
                   ),
                 );
