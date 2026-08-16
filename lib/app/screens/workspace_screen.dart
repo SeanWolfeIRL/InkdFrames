@@ -497,7 +497,27 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     final previousFrameStrokes = _getPreviousFrameStrokes();
 
     return Scaffold(
-      appBar: AppBar(title: const Text('Workspace'), centerTitle: true),
+      appBar: AppBar(
+        title: const Text('Workspace'),
+        centerTitle: true,
+        actions: [
+          IconButton(
+            tooltip: 'Save Project',
+            onPressed: _saveProject,
+            icon: const Icon(Icons.save),
+          ),
+          IconButton(
+            tooltip: 'Load Project',
+            onPressed: _loadProject,
+            icon: const Icon(Icons.folder_open),
+          ),
+          IconButton(
+            tooltip: 'Show Projects',
+            onPressed: _showSavedProjectIds,
+            icon: const Icon(Icons.list),
+          ),
+        ],
+      ),
       body: Column(
         children: [
           Padding(
@@ -505,54 +525,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
             child: Wrap(
               spacing: 8,
               runSpacing: 8,
-              children: [
-                ElevatedButton.icon(
-                  onPressed: _isPlaying ? null : _addFrame,
-                  icon: const Icon(Icons.add),
-                  label: const Text('Add Frame'),
-                ),
-                OutlinedButton.icon(
-                  onPressed: _saveProject,
-                  icon: const Icon(Icons.save),
-                  label: const Text('Save Project'),
-                ),
-                OutlinedButton.icon(
-                  onPressed: _loadProject,
-                  icon: const Icon(Icons.folder_open),
-                  label: const Text('Load Project'),
-                ),
-                OutlinedButton.icon(
-                  onPressed: _showSavedProjectIds,
-                  icon: const Icon(Icons.list),
-                  label: const Text('Show Projects'),
-                ),
-                OutlinedButton.icon(
-                  onPressed: _isPlaying ? null : _duplicateFrame,
-                  icon: const Icon(Icons.copy),
-                  label: const Text('Duplicate'),
-                ),
-                OutlinedButton.icon(
-                  onPressed: _isPlaying ? null : _deleteFrame,
-                  icon: const Icon(Icons.delete_outline),
-                  label: const Text('Delete'),
-                ),
-                OutlinedButton.icon(
-                  onPressed: _isPlaying ? null : _clearCurrentFrame,
-                  icon: const Icon(Icons.clear),
-                  label: const Text('Clear Frame'),
-                ),
-                OutlinedButton.icon(
-                  onPressed: _togglePlayback,
-                  icon: Icon(_isPlaying ? Icons.pause : Icons.play_arrow),
-                  label: Text(_isPlaying ? 'Pause' : 'Play'),
-                ),
-                const SizedBox(width: 8),
-                FloatingActionButton.small(
-                  heroTag: 'resetView',
-                  onPressed: _resetCanvasView,
-                  child: const Icon(Icons.center_focus_strong),
-                ),
-              ],
+              children: [const SizedBox(width: 8)],
             ),
           ),
           Padding(
@@ -853,6 +826,38 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
               },
             ),
           ),
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16),
+            child: Row(
+              children: [
+                IconButton(
+                  tooltip: 'Add Frame',
+                  onPressed: _isPlaying ? null : _addFrame,
+                  icon: const Icon(Icons.add),
+                ),
+                IconButton(
+                  tooltip: 'Duplicate Frame',
+                  onPressed: _isPlaying ? null : _duplicateFrame,
+                  icon: const Icon(Icons.copy),
+                ),
+                IconButton(
+                  tooltip: 'Delete Frame',
+                  onPressed: _isPlaying ? null : _deleteFrame,
+                  icon: const Icon(Icons.delete_outline),
+                ),
+                IconButton(
+                  tooltip: 'Clear Frame',
+                  onPressed: _isPlaying ? null : _clearCurrentFrame,
+                  icon: const Icon(Icons.clear),
+                ),
+                IconButton(
+                  tooltip: _isPlaying ? 'Pause' : 'Play',
+                  onPressed: _togglePlayback,
+                  icon: Icon(_isPlaying ? Icons.pause : Icons.play_arrow),
+                ),
+              ],
+            ),
+          ),
           const SizedBox(height: 8),
           Expanded(
             child: Stack(
@@ -930,6 +935,12 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                               ? Colors.deepPurpleAccent
                               : Colors.white,
                         ),
+                      ),
+                      const SizedBox(width: 8),
+                      FloatingActionButton.small(
+                        heroTag: 'resetView',
+                        onPressed: _resetCanvasView,
+                        child: const Icon(Icons.center_focus_strong),
                       ),
                       const SizedBox(width: 8),
                       FloatingActionButton.small(
