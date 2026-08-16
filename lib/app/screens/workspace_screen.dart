@@ -532,304 +532,6 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
             padding: const EdgeInsets.symmetric(horizontal: 16),
             child: Row(
               children: [
-                const Text('FPS'),
-                Expanded(
-                  child: Slider(
-                    value: _fps,
-                    min: 1,
-                    max: 24,
-                    divisions: 23,
-                    label: _fps.toStringAsFixed(0),
-                    onChanged: (value) {
-                      setState(() => _fps = value);
-
-                      if (_isPlaying) {
-                        _startPlaybackTimer();
-                      }
-                    },
-                  ),
-                ),
-                Text(_fps.toStringAsFixed(0)),
-              ],
-            ),
-          ),
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 16),
-            child: Row(
-              children: [
-                const Text('Duration'),
-                Expanded(
-                  child: Slider(
-                    value: _frameDurations[_selectedFrameIndex].toDouble(),
-                    min: 1,
-                    max: 8,
-                    divisions: 7,
-                    label:
-                        '${_frameDurations[_selectedFrameIndex]} beat${_frameDurations[_selectedFrameIndex] == 1 ? '' : 's'}',
-                    onChanged: (value) {
-                      setState(() {
-                        _frameDurations[_selectedFrameIndex] = value.round();
-                      });
-                      _scheduleAutosave();
-                    },
-                  ),
-                ),
-                Text('${_frameDurations[_selectedFrameIndex]}'),
-              ],
-            ),
-          ),
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 16),
-            child: Row(
-              children: [
-                const Text('Brush'),
-                Expanded(
-                  child: Slider(
-                    value: _brushSize,
-                    min: 1,
-                    max: 20,
-                    divisions: 19,
-                    label: _brushSize.toStringAsFixed(0),
-                    onChanged: (value) {
-                      setState(() {
-                        _brushSize = value;
-                      });
-                    },
-                  ),
-                ),
-                Text(_brushSize.toStringAsFixed(0)),
-              ],
-            ),
-          ),
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 16),
-            child: Row(
-              children: [
-                const Text('Colour'),
-                const SizedBox(width: 12),
-
-                GestureDetector(
-                  onTap: () {
-                    setState(() {
-                      _brushColor = Colors.red;
-                    });
-                  },
-                  child: Container(
-                    width: 28,
-                    height: 28,
-                    decoration: BoxDecoration(
-                      color: Colors.red,
-                      shape: BoxShape.circle,
-                      border: Border.all(
-                        color: _brushColor == Colors.red
-                            ? Colors.deepPurpleAccent
-                            : Colors.white38,
-                        width: 2,
-                      ),
-                    ),
-                  ),
-                ),
-                GestureDetector(
-                  onTap: () {
-                    setState(() {
-                      _brushColor = Colors.white;
-                    });
-                  },
-                  child: Container(
-                    width: 28,
-                    height: 28,
-                    decoration: BoxDecoration(
-                      color: Colors.white,
-                      shape: BoxShape.circle,
-                      border: Border.all(
-                        color: _brushColor == Colors.white
-                            ? Colors.deepPurpleAccent
-                            : Colors.white38,
-                        width: 2,
-                      ),
-                    ),
-                  ),
-                ),
-                GestureDetector(
-                  onTap: () {
-                    setState(() {
-                      _brushColor = Colors.blue;
-                    });
-                  },
-                  child: Container(
-                    width: 28,
-                    height: 28,
-                    decoration: BoxDecoration(
-                      color: Colors.blue,
-                      shape: BoxShape.circle,
-                      border: Border.all(
-                        color: _brushColor == Colors.blue
-                            ? Colors.deepPurpleAccent
-                            : Colors.white38,
-                        width: 2,
-                      ),
-                    ),
-                  ),
-                ),
-                GestureDetector(
-                  onTap: () {
-                    setState(() {
-                      _brushColor = Colors.green;
-                    });
-                  },
-                  child: Container(
-                    width: 28,
-                    height: 28,
-                    decoration: BoxDecoration(
-                      color: Colors.green,
-                      shape: BoxShape.circle,
-                      border: Border.all(
-                        color: _brushColor == Colors.green
-                            ? Colors.deepPurpleAccent
-                            : Colors.white38,
-                        width: 2,
-                      ),
-                    ),
-                  ),
-                ),
-                GestureDetector(
-                  onTap: () {
-                    setState(() {
-                      _brushColor = Colors.yellow;
-                    });
-                  },
-                  child: Container(
-                    width: 28,
-                    height: 28,
-                    decoration: BoxDecoration(
-                      color: Colors.yellow,
-                      shape: BoxShape.circle,
-                      border: Border.all(
-                        color: _brushColor == Colors.yellow
-                            ? Colors.deepPurpleAccent
-                            : Colors.white38,
-                        width: 2,
-                      ),
-                    ),
-                  ),
-                ),
-                GestureDetector(
-                  onTap: () {
-                    setState(() {
-                      _brushColor = Colors.purple;
-                    });
-                  },
-                  child: Container(
-                    width: 28,
-                    height: 28,
-                    decoration: BoxDecoration(
-                      color: Colors.purple,
-                      shape: BoxShape.circle,
-                      border: Border.all(
-                        color: _brushColor == Colors.purple
-                            ? Colors.deepPurpleAccent
-                            : Colors.white38,
-                        width: 2,
-                      ),
-                    ),
-                  ),
-                ),
-                GestureDetector(
-                  onTap: () {
-                    setState(() {
-                      _brushColor = Colors.black;
-                    });
-                  },
-                  child: Container(
-                    width: 28,
-                    height: 28,
-                    decoration: BoxDecoration(
-                      color: Colors.black,
-                      shape: BoxShape.circle,
-                      border: Border.all(
-                        color: _brushColor == Colors.black
-                            ? Colors.deepPurpleAccent
-                            : Colors.white38,
-                        width: 2,
-                      ),
-                    ),
-                  ),
-                ),
-              ],
-            ),
-          ),
-
-          SizedBox(
-            height: 72,
-            child: ReorderableListView.builder(
-              scrollDirection: Axis.horizontal,
-              padding: const EdgeInsets.symmetric(horizontal: 16),
-              itemCount: _frames.length,
-              onReorderItem: _reorderFrame,
-              itemBuilder: (context, index) {
-                final isSelected = index == _selectedFrameIndex;
-                return Padding(
-                  key: Key('frame-$index'),
-                  padding: const EdgeInsets.only(right: 8),
-                  child: InkWell(
-                    onTap: () => _selectFrame(index),
-                    borderRadius: BorderRadius.circular(16),
-                    child: Stack(
-                      children: [
-                        Container(
-                          width: 72,
-                          clipBehavior: Clip.antiAlias,
-                          decoration: BoxDecoration(
-                            color: isSelected
-                                ? Theme.of(context).colorScheme.primary
-                                : const Color(0xFF2A2439),
-                            borderRadius: BorderRadius.circular(16),
-                            border: Border.all(
-                              color: isSelected
-                                  ? Colors.cyanAccent
-                                  : Colors.white24,
-                            ),
-                          ),
-                          alignment: Alignment.center,
-                          child: CustomPaint(
-                            painter: FrameThumbnailPainter(
-                              strokes: _frames[index],
-                            ),
-                            child: const SizedBox.expand(),
-                          ),
-                        ),
-                        Positioned(
-                          right: 4,
-                          bottom: 4,
-                          child: Container(
-                            padding: const EdgeInsets.symmetric(
-                              horizontal: 6,
-                              vertical: 2,
-                            ),
-                            decoration: BoxDecoration(
-                              color: Colors.black54,
-                              borderRadius: BorderRadius.circular(8),
-                            ),
-                            child: Text(
-                              '${_frameDurations[index]}x',
-                              style: const TextStyle(
-                                fontSize: 11,
-                                color: Colors.white,
-                              ),
-                            ),
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                );
-              },
-            ),
-          ),
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 16),
-            child: Row(
-              children: [
                 IconButton(
                   tooltip: 'Add Frame',
                   onPressed: _isPlaying ? null : _addFrame,
@@ -858,10 +560,86 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
               ],
             ),
           ),
-          const SizedBox(height: 8),
           Expanded(
             child: Stack(
               children: [
+                Positioned(
+                  bottom: 16,
+                  left: 16,
+                  right: 16,
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      SizedBox(
+                        height: 72,
+                        child: ReorderableListView.builder(
+                          scrollDirection: Axis.horizontal,
+                          padding: const EdgeInsets.symmetric(horizontal: 16),
+                          itemCount: _frames.length,
+                          onReorder: _reorderFrame,
+                          itemBuilder: (context, index) {
+                            final isSelected = index == _selectedFrameIndex;
+                            return Padding(
+                              key: Key('frame-$index'),
+                              padding: const EdgeInsets.only(right: 8),
+                              child: InkWell(
+                                onTap: () => _selectFrame(index),
+                                child: Container(
+                                  width: 72,
+                                  clipBehavior: Clip.antiAlias,
+                                  decoration: BoxDecoration(
+                                    color: isSelected
+                                        ? Theme.of(
+                                            context,
+                                          ).colorScheme.primaryContainer
+                                        : Theme.of(
+                                            context,
+                                          ).colorScheme.surfaceContainerHighest,
+                                    borderRadius: BorderRadius.circular(8),
+                                  ),
+                                  child: Stack(
+                                    children: [
+                                      CustomPaint(
+                                        painter: FrameThumbnailPainter(
+                                          strokes: _frames[index],
+                                        ),
+                                        child: const SizedBox.expand(),
+                                      ),
+                                      Positioned(
+                                        right: 4,
+                                        bottom: 4,
+                                        child: Container(
+                                          padding: const EdgeInsets.symmetric(
+                                            horizontal: 6,
+                                            vertical: 2,
+                                          ),
+                                          decoration: BoxDecoration(
+                                            color: Colors.black54,
+                                            borderRadius: BorderRadius.circular(
+                                              8,
+                                            ),
+                                          ),
+                                          child: Text(
+                                            '${_frameDurations[index]}x',
+                                            style: const TextStyle(
+                                              fontSize: 11,
+                                              color: Colors.white,
+                                            ),
+                                          ),
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                              ),
+                            );
+                          },
+                        ),
+                      ),
+                      // frame controls will go here
+                    ],
+                  ),
+                ),
                 Padding(
                   padding: const EdgeInsets.all(16),
                   child: InteractiveViewer(
@@ -908,6 +686,231 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                     ),
                   ),
                 ),
+                Positioned(
+                  top: 110,
+                  left: 16,
+                  child: Material(
+                    elevation: 4,
+                    borderRadius: BorderRadius.circular(12),
+                    child: Container(
+                      width: 220,
+                      padding: const EdgeInsets.all(12),
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Row(
+                            children: [
+                              const SizedBox(width: 60, child: Text('FPS')),
+                              Expanded(
+                                child: Slider(
+                                  value: _fps,
+                                  min: 1,
+                                  max: 24,
+                                  divisions: 23,
+                                  label: _fps.toStringAsFixed(0),
+                                  onChanged: (value) {
+                                    setState(() => _fps = value);
+
+                                    if (_isPlaying) {
+                                      _startPlaybackTimer();
+                                    }
+                                  },
+                                ),
+                              ),
+                              SizedBox(
+                                width: 28,
+                                child: Text(_fps.toStringAsFixed(0)),
+                              ),
+                            ],
+                          ),
+                          Row(
+                            children: [
+                              const SizedBox(
+                                width: 60,
+                                child: Text('Duration'),
+                              ),
+                              Expanded(
+                                child: Slider(
+                                  value: _frameDurations[_selectedFrameIndex]
+                                      .toDouble(),
+                                  min: 1,
+                                  max: 8,
+                                  divisions: 7,
+                                  label:
+                                      '${_frameDurations[_selectedFrameIndex]}',
+                                  onChanged: (value) {
+                                    setState(() {
+                                      _frameDurations[_selectedFrameIndex] =
+                                          value.round();
+                                    });
+                                    _scheduleAutosave();
+                                  },
+                                ),
+                              ),
+                              SizedBox(
+                                width: 28,
+                                child: Text(
+                                  '${_frameDurations[_selectedFrameIndex]}',
+                                ),
+                              ),
+                            ],
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
+                Positioned(
+                  top: 30,
+                  left: 16,
+                  right: 16,
+                  child: SizedBox(
+                    height: 72,
+                    child: ReorderableListView.builder(
+                      scrollDirection: Axis.horizontal,
+                      padding: const EdgeInsets.symmetric(horizontal: 16),
+                      itemCount: _frames.length,
+                      onReorder: _reorderFrame,
+                      itemBuilder: (context, index) {
+                        final isSelected = index == _selectedFrameIndex;
+
+                        return Padding(
+                          key: Key('frame-$index'),
+                          padding: const EdgeInsets.only(right: 8),
+                          child: InkWell(
+                            onTap: () => _selectFrame(index),
+                            child: Container(
+                              width: 72,
+                              clipBehavior: Clip.antiAlias,
+                              decoration: BoxDecoration(
+                                color: isSelected
+                                    ? Theme.of(
+                                        context,
+                                      ).colorScheme.primaryContainer
+                                    : Theme.of(
+                                        context,
+                                      ).colorScheme.surfaceContainerHighest,
+                                borderRadius: BorderRadius.circular(8),
+                              ),
+                              child: Stack(
+                                children: [
+                                  CustomPaint(
+                                    painter: FrameThumbnailPainter(
+                                      strokes: _frames[index],
+                                    ),
+                                    child: const SizedBox.expand(),
+                                  ),
+                                  Positioned(
+                                    right: 4,
+                                    bottom: 4,
+                                    child: Container(
+                                      padding: const EdgeInsets.symmetric(
+                                        horizontal: 6,
+                                        vertical: 2,
+                                      ),
+                                      decoration: BoxDecoration(
+                                        color: Colors.black54,
+                                        borderRadius: BorderRadius.circular(8),
+                                      ),
+                                      child: Text(
+                                        '${_frameDurations[index]}x',
+                                        style: const TextStyle(
+                                          fontSize: 11,
+                                          color: Colors.white,
+                                        ),
+                                      ),
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ),
+                        );
+                      },
+                    ),
+                  ),
+                ),
+
+                Positioned(
+                  top: 240,
+                  left: 16,
+                  child: Material(
+                    elevation: 4,
+                    borderRadius: BorderRadius.circular(12),
+                    child: Container(
+                      width: 280,
+                      padding: const EdgeInsets.all(12),
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Row(
+                            children: [
+                              const SizedBox(width: 50, child: Text('Brush')),
+                              Expanded(
+                                child: Slider(
+                                  value: _brushSize,
+                                  min: 1,
+                                  max: 20,
+                                  divisions: 19,
+                                  label: _brushSize.toStringAsFixed(0),
+                                  onChanged: (value) {
+                                    setState(() {
+                                      _brushSize = value;
+                                    });
+                                  },
+                                ),
+                              ),
+                              SizedBox(
+                                width: 28,
+                                child: Text(_brushSize.toStringAsFixed(0)),
+                              ),
+                            ],
+                          ),
+                          const SizedBox(height: 4),
+                          Row(
+                            children: [
+                              const SizedBox(width: 50, child: Text('Colour')),
+                              for (final color in const [
+                                Colors.red,
+                                Colors.white,
+                                Colors.blue,
+                                Colors.green,
+                                Colors.yellow,
+                                Colors.purple,
+                                Colors.black,
+                              ])
+                                Padding(
+                                  padding: const EdgeInsets.only(right: 5),
+                                  child: GestureDetector(
+                                    onTap: () {
+                                      setState(() {
+                                        _brushColor = color;
+                                      });
+                                    },
+                                    child: Container(
+                                      width: 24,
+                                      height: 24,
+                                      decoration: BoxDecoration(
+                                        color: color,
+                                        shape: BoxShape.circle,
+                                        border: Border.all(
+                                          color: _brushColor == color
+                                              ? Colors.deepPurpleAccent
+                                              : Colors.white38,
+                                          width: 2,
+                                        ),
+                                      ),
+                                    ),
+                                  ),
+                                ),
+                            ],
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
+
                 Positioned(
                   top: 16,
                   right: 16,
