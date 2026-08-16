@@ -848,30 +848,46 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
           ),
           const SizedBox(height: 8),
           Expanded(
-            child: Padding(
-              padding: const EdgeInsets.all(16),
-              child: Listener(
-                onPointerDown: _isPlaying ? null : _handlePointerDown,
-                onPointerMove: _isPlaying ? null : _handlePointerMove,
-                onPointerUp: _isPlaying ? null : _handlePointerUp,
-                onPointerCancel: _isPlaying ? null : _handlePointerCancel,
-                child: ClipRRect(
-                  borderRadius: BorderRadius.circular(24),
-                  child: CustomPaint(
-                    painter: AnimationCanvasPainter(
-                      strokes: _frames[_selectedFrameIndex],
-                      currentStroke: _draftStroke.isEmpty ? null : _draftStroke,
-                      onionSkinStrokes: _showOnionSkin
-                          ? previousFrameStrokes
-                          : const <VectorStroke>[],
-                      strokeColor: _brushColor,
-                      strokeWidth: _brushSize,
-                      onionSkinColor: Colors.redAccent.withValues(alpha: 0.45),
+            child: Stack(
+              children: [
+                Padding(
+                  padding: const EdgeInsets.all(16),
+                  child: Listener(
+                    onPointerDown: _isPlaying ? null : _handlePointerDown,
+                    onPointerMove: _isPlaying ? null : _handlePointerMove,
+                    onPointerUp: _isPlaying ? null : _handlePointerUp,
+                    onPointerCancel: _isPlaying ? null : _handlePointerCancel,
+                    child: ClipRRect(
+                      borderRadius: BorderRadius.circular(24),
+                      child: CustomPaint(
+                        painter: AnimationCanvasPainter(
+                          strokes: _frames[_selectedFrameIndex],
+                          currentStroke: _draftStroke.isEmpty
+                              ? null
+                              : _draftStroke,
+                          onionSkinStrokes: _showOnionSkin
+                              ? previousFrameStrokes
+                              : const <VectorStroke>[],
+                          strokeColor: _brushColor,
+                          strokeWidth: _brushSize,
+                          onionSkinColor: Colors.redAccent.withValues(
+                            alpha: 0.45,
+                          ),
+                        ),
+                        child: Container(color: Colors.transparent),
+                      ),
                     ),
-                    child: Container(color: Colors.transparent),
                   ),
                 ),
-              ),
+                Positioned(
+                  top: 16,
+                  right: 16,
+                  child: FloatingActionButton.small(
+                    onPressed: () {},
+                    child: const Icon(Icons.zoom_in),
+                  ),
+                ),
+              ],
             ),
           ),
         ],
