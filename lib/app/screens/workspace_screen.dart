@@ -22,6 +22,7 @@ class WorkspaceScreen extends StatefulWidget {
 
 class _WorkspaceScreenState extends State<WorkspaceScreen> {
   final List<List<VectorStroke>> _frames = [<VectorStroke>[]];
+  final List<int> _frameDurations = [1];
   int _selectedFrameIndex = 0;
   List<VectorPoint> _draftStroke = const <VectorPoint>[];
   Timer? _playbackTimer;
@@ -70,6 +71,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
       name: _projectName,
       fps: _fps,
       frames: _frames,
+      frameDurations: _frameDurations,
     );
 
     final jsonString = jsonEncode(project.toJson());
@@ -142,6 +144,10 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
               .map((frame) => frame.map((stroke) => stroke.copy()).toList())
               .toList(),
         );
+
+      _frameDurations
+        ..clear()
+        ..addAll(project.frameDurations);
       _undoStacks
         ..clear()
         ..addAll(
@@ -163,6 +169,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
   void _addFrame() {
     setState(() {
       _frames.add(<VectorStroke>[]);
+      _frameDurations.add(1);
       _undoStacks.add([]);
       _redoStacks.add([]);
 
@@ -179,6 +186,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
           .toList();
 
       _frames.add(copiedFrame);
+      _frameDurations.add(_frameDurations[_selectedFrameIndex]);
       _undoStacks.add([]);
       _redoStacks.add([]);
 
@@ -193,6 +201,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
 
     setState(() {
       _frames.removeAt(_selectedFrameIndex);
+      _frameDurations.removeAt(_selectedFrameIndex);
       _undoStacks.removeAt(_selectedFrameIndex);
       _redoStacks.removeAt(_selectedFrameIndex);
 
@@ -218,10 +227,12 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
       final frame = _frames.removeAt(oldIndex);
       final undoStack = _undoStacks.removeAt(oldIndex);
       final redoStack = _redoStacks.removeAt(oldIndex);
+      final frameDuration = _frameDurations.removeAt(oldIndex);
 
       _frames.insert(newIndex, frame);
       _undoStacks.insert(newIndex, undoStack);
       _redoStacks.insert(newIndex, redoStack);
+      _frameDurations.insert(newIndex, frameDuration);
 
       if (_selectedFrameIndex == oldIndex) {
         _selectedFrameIndex = newIndex;
@@ -267,20 +278,23 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
   void _startPlaybackTimer() {
     _playbackTimer?.cancel();
 
-    _playbackTimer = Timer.periodic(
-      Duration(milliseconds: (1000 / _fps).round().clamp(40, 1000)),
-      (_) {
-        if (!mounted) return;
+    final baseFrameMilliseconds = (1000 / _fps).round().clamp(40, 1000);
+    final frameMilliseconds =
+        (baseFrameMilliseconds * _frameDurations[_selectedFrameIndex]).round();
 
-        setState(() {
-          if (_selectedFrameIndex < _frames.length - 1) {
-            _selectedFrameIndex += 1;
-          } else {
-            _selectedFrameIndex = 0;
-          }
-        });
-      },
-    );
+    _playbackTimer = Timer(Duration(milliseconds: frameMilliseconds), () {
+      if (!mounted || !_isPlaying) return;
+
+      setState(() {
+        if (_selectedFrameIndex < _frames.length - 1) {
+          _selectedFrameIndex += 1;
+        } else {
+          _selectedFrameIndex = 0;
+        }
+      });
+
+      _startPlaybackTimer();
+    });
   }
 
   void _togglePlayback() {
@@ -556,6 +570,31 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                   ),
                 ),
                 Text(_fps.toStringAsFixed(0)),
+              ],
+            ),
+          ),
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16),
+            child: Row(
+              children: [
+                const Text('Duration'),
+                Expanded(
+                  child: Slider(
+                    value: _frameDurations[_selectedFrameIndex].toDouble(),
+                    min: 1,
+                    max: 8,
+                    divisions: 7,
+                    label:
+                        '${_frameDurations[_selectedFrameIndex]} beat${_frameDurations[_selectedFrameIndex] == 1 ? '' : 's'}',
+                    onChanged: (value) {
+                      setState(() {
+                        _frameDurations[_selectedFrameIndex] = value.round();
+                      });
+                      _scheduleAutosave();
+                    },
+                  ),
+                ),
+                Text('${_frameDurations[_selectedFrameIndex]}'),
               ],
             ),
           ),

@@ -124,6 +124,7 @@ class _ProjectLibraryScreenState extends State<ProjectLibraryScreen> {
                         name: newName,
                         fps: project.fps,
                         frames: project.frames,
+                        frameDurations: project.frameDurations,
                       );
 
                       await prefs.setString(
