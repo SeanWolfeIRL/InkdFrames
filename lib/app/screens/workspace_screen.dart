@@ -142,6 +142,17 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
               .map((frame) => frame.map((stroke) => stroke.copy()).toList())
               .toList(),
         );
+      _undoStacks
+        ..clear()
+        ..addAll(
+          List.generate(project.frames.length, (_) => <List<VectorStroke>>[]),
+        );
+
+      _redoStacks
+        ..clear()
+        ..addAll(
+          List.generate(project.frames.length, (_) => <List<VectorStroke>>[]),
+        );
 
       _fps = project.fps;
       _selectedFrameIndex = 0;
@@ -198,6 +209,32 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     setState(() {
       _showOnionSkin = !_showOnionSkin;
     });
+  }
+
+  void _reorderFrame(int oldIndex, int newIndex) {
+    if (oldIndex == newIndex) return;
+
+    setState(() {
+      final frame = _frames.removeAt(oldIndex);
+      final undoStack = _undoStacks.removeAt(oldIndex);
+      final redoStack = _redoStacks.removeAt(oldIndex);
+
+      _frames.insert(newIndex, frame);
+      _undoStacks.insert(newIndex, undoStack);
+      _redoStacks.insert(newIndex, redoStack);
+
+      if (_selectedFrameIndex == oldIndex) {
+        _selectedFrameIndex = newIndex;
+      } else if (oldIndex < _selectedFrameIndex &&
+          _selectedFrameIndex <= newIndex) {
+        _selectedFrameIndex -= 1;
+      } else if (newIndex <= _selectedFrameIndex &&
+          _selectedFrameIndex < oldIndex) {
+        _selectedFrameIndex += 1;
+      }
+    });
+
+    _scheduleAutosave();
   }
 
   void _selectFrame(int index) {
@@ -705,16 +742,17 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
 
           SizedBox(
             height: 72,
-            child: ListView.builder(
+            child: ReorderableListView.builder(
               scrollDirection: Axis.horizontal,
               padding: const EdgeInsets.symmetric(horizontal: 16),
               itemCount: _frames.length,
+              onReorderItem: _reorderFrame,
               itemBuilder: (context, index) {
                 final isSelected = index == _selectedFrameIndex;
                 return Padding(
+                  key: Key('frame-$index'),
                   padding: const EdgeInsets.only(right: 8),
                   child: InkWell(
-                    key: Key('frame-$index'),
                     onTap: () => _selectFrame(index),
                     borderRadius: BorderRadius.circular(16),
                     child: Container(
