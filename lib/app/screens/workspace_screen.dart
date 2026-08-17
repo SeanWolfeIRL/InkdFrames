@@ -563,83 +563,6 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
           Expanded(
             child: Stack(
               children: [
-                Positioned(
-                  bottom: 16,
-                  left: 16,
-                  right: 16,
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      SizedBox(
-                        height: 72,
-                        child: ReorderableListView.builder(
-                          scrollDirection: Axis.horizontal,
-                          padding: const EdgeInsets.symmetric(horizontal: 16),
-                          itemCount: _frames.length,
-                          onReorder: _reorderFrame,
-                          itemBuilder: (context, index) {
-                            final isSelected = index == _selectedFrameIndex;
-                            return Padding(
-                              key: Key('frame-$index'),
-                              padding: const EdgeInsets.only(right: 8),
-                              child: InkWell(
-                                onTap: () => _selectFrame(index),
-                                child: Container(
-                                  width: 72,
-                                  clipBehavior: Clip.antiAlias,
-                                  decoration: BoxDecoration(
-                                    color: isSelected
-                                        ? Theme.of(
-                                            context,
-                                          ).colorScheme.primaryContainer
-                                        : Theme.of(
-                                            context,
-                                          ).colorScheme.surfaceContainerHighest,
-                                    borderRadius: BorderRadius.circular(8),
-                                  ),
-                                  child: Stack(
-                                    children: [
-                                      CustomPaint(
-                                        painter: FrameThumbnailPainter(
-                                          strokes: _frames[index],
-                                        ),
-                                        child: const SizedBox.expand(),
-                                      ),
-                                      Positioned(
-                                        right: 4,
-                                        bottom: 4,
-                                        child: Container(
-                                          padding: const EdgeInsets.symmetric(
-                                            horizontal: 6,
-                                            vertical: 2,
-                                          ),
-                                          decoration: BoxDecoration(
-                                            color: Colors.black54,
-                                            borderRadius: BorderRadius.circular(
-                                              8,
-                                            ),
-                                          ),
-                                          child: Text(
-                                            '${_frameDurations[index]}x',
-                                            style: const TextStyle(
-                                              fontSize: 11,
-                                              color: Colors.white,
-                                            ),
-                                          ),
-                                        ),
-                                      ),
-                                    ],
-                                  ),
-                                ),
-                              ),
-                            );
-                          },
-                        ),
-                      ),
-                      // frame controls will go here
-                    ],
-                  ),
-                ),
                 Padding(
                   padding: const EdgeInsets.all(16),
                   child: InteractiveViewer(
@@ -760,77 +683,6 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                     ),
                   ),
                 ),
-                Positioned(
-                  top: 30,
-                  left: 16,
-                  right: 16,
-                  child: SizedBox(
-                    height: 72,
-                    child: ReorderableListView.builder(
-                      scrollDirection: Axis.horizontal,
-                      padding: const EdgeInsets.symmetric(horizontal: 16),
-                      itemCount: _frames.length,
-                      onReorder: _reorderFrame,
-                      itemBuilder: (context, index) {
-                        final isSelected = index == _selectedFrameIndex;
-
-                        return Padding(
-                          key: Key('frame-$index'),
-                          padding: const EdgeInsets.only(right: 8),
-                          child: InkWell(
-                            onTap: () => _selectFrame(index),
-                            child: Container(
-                              width: 72,
-                              clipBehavior: Clip.antiAlias,
-                              decoration: BoxDecoration(
-                                color: isSelected
-                                    ? Theme.of(
-                                        context,
-                                      ).colorScheme.primaryContainer
-                                    : Theme.of(
-                                        context,
-                                      ).colorScheme.surfaceContainerHighest,
-                                borderRadius: BorderRadius.circular(8),
-                              ),
-                              child: Stack(
-                                children: [
-                                  CustomPaint(
-                                    painter: FrameThumbnailPainter(
-                                      strokes: _frames[index],
-                                    ),
-                                    child: const SizedBox.expand(),
-                                  ),
-                                  Positioned(
-                                    right: 4,
-                                    bottom: 4,
-                                    child: Container(
-                                      padding: const EdgeInsets.symmetric(
-                                        horizontal: 6,
-                                        vertical: 2,
-                                      ),
-                                      decoration: BoxDecoration(
-                                        color: Colors.black54,
-                                        borderRadius: BorderRadius.circular(8),
-                                      ),
-                                      child: Text(
-                                        '${_frameDurations[index]}x',
-                                        style: const TextStyle(
-                                          fontSize: 11,
-                                          color: Colors.white,
-                                        ),
-                                      ),
-                                    ),
-                                  ),
-                                ],
-                              ),
-                            ),
-                          ),
-                        );
-                      },
-                    ),
-                  ),
-                ),
-
                 Positioned(
                   top: 240,
                   left: 16,
@@ -960,6 +812,83 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                               : Colors.white,
                         ),
                       ),
+                    ],
+                  ),
+                ),
+                Positioned(
+                  bottom: 16,
+                  left: 16,
+                  right: 16,
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      SizedBox(
+                        height: 72,
+                        child: ReorderableListView.builder(
+                          scrollDirection: Axis.horizontal,
+                          padding: const EdgeInsets.symmetric(horizontal: 16),
+                          itemCount: _frames.length,
+                          onReorder: _reorderFrame,
+                          itemBuilder: (context, index) {
+                            final isSelected = index == _selectedFrameIndex;
+                            return Padding(
+                              key: Key('frame-$index'),
+                              padding: const EdgeInsets.only(right: 8),
+                              child: InkWell(
+                                onTap: () => _selectFrame(index),
+                                child: Container(
+                                  width: 72,
+                                  clipBehavior: Clip.antiAlias,
+                                  decoration: BoxDecoration(
+                                    color: isSelected
+                                        ? Theme.of(
+                                            context,
+                                          ).colorScheme.primaryContainer
+                                        : Theme.of(
+                                            context,
+                                          ).colorScheme.surfaceContainerHighest,
+                                    borderRadius: BorderRadius.circular(8),
+                                  ),
+                                  child: Stack(
+                                    children: [
+                                      CustomPaint(
+                                        painter: FrameThumbnailPainter(
+                                          strokes: _frames[index],
+                                        ),
+                                        child: const SizedBox.expand(),
+                                      ),
+                                      Positioned(
+                                        right: 4,
+                                        bottom: 4,
+                                        child: Container(
+                                          padding: const EdgeInsets.symmetric(
+                                            horizontal: 6,
+                                            vertical: 2,
+                                          ),
+                                          decoration: BoxDecoration(
+                                            color: Colors.black54,
+                                            borderRadius: BorderRadius.circular(
+                                              8,
+                                            ),
+                                          ),
+                                          child: Text(
+                                            '${_frameDurations[index]}x',
+                                            style: const TextStyle(
+                                              fontSize: 11,
+                                              color: Colors.white,
+                                            ),
+                                          ),
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                              ),
+                            );
+                          },
+                        ),
+                      ),
+                      // frame controls will go here
                     ],
                   ),
                 ),
