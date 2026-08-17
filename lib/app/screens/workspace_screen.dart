@@ -504,23 +504,13 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
 
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Workspace'),
-        centerTitle: true,
+        title: Text(_projectName, overflow: TextOverflow.ellipsis),
+        centerTitle: false,
         actions: [
           IconButton(
             tooltip: 'Save Project',
             onPressed: _saveProject,
             icon: const Icon(Icons.save),
-          ),
-          IconButton(
-            tooltip: 'Load Project',
-            onPressed: _loadProject,
-            icon: const Icon(Icons.folder_open),
-          ),
-          IconButton(
-            tooltip: 'Show Projects',
-            onPressed: _showSavedProjectIds,
-            icon: const Icon(Icons.list),
           ),
         ],
       ),
@@ -532,38 +522,6 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
               spacing: 8,
               runSpacing: 8,
               children: [const SizedBox(width: 8)],
-            ),
-          ),
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 16),
-            child: Row(
-              children: [
-                IconButton(
-                  tooltip: 'Add Frame',
-                  onPressed: _isPlaying ? null : _addFrame,
-                  icon: const Icon(Icons.add),
-                ),
-                IconButton(
-                  tooltip: 'Duplicate Frame',
-                  onPressed: _isPlaying ? null : _duplicateFrame,
-                  icon: const Icon(Icons.copy),
-                ),
-                IconButton(
-                  tooltip: 'Delete Frame',
-                  onPressed: _isPlaying ? null : _deleteFrame,
-                  icon: const Icon(Icons.delete_outline),
-                ),
-                IconButton(
-                  tooltip: 'Clear Frame',
-                  onPressed: _isPlaying ? null : _clearCurrentFrame,
-                  icon: const Icon(Icons.clear),
-                ),
-                IconButton(
-                  tooltip: _isPlaying ? 'Pause' : 'Play',
-                  onPressed: _togglePlayback,
-                  icon: Icon(_isPlaying ? Icons.pause : Icons.play_arrow),
-                ),
-              ],
             ),
           ),
           Expanded(
@@ -633,6 +591,65 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                       ),
                     ),
                     Positioned(
+                      top: 16,
+                      left: 16,
+                      child: Material(
+                        elevation: 8,
+                        color: const Color(0xE61A1720),
+                        borderRadius: BorderRadius.circular(16),
+                        clipBehavior: Clip.antiAlias,
+                        child: Padding(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 6,
+                            vertical: 4,
+                          ),
+                          child: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              IconButton(
+                                tooltip: 'Add Frame',
+                                visualDensity: VisualDensity.compact,
+                                onPressed: _isPlaying ? null : _addFrame,
+                                icon: const Icon(Icons.add),
+                              ),
+                              IconButton(
+                                tooltip: 'Duplicate Frame',
+                                visualDensity: VisualDensity.compact,
+                                onPressed: _isPlaying ? null : _duplicateFrame,
+                                icon: const Icon(Icons.copy),
+                              ),
+                              IconButton(
+                                tooltip: 'Delete Frame',
+                                visualDensity: VisualDensity.compact,
+                                onPressed: _isPlaying ? null : _deleteFrame,
+                                icon: const Icon(Icons.delete_outline),
+                              ),
+                              IconButton(
+                                tooltip: 'Clear Frame',
+                                visualDensity: VisualDensity.compact,
+                                onPressed: _isPlaying
+                                    ? null
+                                    : _clearCurrentFrame,
+                                icon: const Icon(Icons.clear),
+                              ),
+                              IconButton(
+                                tooltip: _isPlaying ? 'Pause' : 'Play',
+                                visualDensity: VisualDensity.compact,
+                                onPressed: _togglePlayback,
+                                icon: Icon(
+                                  _isPlaying ? Icons.pause : Icons.play_arrow,
+                                  color: _isPlaying
+                                      ? Colors.deepPurpleAccent
+                                      : Colors.white70,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                    ),
+
+                    Positioned(
                       top: 110,
                       left: 16,
                       child: Material(
@@ -661,7 +678,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                               const SizedBox(height: 4),
                               Row(
                                 children: [
-                                  const SizedBox(width: 58, child: Text('FPS')),
+                                  const SizedBox(width: 70, child: Text('FPS')),
                                   Expanded(
                                     child: Slider(
                                       value: _fps,
@@ -686,7 +703,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                               Row(
                                 children: [
                                   const SizedBox(
-                                    width: 58,
+                                    width: 70,
                                     child: Text('Duration'),
                                   ),
                                   Expanded(
@@ -733,7 +750,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                               Row(
                                 children: [
                                   const SizedBox(
-                                    width: 58,
+                                    width: 70,
                                     child: Text('Brush'),
                                   ),
                                   Expanded(
@@ -761,7 +778,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                                 crossAxisAlignment: CrossAxisAlignment.start,
                                 children: [
                                   const SizedBox(
-                                    width: 58,
+                                    width: 70,
                                     child: Padding(
                                       padding: EdgeInsets.only(top: 4),
                                       child: Text('Colour'),
@@ -818,53 +835,61 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                     Positioned(
                       top: 16,
                       right: 16,
-                      child: Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          FloatingActionButton.small(
-                            heroTag: 'undo',
-                            onPressed: _undo,
-                            child: const Icon(Icons.undo),
+                      child: Material(
+                        elevation: 8,
+                        color: const Color(0xE61A1720),
+                        borderRadius: BorderRadius.circular(16),
+                        clipBehavior: Clip.antiAlias,
+                        child: Padding(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 6,
+                            vertical: 4,
                           ),
-                          const SizedBox(width: 8),
-                          FloatingActionButton.small(
-                            heroTag: 'redo',
-                            onPressed: _redo,
-                            child: const Icon(Icons.redo),
+                          child: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              IconButton(
+                                tooltip: 'Undo',
+                                onPressed: _undo,
+                                icon: const Icon(Icons.undo),
+                              ),
+                              IconButton(
+                                tooltip: 'Redo',
+                                onPressed: _redo,
+                                icon: const Icon(Icons.redo),
+                              ),
+                              IconButton(
+                                tooltip: 'Onion Skin',
+                                onPressed: _toggleOnionSkin,
+                                icon: Icon(
+                                  Icons.layers,
+                                  color: _showOnionSkin
+                                      ? Colors.deepPurpleAccent
+                                      : Colors.white70,
+                                ),
+                              ),
+                              IconButton(
+                                tooltip: 'Reset View',
+                                onPressed: _resetCanvasView,
+                                icon: const Icon(Icons.center_focus_strong),
+                              ),
+                              IconButton(
+                                tooltip: 'Eraser',
+                                onPressed: () {
+                                  setState(() {
+                                    _isEraserActive = !_isEraserActive;
+                                  });
+                                },
+                                icon: Icon(
+                                  Icons.auto_fix_off,
+                                  color: _isEraserActive
+                                      ? Colors.deepPurpleAccent
+                                      : Colors.white70,
+                                ),
+                              ),
+                            ],
                           ),
-                          const SizedBox(width: 8),
-                          FloatingActionButton.small(
-                            heroTag: 'onionSkin',
-                            onPressed: _toggleOnionSkin,
-                            child: Icon(
-                              Icons.layers,
-                              color: _showOnionSkin
-                                  ? Colors.deepPurpleAccent
-                                  : Colors.white,
-                            ),
-                          ),
-                          const SizedBox(width: 8),
-                          FloatingActionButton.small(
-                            heroTag: 'resetView',
-                            onPressed: _resetCanvasView,
-                            child: const Icon(Icons.center_focus_strong),
-                          ),
-                          const SizedBox(width: 8),
-                          FloatingActionButton.small(
-                            heroTag: 'eraser',
-                            onPressed: () {
-                              setState(() {
-                                _isEraserActive = !_isEraserActive;
-                              });
-                            },
-                            child: Icon(
-                              Icons.auto_fix_off,
-                              color: _isEraserActive
-                                  ? Colors.deepPurpleAccent
-                                  : Colors.white,
-                            ),
-                          ),
-                        ],
+                        ),
                       ),
                     ),
                     Positioned(
