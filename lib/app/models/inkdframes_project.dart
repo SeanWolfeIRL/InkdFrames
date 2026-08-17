@@ -7,6 +7,8 @@ class InkdFramesProject {
     required this.fps,
     required this.frames,
     required this.frameDurations,
+    this.canvasWidth = 1920,
+    this.canvasHeight = 1080,
   });
 
   factory InkdFramesProject.fromJson(Map<String, dynamic> json) {
@@ -31,6 +33,8 @@ class InkdFramesProject {
                 .map((duration) => (duration as num).toInt())
                 .toList()
           : List<int>.filled((json['frames'] as List).length, 1),
+      canvasWidth: (json['canvasWidth'] as num?)?.toDouble() ?? 1920,
+      canvasHeight: (json['canvasHeight'] as num?)?.toDouble() ?? 1080,
     );
   }
 
@@ -39,6 +43,8 @@ class InkdFramesProject {
   final double fps;
   final List<List<VectorStroke>> frames;
   final List<int> frameDurations;
+  final double canvasWidth;
+  final double canvasHeight;
 
   Map<String, dynamic> toJson() {
     return {
@@ -49,6 +55,8 @@ class InkdFramesProject {
           .map((frame) => frame.map((stroke) => stroke.toJson()).toList())
           .toList(),
       'frameDurations': frameDurations,
+      'canvasWidth': canvasWidth,
+      'canvasHeight': canvasHeight,
     };
   }
 }
