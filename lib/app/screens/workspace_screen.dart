@@ -636,17 +636,32 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                       top: 110,
                       left: 16,
                       child: Material(
-                        elevation: 4,
-                        borderRadius: BorderRadius.circular(12),
+                        elevation: 8,
+                        color: const Color(0xE61A1720),
+                        borderRadius: BorderRadius.circular(16),
+                        clipBehavior: Clip.antiAlias,
                         child: Container(
-                          width: 220,
-                          padding: const EdgeInsets.all(12),
+                          width: 300,
+                          padding: const EdgeInsets.fromLTRB(14, 10, 14, 14),
                           child: Column(
                             mainAxisSize: MainAxisSize.min,
                             children: [
+                              const Row(
+                                children: [
+                                  Icon(Icons.schedule, size: 18),
+                                  SizedBox(width: 8),
+                                  Text(
+                                    'Timing',
+                                    style: TextStyle(
+                                      fontWeight: FontWeight.w600,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                              const SizedBox(height: 4),
                               Row(
                                 children: [
-                                  const SizedBox(width: 60, child: Text('FPS')),
+                                  const SizedBox(width: 58, child: Text('FPS')),
                                   Expanded(
                                     child: Slider(
                                       value: _fps,
@@ -656,7 +671,6 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                                       label: _fps.toStringAsFixed(0),
                                       onChanged: (value) {
                                         setState(() => _fps = value);
-
                                         if (_isPlaying) {
                                           _startPlaybackTimer();
                                         }
@@ -672,7 +686,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                               Row(
                                 children: [
                                   const SizedBox(
-                                    width: 60,
+                                    width: 58,
                                     child: Text('Duration'),
                                   ),
                                   Expanded(
@@ -697,32 +711,29 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                                   SizedBox(
                                     width: 28,
                                     child: Text(
-                                      '${_frameDurations[_selectedFrameIndex]}',
+                                      '${_frameDurations[_selectedFrameIndex]}x',
                                     ),
                                   ),
                                 ],
                               ),
-                            ],
-                          ),
-                        ),
-                      ),
-                    ),
-                    Positioned(
-                      top: 240,
-                      left: 16,
-                      child: Material(
-                        elevation: 4,
-                        borderRadius: BorderRadius.circular(12),
-                        child: Container(
-                          width: 280,
-                          padding: const EdgeInsets.all(12),
-                          child: Column(
-                            mainAxisSize: MainAxisSize.min,
-                            children: [
+                              const Divider(height: 20),
+                              const Row(
+                                children: [
+                                  Icon(Icons.brush, size: 18),
+                                  SizedBox(width: 8),
+                                  Text(
+                                    'Drawing',
+                                    style: TextStyle(
+                                      fontWeight: FontWeight.w600,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                              const SizedBox(height: 4),
                               Row(
                                 children: [
                                   const SizedBox(
-                                    width: 50,
+                                    width: 58,
                                     child: Text('Brush'),
                                   ),
                                   Expanded(
@@ -747,44 +758,55 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                               ),
                               const SizedBox(height: 4),
                               Row(
+                                crossAxisAlignment: CrossAxisAlignment.start,
                                 children: [
                                   const SizedBox(
-                                    width: 50,
-                                    child: Text('Colour'),
+                                    width: 58,
+                                    child: Padding(
+                                      padding: EdgeInsets.only(top: 4),
+                                      child: Text('Colour'),
+                                    ),
                                   ),
-                                  for (final color in const [
-                                    Colors.red,
-                                    Colors.white,
-                                    Colors.blue,
-                                    Colors.green,
-                                    Colors.yellow,
-                                    Colors.purple,
-                                    Colors.black,
-                                  ])
-                                    Padding(
-                                      padding: const EdgeInsets.only(right: 5),
-                                      child: GestureDetector(
-                                        onTap: () {
-                                          setState(() {
-                                            _brushColor = color;
-                                          });
-                                        },
-                                        child: Container(
-                                          width: 24,
-                                          height: 24,
-                                          decoration: BoxDecoration(
-                                            color: color,
-                                            shape: BoxShape.circle,
-                                            border: Border.all(
-                                              color: _brushColor == color
-                                                  ? Colors.deepPurpleAccent
-                                                  : Colors.white38,
-                                              width: 2,
+                                  Expanded(
+                                    child: Wrap(
+                                      spacing: 7,
+                                      runSpacing: 7,
+                                      children: [
+                                        for (final color in const [
+                                          Colors.red,
+                                          Colors.white,
+                                          Colors.blue,
+                                          Colors.green,
+                                          Colors.yellow,
+                                          Colors.purple,
+                                          Colors.black,
+                                        ])
+                                          GestureDetector(
+                                            onTap: () {
+                                              setState(() {
+                                                _brushColor = color;
+                                              });
+                                            },
+                                            child: Container(
+                                              width: 24,
+                                              height: 24,
+                                              decoration: BoxDecoration(
+                                                color: color,
+                                                shape: BoxShape.circle,
+                                                border: Border.all(
+                                                  color: _brushColor == color
+                                                      ? Colors.deepPurpleAccent
+                                                      : Colors.white38,
+                                                  width: _brushColor == color
+                                                      ? 3
+                                                      : 2,
+                                                ),
+                                              ),
                                             ),
                                           ),
-                                        ),
-                                      ),
+                                      ],
                                     ),
+                                  ),
                                 ],
                               ),
                             ],
