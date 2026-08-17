@@ -31,6 +31,8 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
   bool _isPlaying = false;
   bool _showOnionSkin = true;
   bool _isEraserActive = false;
+  bool _timingExpanded = true;
+  bool _drawingExpanded = true;
   double _fps = 8;
   double _brushSize = 4.0;
   double _canvasWidth = 1920;
@@ -658,174 +660,230 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                         borderRadius: BorderRadius.circular(16),
                         clipBehavior: Clip.antiAlias,
                         child: Container(
-                          width: 300,
+                          width: (!_timingExpanded && !_drawingExpanded)
+                              ? 126
+                              : 300,
                           padding: const EdgeInsets.fromLTRB(14, 10, 14, 14),
                           child: Column(
                             mainAxisSize: MainAxisSize.min,
                             children: [
-                              const Row(
-                                children: [
-                                  Icon(Icons.schedule, size: 18),
-                                  SizedBox(width: 8),
-                                  Text(
-                                    'Timing',
-                                    style: TextStyle(
-                                      fontWeight: FontWeight.w600,
-                                    ),
+                              InkWell(
+                                borderRadius: BorderRadius.circular(8),
+                                onTap: () {
+                                  setState(() {
+                                    _timingExpanded = !_timingExpanded;
+                                  });
+                                },
+                                child: Padding(
+                                  padding: const EdgeInsets.symmetric(
+                                    vertical: 4,
                                   ),
-                                ],
+                                  child: Row(
+                                    children: [
+                                      const Icon(Icons.schedule, size: 18),
+                                      const SizedBox(width: 8),
+                                      const Expanded(
+                                        child: Text(
+                                          'Timing',
+                                          style: TextStyle(
+                                            fontWeight: FontWeight.w600,
+                                          ),
+                                        ),
+                                      ),
+                                      if (_timingExpanded || _drawingExpanded)
+                                        Icon(
+                                          _timingExpanded
+                                              ? Icons.keyboard_arrow_down
+                                              : Icons.keyboard_arrow_right,
+                                          size: 20,
+                                        ),
+                                    ],
+                                  ),
+                                ),
                               ),
-                              const SizedBox(height: 4),
-                              Row(
-                                children: [
-                                  const SizedBox(width: 70, child: Text('FPS')),
-                                  Expanded(
-                                    child: Slider(
-                                      value: _fps,
-                                      min: 1,
-                                      max: 24,
-                                      divisions: 23,
-                                      label: _fps.toStringAsFixed(0),
-                                      onChanged: (value) {
-                                        setState(() => _fps = value);
-                                        if (_isPlaying) {
-                                          _startPlaybackTimer();
-                                        }
-                                      },
+                              if (_timingExpanded) ...[
+                                const SizedBox(height: 4),
+                                Row(
+                                  children: [
+                                    const SizedBox(
+                                      width: 70,
+                                      child: Text('FPS'),
                                     ),
-                                  ),
-                                  SizedBox(
-                                    width: 28,
-                                    child: Text(_fps.toStringAsFixed(0)),
-                                  ),
-                                ],
-                              ),
-                              Row(
-                                children: [
-                                  const SizedBox(
-                                    width: 70,
-                                    child: Text('Duration'),
-                                  ),
-                                  Expanded(
-                                    child: Slider(
-                                      value:
-                                          _frameDurations[_selectedFrameIndex]
-                                              .toDouble(),
-                                      min: 1,
-                                      max: 8,
-                                      divisions: 7,
-                                      label:
-                                          '${_frameDurations[_selectedFrameIndex]}',
-                                      onChanged: (value) {
-                                        setState(() {
-                                          _frameDurations[_selectedFrameIndex] =
-                                              value.round();
-                                        });
-                                        _scheduleAutosave();
-                                      },
+                                    Expanded(
+                                      child: Slider(
+                                        value: _fps,
+                                        min: 1,
+                                        max: 24,
+                                        divisions: 23,
+                                        label: _fps.toStringAsFixed(0),
+                                        onChanged: (value) {
+                                          setState(() => _fps = value);
+                                          if (_isPlaying) {
+                                            _startPlaybackTimer();
+                                          }
+                                        },
+                                      ),
                                     ),
-                                  ),
-                                  SizedBox(
-                                    width: 28,
-                                    child: Text(
-                                      '${_frameDurations[_selectedFrameIndex]}x',
+                                    SizedBox(
+                                      width: 28,
+                                      child: Text(_fps.toStringAsFixed(0)),
                                     ),
-                                  ),
-                                ],
-                              ),
+                                  ],
+                                ),
+                                Row(
+                                  children: [
+                                    const SizedBox(
+                                      width: 70,
+                                      child: Text('Duration'),
+                                    ),
+                                    Expanded(
+                                      child: Slider(
+                                        value:
+                                            _frameDurations[_selectedFrameIndex]
+                                                .toDouble(),
+                                        min: 1,
+                                        max: 8,
+                                        divisions: 7,
+                                        label:
+                                            '${_frameDurations[_selectedFrameIndex]}',
+                                        onChanged: (value) {
+                                          setState(() {
+                                            _frameDurations[_selectedFrameIndex] =
+                                                value.round();
+                                          });
+                                          _scheduleAutosave();
+                                        },
+                                      ),
+                                    ),
+                                    SizedBox(
+                                      width: 28,
+                                      child: Text(
+                                        '${_frameDurations[_selectedFrameIndex]}x',
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ],
                               const Divider(height: 20),
-                              const Row(
-                                children: [
-                                  Icon(Icons.brush, size: 18),
-                                  SizedBox(width: 8),
-                                  Text(
-                                    'Drawing',
-                                    style: TextStyle(
-                                      fontWeight: FontWeight.w600,
-                                    ),
+                              InkWell(
+                                borderRadius: BorderRadius.circular(8),
+                                onTap: () {
+                                  setState(() {
+                                    _drawingExpanded = !_drawingExpanded;
+                                  });
+                                },
+                                child: Padding(
+                                  padding: const EdgeInsets.symmetric(
+                                    vertical: 4,
                                   ),
-                                ],
+                                  child: Row(
+                                    children: [
+                                      const Icon(Icons.brush, size: 18),
+                                      const SizedBox(width: 8),
+                                      const Expanded(
+                                        child: Text(
+                                          'Drawing',
+                                          style: TextStyle(
+                                            fontWeight: FontWeight.w600,
+                                          ),
+                                        ),
+                                      ),
+                                      if (_timingExpanded || _drawingExpanded)
+                                        Icon(
+                                          _drawingExpanded
+                                              ? Icons.keyboard_arrow_down
+                                              : Icons.keyboard_arrow_right,
+                                          size: 20,
+                                        ),
+                                    ],
+                                  ),
+                                ),
                               ),
-                              const SizedBox(height: 4),
-                              Row(
-                                children: [
-                                  const SizedBox(
-                                    width: 70,
-                                    child: Text('Brush'),
-                                  ),
-                                  Expanded(
-                                    child: Slider(
-                                      value: _brushSize,
-                                      min: 1,
-                                      max: 20,
-                                      divisions: 19,
-                                      label: _brushSize.toStringAsFixed(0),
-                                      onChanged: (value) {
-                                        setState(() {
-                                          _brushSize = value;
-                                        });
-                                      },
+                              if (_drawingExpanded) ...[
+                                const SizedBox(height: 4),
+                                Row(
+                                  children: [
+                                    const SizedBox(
+                                      width: 70,
+                                      child: Text('Brush'),
                                     ),
-                                  ),
-                                  SizedBox(
-                                    width: 28,
-                                    child: Text(_brushSize.toStringAsFixed(0)),
-                                  ),
-                                ],
-                              ),
-                              const SizedBox(height: 4),
-                              Row(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: [
-                                  const SizedBox(
-                                    width: 70,
-                                    child: Padding(
-                                      padding: EdgeInsets.only(top: 4),
-                                      child: Text('Colour'),
+                                    Expanded(
+                                      child: Slider(
+                                        value: _brushSize,
+                                        min: 1,
+                                        max: 20,
+                                        divisions: 19,
+                                        label: _brushSize.toStringAsFixed(0),
+                                        onChanged: (value) {
+                                          setState(() {
+                                            _brushSize = value;
+                                          });
+                                        },
+                                      ),
                                     ),
-                                  ),
-                                  Expanded(
-                                    child: Wrap(
-                                      spacing: 7,
-                                      runSpacing: 7,
-                                      children: [
-                                        for (final color in const [
-                                          Colors.red,
-                                          Colors.white,
-                                          Colors.blue,
-                                          Colors.green,
-                                          Colors.yellow,
-                                          Colors.purple,
-                                          Colors.black,
-                                        ])
-                                          GestureDetector(
-                                            onTap: () {
-                                              setState(() {
-                                                _brushColor = color;
-                                              });
-                                            },
-                                            child: Container(
-                                              width: 24,
-                                              height: 24,
-                                              decoration: BoxDecoration(
-                                                color: color,
-                                                shape: BoxShape.circle,
-                                                border: Border.all(
-                                                  color: _brushColor == color
-                                                      ? Colors.deepPurpleAccent
-                                                      : Colors.white38,
-                                                  width: _brushColor == color
-                                                      ? 3
-                                                      : 2,
+                                    SizedBox(
+                                      width: 28,
+                                      child: Text(
+                                        _brushSize.toStringAsFixed(0),
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                                const SizedBox(height: 4),
+                                Row(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    const SizedBox(
+                                      width: 70,
+                                      child: Padding(
+                                        padding: EdgeInsets.only(top: 4),
+                                        child: Text('Colour'),
+                                      ),
+                                    ),
+                                    Expanded(
+                                      child: Wrap(
+                                        spacing: 5,
+                                        runSpacing: 7,
+                                        children: [
+                                          for (final color in const [
+                                            Colors.red,
+                                            Colors.white,
+                                            Colors.blue,
+                                            Colors.green,
+                                            Colors.yellow,
+                                            Colors.purple,
+                                            Colors.black,
+                                          ])
+                                            GestureDetector(
+                                              onTap: () {
+                                                setState(() {
+                                                  _brushColor = color;
+                                                });
+                                              },
+                                              child: Container(
+                                                width: 24,
+                                                height: 24,
+                                                decoration: BoxDecoration(
+                                                  color: color,
+                                                  shape: BoxShape.circle,
+                                                  border: Border.all(
+                                                    color: _brushColor == color
+                                                        ? Colors
+                                                              .deepPurpleAccent
+                                                        : Colors.white38,
+                                                    width: _brushColor == color
+                                                        ? 3
+                                                        : 2,
+                                                  ),
                                                 ),
                                               ),
                                             ),
-                                          ),
-                                      ],
+                                        ],
+                                      ),
                                     ),
-                                  ),
-                                ],
-                              ),
+                                  ],
+                                ),
+                              ],
                             ],
                           ),
                         ),
@@ -940,15 +998,17 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                                             width: 72,
                                             clipBehavior: Clip.antiAlias,
                                             decoration: BoxDecoration(
-                                              color: isSelected
-                                                  ? Theme.of(context)
-                                                        .colorScheme
-                                                        .primaryContainer
-                                                  : Theme.of(context)
-                                                        .colorScheme
-                                                        .surfaceContainerHighest,
+                                              color: Theme.of(context)
+                                                  .colorScheme
+                                                  .surfaceContainerHighest,
                                               borderRadius:
-                                                  BorderRadius.circular(8),
+                                                  BorderRadius.circular(10),
+                                              border: Border.all(
+                                                color: isSelected
+                                                    ? Colors.deepPurpleAccent
+                                                    : Colors.white12,
+                                                width: isSelected ? 3 : 1,
+                                              ),
                                             ),
                                             child: Stack(
                                               children: [
@@ -970,11 +1030,20 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                                                           vertical: 2,
                                                         ),
                                                     decoration: BoxDecoration(
-                                                      color: Colors.black54,
+                                                      color: const Color(
+                                                        0xCC121016,
+                                                      ),
                                                       borderRadius:
                                                           BorderRadius.circular(
-                                                            8,
+                                                            10,
                                                           ),
+                                                      border: Border.all(
+                                                        color: isSelected
+                                                            ? Colors
+                                                                  .deepPurpleAccent
+                                                            : Colors.white12,
+                                                        width: 1,
+                                                      ),
                                                     ),
                                                     child: Text(
                                                       '${_frameDurations[index]}x',
