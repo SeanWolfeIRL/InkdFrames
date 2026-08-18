@@ -7,6 +7,7 @@ import '../models/vector_point.dart';
 import '../models/vector_stroke.dart';
 import '../painters/animation_canvas_painter.dart';
 import '../painters/frame_thumbnail_painter.dart';
+import '../services/animation_export_service.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 class WorkspaceScreen extends StatefulWidget {
@@ -34,6 +35,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
   bool _isEraserActive = false;
   bool _timingExpanded = true;
   bool _drawingExpanded = true;
+  bool _isExporting = false;
   double _fps = 8;
   double _brushSize = 4.0;
   double _canvasWidth = 1920;
@@ -489,6 +491,54 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     });
   }
 
+  Future<void> _exportAnimation() async {
+    if (_isExporting) {
+      return;
+    }
+
+    setState(() {
+      _isExporting = true;
+    });
+
+    try {
+      final outputPath = await const AnimationExportService().exportMp4(
+        projectName: _projectName,
+        frames: _frames,
+        frameDurations: _frameDurations,
+        fps: _fps,
+        canvasWidth: _canvasWidth,
+        canvasHeight: _canvasHeight,
+      );
+
+      if (!mounted) return;
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Animation exported to $outputPath'),
+          duration: const Duration(seconds: 6),
+        ),
+      );
+    } on UnsupportedError catch (error) {
+      if (!mounted) return;
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(error.message ?? error.toString())),
+      );
+    } catch (error) {
+      if (!mounted) return;
+
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('Export failed: $error')));
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isExporting = false;
+        });
+      }
+    }
+  }
+
   List<VectorStroke> _getPreviousFrameStrokes() {
     if (_selectedFrameIndex == 0) {
       return const <VectorStroke>[];
@@ -509,6 +559,17 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
             tooltip: 'Save Project',
             onPressed: _saveProject,
             icon: const Icon(Icons.save),
+          ),
+          IconButton(
+            tooltip: _isExporting ? 'Exporting Animation' : 'Export Animation',
+            onPressed: _isExporting ? null : _exportAnimation,
+            icon: _isExporting
+                ? const SizedBox(
+                    width: 20,
+                    height: 20,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  )
+                : const Icon(Icons.movie_creation_outlined),
           ),
         ],
       ),
