@@ -39,69 +39,76 @@ class AnimationCanvasPainter extends CustomPainter {
     }
 
     if (currentStroke != null && currentStroke!.isNotEmpty) {
-      _paintStroke(canvas,
-       VectorStroke(points: currentStroke!,
-       strokeWidth: strokeWidth,
-       ),
-      strokeColor,
-    );
+      _paintStroke(
+        canvas,
+        VectorStroke(points: currentStroke!, strokeWidth: strokeWidth),
+        strokeColor,
+      );
     }
   }
 
   void _paintStroke(Canvas canvas, VectorStroke stroke, Color color) {
     final points = stroke.points;
-    if (points.length < 2) {
-      final point = points.first;
-      final paint = Paint()
-        ..color = color
-        ..strokeWidth = stroke.strokeWidth
-        ..strokeCap = StrokeCap.round;
 
-      canvas.drawPoints(ui.PointMode.points, [
-        Offset(point.dx, point.dy),
-      ], paint);
+    if (points.isEmpty) {
       return;
     }
 
-    final paint = Paint()
+    final strokePaint = Paint()
       ..color = color
       ..strokeWidth = stroke.strokeWidth
       ..strokeCap = StrokeCap.round
-      ..style = PaintingStyle.stroke;
+      ..strokeJoin = StrokeJoin.round
+      ..style = PaintingStyle.stroke
+      ..isAntiAlias = true;
 
-    final path = Path();
-    path.moveTo(points.first.dx, points.first.dy);
-    for (var i = 1; i < points.length; i++) {
-      final current = points[i];
-      final previous = points[i - 1];
-      final midpoint = Offset(
-        (previous.dx + current.dx) / 2,
-        (previous.dy + current.dy) / 2,
-      );
+    if (points.length == 1) {
+      final point = points.first;
 
-      path.quadraticBezierTo(
-        previous.dx,
-        previous.dy,
-        midpoint.dx,
-        midpoint.dy,
-      );
-
-      paint.strokeWidth = stroke.strokeWidth;
+      canvas.drawPoints(ui.PointMode.points, [
+        Offset(point.dx, point.dy),
+      ], strokePaint);
+      return;
     }
-      
-    path.lineTo(
-      points.last.dx,
-      points.last.dy
-    );
-    
-    if (path.getBounds().size != Size.zero) {
-      final strokePaint = Paint()
-        ..color = color
-        ..strokeWidth = stroke.strokeWidth
-        ..strokeCap = StrokeCap.round
-        ..style = PaintingStyle.stroke;
+
+    if (points.length == 2) {
+      final path = Path()
+        ..moveTo(points[0].dx, points[0].dy)
+        ..lineTo(points[1].dx, points[1].dy);
+
       canvas.drawPath(path, strokePaint);
+      return;
     }
+
+    final path = Path()..moveTo(points.first.dx, points.first.dy);
+
+    for (var i = 0; i < points.length - 1; i++) {
+      final p0 = i == 0 ? points[i] : points[i - 1];
+      final p1 = points[i];
+      final p2 = points[i + 1];
+      final p3 = i + 2 < points.length ? points[i + 2] : p2;
+
+      final control1 = Offset(
+        p1.dx + (p2.dx - p0.dx) / 6,
+        p1.dy + (p2.dy - p0.dy) / 6,
+      );
+
+      final control2 = Offset(
+        p2.dx - (p3.dx - p1.dx) / 6,
+        p2.dy - (p3.dy - p1.dy) / 6,
+      );
+
+      path.cubicTo(
+        control1.dx,
+        control1.dy,
+        control2.dx,
+        control2.dy,
+        p2.dx,
+        p2.dy,
+      );
+    }
+
+    canvas.drawPath(path, strokePaint);
   }
 
   @override

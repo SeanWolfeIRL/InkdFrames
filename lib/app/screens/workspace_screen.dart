@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import '../models/inkdframes_project.dart';
 import '../models/vector_point.dart';
@@ -106,32 +107,6 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
 
   String _generateProjectId() {
     return DateTime.now().microsecondsSinceEpoch.toString();
-  }
-
-  Future<void> _showSavedProjectIds() async {
-    final prefs = await SharedPreferences.getInstance();
-    final projectIds = prefs.getStringList('project_ids') ?? [];
-    final projects = <InkdFramesProject>[];
-
-    for (final id in projectIds) {
-      final jsonString = prefs.getString('project_$id');
-
-      if (jsonString != null) {
-        final json = jsonDecode(jsonString) as Map<String, dynamic>;
-        projects.add(InkdFramesProject.fromJson(json));
-      }
-    }
-
-    if (!mounted) return;
-
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text(
-          'Loaded ${projects.length} projects: '
-          '${projects.map((project) => project.name).join(', ')}',
-        ),
-      ),
-    );
   }
 
   Future<void> _loadProject() async {
@@ -408,15 +383,35 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
       return;
     }
 
+    final lastPoint = _draftStroke.last;
+    final dx = canvasPosition.dx - lastPoint.dx;
+    final dy = canvasPosition.dy - lastPoint.dy;
+    final distanceSquared = (dx * dx) + (dy * dy);
+
+    const minimumDistanceSquared = 2.25;
+    const maximumPointSpacing = 6.0;
+
+    if (distanceSquared < minimumDistanceSquared) {
+      return;
+    }
+
+    final distance = math.sqrt(distanceSquared);
+    final steps = (distance / maximumPointSpacing).ceil();
+
     setState(() {
-      _draftStroke = <VectorPoint>[
-        ..._draftStroke,
-        VectorPoint(
-          dx: canvasPosition.dx,
-          dy: canvasPosition.dy,
-          pressure: event.pressure,
-        ),
-      ];
+      for (var step = 1; step <= steps; step++) {
+        final t = step / steps;
+
+        _draftStroke.add(
+          VectorPoint(
+            dx: lastPoint.dx + (dx * t),
+            dy: lastPoint.dy + (dy * t),
+            pressure:
+                lastPoint.pressure +
+                ((event.pressure - lastPoint.pressure) * t),
+          ),
+        );
+      }
     });
   }
 
