@@ -983,7 +983,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                                       horizontal: 16,
                                     ),
                                     itemCount: _frames.length,
-                                    onReorder: _reorderFrame,
+                                    onReorderItem: _reorderFrame,
                                     itemBuilder: (context, index) {
                                       final isSelected =
                                           index == _selectedFrameIndex;
