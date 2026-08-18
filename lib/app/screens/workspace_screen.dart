@@ -367,6 +367,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     final canvasPosition = renderBox.globalToLocal(event.position);
 
     if (_isEraserActive) {
+      _saveUndoState();
       setState(() {
         _eraseAt(canvasPosition);
       });
