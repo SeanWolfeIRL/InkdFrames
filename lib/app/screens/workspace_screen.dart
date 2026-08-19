@@ -1,6 +1,5 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import '../models/inkdframes_project.dart';
 import '../models/vector_point.dart';
@@ -391,29 +390,19 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     final distanceSquared = (dx * dx) + (dy * dy);
 
     const minimumDistanceSquared = 2.25;
-    const maximumPointSpacing = 6.0;
 
     if (distanceSquared < minimumDistanceSquared) {
       return;
     }
 
-    final distance = math.sqrt(distanceSquared);
-    final steps = (distance / maximumPointSpacing).ceil();
-
     setState(() {
-      for (var step = 1; step <= steps; step++) {
-        final t = step / steps;
-
-        _draftStroke.add(
-          VectorPoint(
-            dx: lastPoint.dx + (dx * t),
-            dy: lastPoint.dy + (dy * t),
-            pressure:
-                lastPoint.pressure +
-                ((event.pressure - lastPoint.pressure) * t),
-          ),
-        );
-      }
+      _draftStroke.add(
+        VectorPoint(
+          dx: canvasPosition.dx,
+          dy: canvasPosition.dy,
+          pressure: event.pressure,
+        ),
+      );
     });
   }
 
