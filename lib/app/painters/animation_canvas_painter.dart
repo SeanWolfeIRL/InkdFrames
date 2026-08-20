@@ -61,8 +61,36 @@ class AnimationCanvasPainter extends CustomPainter {
     }
   }
 
+  List<VectorPoint> _smoothPoints(List<VectorPoint> source) {
+    if (source.length < 3) {
+      return source;
+    }
+
+    final smoothed = <VectorPoint>[source.first];
+
+    for (var i = 1; i < source.length - 1; i++) {
+      final previous = source[i - 1];
+      final current = source[i];
+      final next = source[i + 1];
+
+      smoothed.add(
+        VectorPoint(
+          dx: (previous.dx * 0.25) + (current.dx * 0.50) + (next.dx * 0.25),
+          dy: (previous.dy * 0.25) + (current.dy * 0.50) + (next.dy * 0.25),
+          pressure:
+              (previous.pressure * 0.25) +
+              (current.pressure * 0.50) +
+              (next.pressure * 0.25),
+        ),
+      );
+    }
+
+    smoothed.add(source.last);
+    return smoothed;
+  }
+
   void _paintStroke(Canvas canvas, VectorStroke stroke, Color color) {
-    final points = stroke.points;
+    final points = _smoothPoints(stroke.points);
 
     if (points.isEmpty) {
       return;
