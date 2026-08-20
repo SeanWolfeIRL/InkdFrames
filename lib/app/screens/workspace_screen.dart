@@ -34,6 +34,9 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
   bool _isEraserActive = false;
   bool _timingExpanded = true;
   bool _drawingExpanded = true;
+  bool _timelineExpanded = true;
+  bool? _frameToolbarExpanded;
+  bool? _editToolbarExpanded;
   bool _isExporting = false;
   double _fps = 8;
   double _brushSize = 4.0;
@@ -100,10 +103,6 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     }
 
     if (!mounted) return;
-
-    ScaffoldMessenger.of(
-      context,
-    ).showSnackBar(const SnackBar(content: Text('Project saved!')));
   }
 
   String _generateProjectId() {
@@ -662,6 +661,14 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
           Expanded(
             child: LayoutBuilder(
               builder: (context, constraints) {
+                final isNarrowToolbarLayout = constraints.maxWidth < 700;
+
+                final frameToolbarExpanded =
+                    _frameToolbarExpanded ?? !isNarrowToolbarLayout;
+
+                final editToolbarExpanded =
+                    _editToolbarExpanded ?? !isNarrowToolbarLayout;
+
                 return Stack(
                   children: [
                     Padding(
@@ -747,42 +754,67 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                             mainAxisSize: MainAxisSize.min,
                             children: [
                               IconButton(
-                                tooltip: 'Add Frame',
+                                tooltip: frameToolbarExpanded
+                                    ? 'Hide Frame Tools'
+                                    : 'Show Frame Tools',
                                 visualDensity: VisualDensity.compact,
-                                onPressed: _isPlaying ? null : _addFrame,
-                                icon: const Icon(Icons.add),
-                              ),
-                              IconButton(
-                                tooltip: 'Duplicate Frame',
-                                visualDensity: VisualDensity.compact,
-                                onPressed: _isPlaying ? null : _duplicateFrame,
-                                icon: const Icon(Icons.copy),
-                              ),
-                              IconButton(
-                                tooltip: 'Delete Frame',
-                                visualDensity: VisualDensity.compact,
-                                onPressed: _isPlaying ? null : _deleteFrame,
-                                icon: const Icon(Icons.delete_outline),
-                              ),
-                              IconButton(
-                                tooltip: 'Clear Frame',
-                                visualDensity: VisualDensity.compact,
-                                onPressed: _isPlaying
-                                    ? null
-                                    : _clearCurrentFrame,
-                                icon: const Icon(Icons.clear),
-                              ),
-                              IconButton(
-                                tooltip: _isPlaying ? 'Pause' : 'Play',
-                                visualDensity: VisualDensity.compact,
-                                onPressed: _togglePlayback,
+                                onPressed: () {
+                                  setState(() {
+                                    final next = !frameToolbarExpanded;
+                                    _frameToolbarExpanded = next;
+
+                                    if (isNarrowToolbarLayout && next) {
+                                      _editToolbarExpanded = false;
+                                    }
+                                  });
+                                },
                                 icon: Icon(
-                                  _isPlaying ? Icons.pause : Icons.play_arrow,
-                                  color: _isPlaying
-                                      ? Colors.deepPurpleAccent
-                                      : Colors.white70,
+                                  frameToolbarExpanded
+                                      ? Icons.chevron_left
+                                      : Icons.video_collection_outlined,
                                 ),
                               ),
+                              if (frameToolbarExpanded) ...[
+                                IconButton(
+                                  tooltip: 'Add Frame',
+                                  visualDensity: VisualDensity.compact,
+                                  onPressed: _isPlaying ? null : _addFrame,
+                                  icon: const Icon(Icons.add),
+                                ),
+                                IconButton(
+                                  tooltip: 'Duplicate Frame',
+                                  visualDensity: VisualDensity.compact,
+                                  onPressed: _isPlaying
+                                      ? null
+                                      : _duplicateFrame,
+                                  icon: const Icon(Icons.copy),
+                                ),
+                                IconButton(
+                                  tooltip: 'Delete Frame',
+                                  visualDensity: VisualDensity.compact,
+                                  onPressed: _isPlaying ? null : _deleteFrame,
+                                  icon: const Icon(Icons.delete_outline),
+                                ),
+                                IconButton(
+                                  tooltip: 'Clear Frame',
+                                  visualDensity: VisualDensity.compact,
+                                  onPressed: _isPlaying
+                                      ? null
+                                      : _clearCurrentFrame,
+                                  icon: const Icon(Icons.clear),
+                                ),
+                                IconButton(
+                                  tooltip: _isPlaying ? 'Pause' : 'Play',
+                                  visualDensity: VisualDensity.compact,
+                                  onPressed: _togglePlayback,
+                                  icon: Icon(
+                                    _isPlaying ? Icons.pause : Icons.play_arrow,
+                                    color: _isPlaying
+                                        ? Colors.deepPurpleAccent
+                                        : Colors.white70,
+                                  ),
+                                ),
+                              ],
                             ],
                           ),
                         ),
@@ -1044,43 +1076,71 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                           child: Row(
                             mainAxisSize: MainAxisSize.min,
                             children: [
-                              IconButton(
-                                tooltip: 'Undo',
-                                onPressed: _undo,
-                                icon: const Icon(Icons.undo),
-                              ),
-                              IconButton(
-                                tooltip: 'Redo',
-                                onPressed: _redo,
-                                icon: const Icon(Icons.redo),
-                              ),
-                              IconButton(
-                                tooltip: 'Onion Skin',
-                                onPressed: _toggleOnionSkin,
-                                icon: Icon(
-                                  Icons.layers,
-                                  color: _showOnionSkin
-                                      ? Colors.deepPurpleAccent
-                                      : Colors.white70,
+                              if (editToolbarExpanded) ...[
+                                IconButton(
+                                  tooltip: 'Undo',
+                                  visualDensity: VisualDensity.compact,
+                                  onPressed: _undo,
+                                  icon: const Icon(Icons.undo),
                                 ),
-                              ),
+                                IconButton(
+                                  tooltip: 'Redo',
+                                  visualDensity: VisualDensity.compact,
+                                  onPressed: _redo,
+                                  icon: const Icon(Icons.redo),
+                                ),
+                                IconButton(
+                                  tooltip: 'Onion Skin',
+                                  visualDensity: VisualDensity.compact,
+                                  onPressed: _toggleOnionSkin,
+                                  icon: Icon(
+                                    Icons.layers,
+                                    color: _showOnionSkin
+                                        ? Colors.deepPurpleAccent
+                                        : Colors.white70,
+                                  ),
+                                ),
+                                IconButton(
+                                  tooltip: 'Reset View',
+                                  visualDensity: VisualDensity.compact,
+                                  onPressed: _resetCanvasView,
+                                  icon: const Icon(Icons.center_focus_strong),
+                                ),
+                                IconButton(
+                                  tooltip: 'Eraser',
+                                  visualDensity: VisualDensity.compact,
+                                  onPressed: () {
+                                    setState(() {
+                                      _isEraserActive = !_isEraserActive;
+                                    });
+                                  },
+                                  icon: Icon(
+                                    Icons.auto_fix_off,
+                                    color: _isEraserActive
+                                        ? Colors.deepPurpleAccent
+                                        : Colors.white70,
+                                  ),
+                                ),
+                              ],
                               IconButton(
-                                tooltip: 'Reset View',
-                                onPressed: _resetCanvasView,
-                                icon: const Icon(Icons.center_focus_strong),
-                              ),
-                              IconButton(
-                                tooltip: 'Eraser',
+                                tooltip: editToolbarExpanded
+                                    ? 'Hide Edit Tools'
+                                    : 'Show Edit Tools',
+                                visualDensity: VisualDensity.compact,
                                 onPressed: () {
                                   setState(() {
-                                    _isEraserActive = !_isEraserActive;
+                                    final next = !editToolbarExpanded;
+                                    _editToolbarExpanded = next;
+
+                                    if (isNarrowToolbarLayout && next) {
+                                      _frameToolbarExpanded = false;
+                                    }
                                   });
                                 },
                                 icon: Icon(
-                                  Icons.auto_fix_off,
-                                  color: _isEraserActive
-                                      ? Colors.deepPurpleAccent
-                                      : Colors.white70,
+                                  editToolbarExpanded
+                                      ? Icons.chevron_right
+                                      : Icons.tune,
                                 ),
                               ),
                             ],
@@ -1089,88 +1149,73 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                       ),
                     ),
                     Positioned(
-                      bottom: 16,
+                      bottom: 16 + MediaQuery.of(context).viewPadding.bottom,
                       left: 16,
-                      child: ConstrainedBox(
-                        constraints: BoxConstraints(
-                          minWidth: constraints.maxWidth < 392
-                              ? constraints.maxWidth - 32
-                              : 360,
-                          maxWidth: constraints.maxWidth < 392
-                              ? constraints.maxWidth - 32
-                              : 360,
-                        ),
-                        child: Material(
-                          elevation: 8,
-                          color: const Color(0xE61A1720),
-                          borderRadius: BorderRadius.circular(16),
-                          clipBehavior: Clip.antiAlias,
-                          child: Padding(
-                            padding: const EdgeInsets.symmetric(
-                              horizontal: 8,
-                              vertical: 8,
-                            ),
-                            child: Column(
-                              mainAxisSize: MainAxisSize.min,
-                              children: [
-                                SizedBox(
-                                  height: 72,
-                                  child: ReorderableListView.builder(
-                                    scrollDirection: Axis.horizontal,
-                                    padding: const EdgeInsets.symmetric(
-                                      horizontal: 16,
-                                    ),
-                                    itemCount: _frames.length,
-                                    onReorderItem: _reorderFrame,
-                                    itemBuilder: (context, index) {
-                                      final isSelected =
-                                          index == _selectedFrameIndex;
-                                      return Padding(
-                                        key: Key('frame-$index'),
-                                        padding: const EdgeInsets.only(
-                                          right: 8,
+                      child: _timelineExpanded
+                          ? Material(
+                              elevation: 8,
+                              color: const Color(0xE61A1720),
+                              borderRadius: BorderRadius.circular(16),
+                              clipBehavior: Clip.antiAlias,
+                              child: SizedBox(
+                                width: constraints.maxWidth >= 800
+                                    ? (constraints.maxWidth - 32).clamp(
+                                        360.0,
+                                        760.0,
+                                      )
+                                    : constraints.maxWidth - 32,
+                                child: Padding(
+                                  padding: const EdgeInsets.fromLTRB(
+                                    8,
+                                    8,
+                                    8,
+                                    8,
+                                  ),
+                                  child: Row(
+                                    children: [
+                                      IconButton(
+                                        tooltip: 'Hide Timeline',
+                                        visualDensity: VisualDensity.compact,
+                                        onPressed: () {
+                                          setState(() {
+                                            _timelineExpanded = false;
+                                          });
+                                        },
+                                        icon: const Icon(
+                                          Icons.keyboard_arrow_down,
                                         ),
-                                        child: InkWell(
-                                          onTap: () => _selectFrame(index),
-                                          child: Container(
-                                            width: 72,
-                                            clipBehavior: Clip.antiAlias,
-                                            decoration: BoxDecoration(
-                                              color: Theme.of(context)
-                                                  .colorScheme
-                                                  .surfaceContainerHighest,
-                                              borderRadius:
-                                                  BorderRadius.circular(10),
-                                              border: Border.all(
-                                                color: isSelected
-                                                    ? Colors.deepPurpleAccent
-                                                    : Colors.white12,
-                                                width: isSelected ? 3 : 1,
-                                              ),
+                                      ),
+                                      const SizedBox(width: 4),
+                                      Expanded(
+                                        child: SizedBox(
+                                          height: 64,
+                                          child: ReorderableListView.builder(
+                                            scrollDirection: Axis.horizontal,
+                                            padding: const EdgeInsets.symmetric(
+                                              horizontal: 4,
                                             ),
-                                            child: Stack(
-                                              children: [
-                                                CustomPaint(
-                                                  painter:
-                                                      FrameThumbnailPainter(
-                                                        strokes: _frames[index],
-                                                      ),
-                                                  child:
-                                                      const SizedBox.expand(),
+                                            itemCount: _frames.length,
+                                            onReorderItem: _reorderFrame,
+                                            itemBuilder: (context, index) {
+                                              final isSelected =
+                                                  index == _selectedFrameIndex;
+
+                                              return Padding(
+                                                key: Key('frame-$index'),
+                                                padding: const EdgeInsets.only(
+                                                  right: 6,
                                                 ),
-                                                Positioned(
-                                                  right: 4,
-                                                  bottom: 4,
+                                                child: InkWell(
+                                                  onTap: () =>
+                                                      _selectFrame(index),
                                                   child: Container(
-                                                    padding:
-                                                        const EdgeInsets.symmetric(
-                                                          horizontal: 6,
-                                                          vertical: 2,
-                                                        ),
+                                                    width: 64,
+                                                    clipBehavior:
+                                                        Clip.antiAlias,
                                                     decoration: BoxDecoration(
-                                                      color: const Color(
-                                                        0xCC121016,
-                                                      ),
+                                                      color: Theme.of(context)
+                                                          .colorScheme
+                                                          .surfaceContainerHighest,
                                                       borderRadius:
                                                           BorderRadius.circular(
                                                             10,
@@ -1180,32 +1225,91 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                                                             ? Colors
                                                                   .deepPurpleAccent
                                                             : Colors.white12,
-                                                        width: 1,
+                                                        width: isSelected
+                                                            ? 3
+                                                            : 1,
                                                       ),
                                                     ),
-                                                    child: Text(
-                                                      '${_frameDurations[index]}x',
-                                                      style: const TextStyle(
-                                                        fontSize: 11,
-                                                        color: Colors.white,
-                                                      ),
+                                                    child: Stack(
+                                                      children: [
+                                                        CustomPaint(
+                                                          painter:
+                                                              FrameThumbnailPainter(
+                                                                strokes:
+                                                                    _frames[index],
+                                                              ),
+                                                          child:
+                                                              const SizedBox.expand(),
+                                                        ),
+                                                        Positioned(
+                                                          right: 4,
+                                                          bottom: 4,
+                                                          child: Container(
+                                                            padding:
+                                                                const EdgeInsets.symmetric(
+                                                                  horizontal: 6,
+                                                                  vertical: 2,
+                                                                ),
+                                                            decoration: BoxDecoration(
+                                                              color:
+                                                                  const Color(
+                                                                    0xCC121016,
+                                                                  ),
+                                                              borderRadius:
+                                                                  BorderRadius.circular(
+                                                                    10,
+                                                                  ),
+                                                              border: Border.all(
+                                                                color:
+                                                                    isSelected
+                                                                    ? Colors
+                                                                          .deepPurpleAccent
+                                                                    : Colors
+                                                                          .white12,
+                                                                width: 1,
+                                                              ),
+                                                            ),
+                                                            child: Text(
+                                                              '${_frameDurations[index]}x',
+                                                              style:
+                                                                  const TextStyle(
+                                                                    fontSize:
+                                                                        11,
+                                                                    color: Colors
+                                                                        .white,
+                                                                  ),
+                                                            ),
+                                                          ),
+                                                        ),
+                                                      ],
                                                     ),
                                                   ),
                                                 ),
-                                              ],
-                                            ),
+                                              );
+                                            },
                                           ),
                                         ),
-                                      );
-                                    },
+                                      ),
+                                    ],
                                   ),
                                 ),
-                                // frame controls will go here
-                              ],
+                              ),
+                            )
+                          : Material(
+                              elevation: 8,
+                              color: const Color(0xE61A1720),
+                              borderRadius: BorderRadius.circular(16),
+                              clipBehavior: Clip.antiAlias,
+                              child: IconButton(
+                                tooltip: 'Show Timeline',
+                                onPressed: () {
+                                  setState(() {
+                                    _timelineExpanded = true;
+                                  });
+                                },
+                                icon: const Icon(Icons.view_timeline_outlined),
+                              ),
                             ),
-                          ),
-                        ),
-                      ),
                     ),
                   ],
                 );
