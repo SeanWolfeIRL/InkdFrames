@@ -9,17 +9,23 @@ class AnimationCanvasPainter extends CustomPainter {
   AnimationCanvasPainter({
     required this.strokes,
     required this.currentStroke,
-    required this.onionSkinStrokes,
+    required this.previousOnionSkinStrokes,
+    required this.nextOnionSkinStrokes,
     required this.strokeColor,
-    required this.onionSkinColor,
+    required this.previousOnionSkinColor,
+    required this.nextOnionSkinColor,
     required this.strokeWidth,
   });
 
   final List<VectorStroke> strokes;
   final List<VectorPoint>? currentStroke;
-  final List<VectorStroke> onionSkinStrokes;
+
+  final List<VectorStroke> previousOnionSkinStrokes;
+  final List<VectorStroke> nextOnionSkinStrokes;
+
   final Color strokeColor;
-  final Color onionSkinColor;
+  final Color previousOnionSkinColor;
+  final Color nextOnionSkinColor;
   final double strokeWidth;
 
   @override
@@ -30,20 +36,28 @@ class AnimationCanvasPainter extends CustomPainter {
 
     canvas.drawRect(Offset.zero & size, backgroundPaint);
 
-    for (final stroke in onionSkinStrokes) {
-      _paintStroke(canvas, stroke, onionSkinColor);
-    }
-
+    // Current saved frame.
     for (final stroke in strokes) {
       _paintStroke(canvas, stroke, stroke.color);
     }
 
+    // Current stroke being drawn.
     if (currentStroke != null && currentStroke!.isNotEmpty) {
       _paintStroke(
         canvas,
         VectorStroke(points: currentStroke!, strokeWidth: strokeWidth),
         strokeColor,
       );
+    }
+
+    // Onion skins are intentionally painted last so they remain
+    // visible while drawing the in-between frame.
+    for (final stroke in previousOnionSkinStrokes) {
+      _paintStroke(canvas, stroke, previousOnionSkinColor);
+    }
+
+    for (final stroke in nextOnionSkinStrokes) {
+      _paintStroke(canvas, stroke, nextOnionSkinColor);
     }
   }
 

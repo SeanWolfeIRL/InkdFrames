@@ -309,22 +309,99 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     _startPlaybackTimer();
   }
 
+  double _distanceSquaredToSegment(Offset point, Offset start, Offset end) {
+    final segmentDx = end.dx - start.dx;
+    final segmentDy = end.dy - start.dy;
+    final segmentLengthSquared =
+        (segmentDx * segmentDx) + (segmentDy * segmentDy);
+
+    if (segmentLengthSquared == 0) {
+      final dx = point.dx - start.dx;
+      final dy = point.dy - start.dy;
+      return (dx * dx) + (dy * dy);
+    }
+
+    final projection =
+        (((point.dx - start.dx) * segmentDx) +
+            ((point.dy - start.dy) * segmentDy)) /
+        segmentLengthSquared;
+
+    final t = projection.clamp(0.0, 1.0);
+
+    final closestX = start.dx + (segmentDx * t);
+    final closestY = start.dy + (segmentDy * t);
+
+    final dx = point.dx - closestX;
+    final dy = point.dy - closestY;
+
+    return (dx * dx) + (dy * dy);
+  }
+
   void _eraseAt(Offset position) {
-    final double currentScale = _transformationController.value
-        .getMaxScaleOnAxis();
+    final currentScale = _transformationController.value.getMaxScaleOnAxis();
+    final updatedStrokes = <VectorStroke>[];
 
-    final double eraserRadius = 8 / currentScale;
-    final double eraserRadiusSquared = eraserRadius * eraserRadius;
+    for (final stroke in _frames[_selectedFrameIndex]) {
+      if (stroke.points.isEmpty) {
+        continue;
+      }
 
-    _frames[_selectedFrameIndex].removeWhere((stroke) {
-      return stroke.points.any((point) {
-        final double dx = point.dx - position.dx;
-        final double dy = point.dy - position.dy;
-        final double distanceSquared = (dx * dx) + (dy * dy);
+      final eraserRadius = (10 + (stroke.strokeWidth / 2)) / currentScale;
+      final eraserRadiusSquared = eraserRadius * eraserRadius;
 
-        return distanceSquared <= eraserRadiusSquared;
-      });
-    });
+      var currentChunk = <VectorPoint>[];
+
+      void saveCurrentChunk() {
+        if (currentChunk.isEmpty) {
+          return;
+        }
+
+        updatedStrokes.add(
+          VectorStroke(
+            points: currentChunk,
+            strokeWidth: stroke.strokeWidth,
+            color: stroke.color,
+          ),
+        );
+
+        currentChunk = <VectorPoint>[];
+      }
+
+      if (stroke.points.length == 1) {
+        final point = stroke.points.first;
+        final dx = point.dx - position.dx;
+        final dy = point.dy - position.dy;
+
+        if ((dx * dx) + (dy * dy) > eraserRadiusSquared) {
+          updatedStrokes.add(stroke);
+        }
+
+        continue;
+      }
+
+      currentChunk.add(stroke.points.first);
+
+      for (var i = 1; i < stroke.points.length; i++) {
+        final previous = stroke.points[i - 1];
+        final current = stroke.points[i];
+
+        final segmentDistanceSquared = _distanceSquaredToSegment(
+          position,
+          Offset(previous.dx, previous.dy),
+          Offset(current.dx, current.dy),
+        );
+
+        if (segmentDistanceSquared <= eraserRadiusSquared) {
+          saveCurrentChunk();
+        } else {
+          currentChunk.add(current);
+        }
+      }
+
+      saveCurrentChunk();
+    }
+
+    _frames[_selectedFrameIndex] = updatedStrokes;
   }
 
   void _handlePointerDown(PointerDownEvent event, BuildContext canvasContext) {
@@ -532,12 +609,22 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     if (_selectedFrameIndex == 0) {
       return const <VectorStroke>[];
     }
+
     return _frames[_selectedFrameIndex - 1];
+  }
+
+  List<VectorStroke> _getNextFrameStrokes() {
+    if (_selectedFrameIndex >= _frames.length - 1) {
+      return const <VectorStroke>[];
+    }
+
+    return _frames[_selectedFrameIndex + 1];
   }
 
   @override
   Widget build(BuildContext context) {
     final previousFrameStrokes = _getPreviousFrameStrokes();
+    final nextFrameStrokes = _getNextFrameStrokes();
 
     return Scaffold(
       appBar: AppBar(
@@ -620,13 +707,18 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                                         currentStroke: _draftStroke.isEmpty
                                             ? null
                                             : _draftStroke,
-                                        onionSkinStrokes: _showOnionSkin
+                                        previousOnionSkinStrokes: _showOnionSkin
                                             ? previousFrameStrokes
+                                            : const <VectorStroke>[],
+                                        nextOnionSkinStrokes: _showOnionSkin
+                                            ? nextFrameStrokes
                                             : const <VectorStroke>[],
                                         strokeColor: _brushColor,
                                         strokeWidth: _brushSize,
-                                        onionSkinColor: Colors.redAccent
-                                            .withValues(alpha: 0.45),
+                                        previousOnionSkinColor: Colors.redAccent
+                                            .withValues(alpha: 0.40),
+                                        nextOnionSkinColor: Colors.greenAccent
+                                            .withValues(alpha: 0.40),
                                       ),
                                       child: const SizedBox.expand(),
                                     ),

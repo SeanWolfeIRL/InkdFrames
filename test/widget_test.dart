@@ -80,11 +80,11 @@ void main() {
         .firstWhere((widget) => widget.painter is AnimationCanvasPainter);
     final painter = customPaint.painter as AnimationCanvasPainter;
 
-    expect(painter.onionSkinStrokes, hasLength(3));
-    expect(painter.onionSkinStrokes.map((stroke) => stroke.points.length), [
-      2,
-      2,
-      2,
-    ]);
+    expect(painter.previousOnionSkinStrokes, hasLength(3));
+    expect(
+      painter.previousOnionSkinStrokes.map((stroke) => stroke.points.length),
+      [2, 2, 2],
+    );
+    expect(painter.nextOnionSkinStrokes, isEmpty);
   });
 }
