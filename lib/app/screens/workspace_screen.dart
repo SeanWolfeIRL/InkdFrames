@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'package:flutter/material.dart';
+import 'package:video_player/video_player.dart';
 import '../models/inkdframes_project.dart';
 import '../models/vector_point.dart';
 import '../models/vector_stroke.dart';
@@ -66,11 +67,14 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
   String _projectName = 'Untitled Animation';
   String? _referenceMediaPath;
   String? _referenceMediaType;
+  VideoPlayerController? _videoController;
+  bool _videoReady = false;
 
   @override
   void dispose() {
     _playbackTimer?.cancel();
     _autosaveTimer?.cancel();
+    _videoController?.dispose();
     _transformationController.dispose();
     super.dispose();
   }
@@ -89,6 +93,14 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
       _canvasHeight = widget.initialCanvasHeight;
       _referenceMediaPath = widget.initialReferenceMediaPath;
       _referenceMediaType = widget.initialReferenceMediaType;
+
+      if (_referenceMediaType == 'video') {
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (mounted) {
+            _initializeVideoReference();
+          }
+        });
+      }
     }
   }
 
@@ -175,6 +187,65 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
       _selectedFrameIndex = 0;
       _draftStroke = const <VectorPoint>[];
     });
+
+    if (_referenceMediaType == 'video') {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) {
+          _initializeVideoReference();
+        }
+      });
+    }
+  }
+
+  Future<void> _initializeVideoReference() async {
+    if (_referenceMediaType != 'video' || _referenceMediaPath == null) {
+      final oldController = _videoController;
+
+      if (mounted) {
+        setState(() {
+          _videoController = null;
+          _videoReady = false;
+        });
+      }
+
+      await oldController?.dispose();
+      return;
+    }
+
+    final newController = VideoPlayerController.file(
+      File(_referenceMediaPath!),
+    );
+
+    try {
+      await newController.initialize();
+      await newController.setLooping(true);
+
+      if (!mounted) {
+        await newController.dispose();
+        return;
+      }
+
+      final oldController = _videoController;
+
+      setState(() {
+        _videoController = newController;
+        _videoReady = true;
+      });
+
+      if (oldController != null && oldController != newController) {
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          oldController.dispose();
+        });
+      }
+    } catch (_) {
+      await newController.dispose();
+
+      if (!mounted) return;
+
+      setState(() {
+        _videoReady = false;
+      });
+    }
   }
 
   void _resetCanvasView() {
@@ -741,6 +812,25 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                                         const ColoredBox(
                                           color: Color(0xFF1F1B24),
                                         ),
+                                        if (_referenceMediaType == 'video' &&
+                                            _videoReady &&
+                                            _videoController != null)
+                                          FittedBox(
+                                            fit: BoxFit.contain,
+                                            child: SizedBox(
+                                              width: _videoController!
+                                                  .value
+                                                  .size
+                                                  .width,
+                                              height: _videoController!
+                                                  .value
+                                                  .size
+                                                  .height,
+                                              child: VideoPlayer(
+                                                _videoController!,
+                                              ),
+                                            ),
+                                          ),
                                         if (_referenceMediaType == 'image' &&
                                             _referenceMediaPath != null)
                                           Image.file(
@@ -787,9 +877,11 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                                             strokeColor: _brushColor,
                                             strokeWidth: _brushSize,
                                             paintBackground:
-                                                _referenceMediaType !=
-                                                    'image' ||
-                                                _referenceMediaPath == null,
+                                                _referenceMediaPath == null ||
+                                                (_referenceMediaType !=
+                                                        'image' &&
+                                                    _referenceMediaType !=
+                                                        'video'),
                                             previousOnionSkinColor: Colors
                                                 .redAccent
                                                 .withValues(alpha: 0.40),
