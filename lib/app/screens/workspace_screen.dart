@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 import 'package:flutter/material.dart';
 import '../models/inkdframes_project.dart';
 import '../models/vector_point.dart';
@@ -16,12 +17,16 @@ class WorkspaceScreen extends StatefulWidget {
     this.projectName,
     this.initialCanvasWidth = 1920,
     this.initialCanvasHeight = 1080,
+    this.initialReferenceMediaPath,
+    this.initialReferenceMediaType,
   });
 
   final String? projectId;
   final String? projectName;
   final double initialCanvasWidth;
   final double initialCanvasHeight;
+  final String? initialReferenceMediaPath;
+  final String? initialReferenceMediaType;
 
   static const routeName = '/workspace';
 
@@ -59,6 +64,8 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
 
   String _projectId = '';
   String _projectName = 'Untitled Animation';
+  String? _referenceMediaPath;
+  String? _referenceMediaType;
 
   @override
   void dispose() {
@@ -80,6 +87,8 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
       _projectName = widget.projectName ?? 'Untitled Animation';
       _canvasWidth = widget.initialCanvasWidth;
       _canvasHeight = widget.initialCanvasHeight;
+      _referenceMediaPath = widget.initialReferenceMediaPath;
+      _referenceMediaType = widget.initialReferenceMediaType;
     }
   }
 
@@ -98,6 +107,8 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
       frameDurations: _frameDurations,
       canvasWidth: _canvasWidth,
       canvasHeight: _canvasHeight,
+      referenceMediaPath: _referenceMediaPath,
+      referenceMediaType: _referenceMediaType,
     );
 
     final jsonString = jsonEncode(project.toJson());
@@ -159,6 +170,8 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
       _fps = project.fps;
       _canvasWidth = project.canvasWidth;
       _canvasHeight = project.canvasHeight;
+      _referenceMediaPath = project.referenceMediaPath;
+      _referenceMediaType = project.referenceMediaType;
       _selectedFrameIndex = 0;
       _draftStroke = const <VectorPoint>[];
     });
@@ -722,26 +735,71 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                                       : _handlePointerCancel,
                                   child: ClipRRect(
                                     borderRadius: BorderRadius.circular(24),
-                                    child: CustomPaint(
-                                      painter: AnimationCanvasPainter(
-                                        strokes: _frames[_selectedFrameIndex],
-                                        currentStroke: _draftStroke.isEmpty
-                                            ? null
-                                            : _draftStroke,
-                                        previousOnionSkinStrokes: _showOnionSkin
-                                            ? previousFrameStrokes
-                                            : const <VectorStroke>[],
-                                        nextOnionSkinStrokes: _showOnionSkin
-                                            ? nextFrameStrokes
-                                            : const <VectorStroke>[],
-                                        strokeColor: _brushColor,
-                                        strokeWidth: _brushSize,
-                                        previousOnionSkinColor: Colors.redAccent
-                                            .withValues(alpha: 0.40),
-                                        nextOnionSkinColor: Colors.greenAccent
-                                            .withValues(alpha: 0.40),
-                                      ),
-                                      child: const SizedBox.expand(),
+                                    child: Stack(
+                                      fit: StackFit.expand,
+                                      children: [
+                                        const ColoredBox(
+                                          color: Color(0xFF1F1B24),
+                                        ),
+                                        if (_referenceMediaType == 'image' &&
+                                            _referenceMediaPath != null)
+                                          Image.file(
+                                            File(_referenceMediaPath!),
+                                            fit: BoxFit.contain,
+                                            errorBuilder: (context, error, stackTrace) {
+                                              return const Center(
+                                                child: Column(
+                                                  mainAxisSize:
+                                                      MainAxisSize.min,
+                                                  children: [
+                                                    Icon(
+                                                      Icons
+                                                          .broken_image_outlined,
+                                                      size: 48,
+                                                      color: Colors.white54,
+                                                    ),
+                                                    SizedBox(height: 8),
+                                                    Text(
+                                                      'Reference image unavailable',
+                                                      style: TextStyle(
+                                                        color: Colors.white54,
+                                                      ),
+                                                    ),
+                                                  ],
+                                                ),
+                                              );
+                                            },
+                                          ),
+                                        CustomPaint(
+                                          painter: AnimationCanvasPainter(
+                                            strokes:
+                                                _frames[_selectedFrameIndex],
+                                            currentStroke: _draftStroke.isEmpty
+                                                ? null
+                                                : _draftStroke,
+                                            previousOnionSkinStrokes:
+                                                _showOnionSkin
+                                                ? previousFrameStrokes
+                                                : const <VectorStroke>[],
+                                            nextOnionSkinStrokes: _showOnionSkin
+                                                ? nextFrameStrokes
+                                                : const <VectorStroke>[],
+                                            strokeColor: _brushColor,
+                                            strokeWidth: _brushSize,
+                                            paintBackground:
+                                                _referenceMediaType !=
+                                                    'image' ||
+                                                _referenceMediaPath == null,
+                                            previousOnionSkinColor: Colors
+                                                .redAccent
+                                                .withValues(alpha: 0.40),
+                                            nextOnionSkinColor: Colors
+                                                .greenAccent
+                                                .withValues(alpha: 0.40),
+                                          ),
+                                          child: const SizedBox.expand(),
+                                        ),
+                                      ],
                                     ),
                                   ),
                                 ),

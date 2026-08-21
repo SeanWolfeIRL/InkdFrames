@@ -15,6 +15,7 @@ class AnimationCanvasPainter extends CustomPainter {
     required this.previousOnionSkinColor,
     required this.nextOnionSkinColor,
     required this.strokeWidth,
+    this.paintBackground = true,
   });
 
   final List<VectorStroke> strokes;
@@ -27,14 +28,17 @@ class AnimationCanvasPainter extends CustomPainter {
   final Color previousOnionSkinColor;
   final Color nextOnionSkinColor;
   final double strokeWidth;
+  final bool paintBackground;
 
   @override
   void paint(Canvas canvas, Size size) {
-    final backgroundPaint = Paint()
-      ..color = const Color(0xFF1F1B24)
-      ..style = PaintingStyle.fill;
+    if (paintBackground) {
+      final backgroundPaint = Paint()
+        ..color = const Color(0xFF1F1B24)
+        ..style = PaintingStyle.fill;
 
-    canvas.drawRect(Offset.zero & size, backgroundPaint);
+      canvas.drawRect(Offset.zero & size, backgroundPaint);
+    }
 
     // Current saved frame.
     for (final stroke in strokes) {

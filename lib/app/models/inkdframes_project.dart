@@ -9,6 +9,8 @@ class InkdFramesProject {
     required this.frameDurations,
     this.canvasWidth = 1920,
     this.canvasHeight = 1080,
+    this.referenceMediaPath,
+    this.referenceMediaType,
   });
 
   factory InkdFramesProject.fromJson(Map<String, dynamic> json) {
@@ -35,6 +37,8 @@ class InkdFramesProject {
           : List<int>.filled((json['frames'] as List).length, 1),
       canvasWidth: (json['canvasWidth'] as num?)?.toDouble() ?? 1920,
       canvasHeight: (json['canvasHeight'] as num?)?.toDouble() ?? 1080,
+      referenceMediaPath: json['referenceMediaPath'] as String?,
+      referenceMediaType: json['referenceMediaType'] as String?,
     );
   }
 
@@ -45,6 +49,8 @@ class InkdFramesProject {
   final List<int> frameDurations;
   final double canvasWidth;
   final double canvasHeight;
+  final String? referenceMediaPath;
+  final String? referenceMediaType;
 
   Map<String, dynamic> toJson() {
     return {
@@ -57,6 +63,8 @@ class InkdFramesProject {
       'frameDurations': frameDurations,
       'canvasWidth': canvasWidth,
       'canvasHeight': canvasHeight,
+      'referenceMediaPath': referenceMediaPath,
+      'referenceMediaType': referenceMediaType,
     };
   }
 }
