@@ -10,10 +10,18 @@ import '../services/animation_export_service.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 class WorkspaceScreen extends StatefulWidget {
-  const WorkspaceScreen({super.key, this.projectId, this.projectName});
+  const WorkspaceScreen({
+    super.key,
+    this.projectId,
+    this.projectName,
+    this.initialCanvasWidth = 1920,
+    this.initialCanvasHeight = 1080,
+  });
 
   final String? projectId;
   final String? projectName;
+  final double initialCanvasWidth;
+  final double initialCanvasHeight;
 
   static const routeName = '/workspace';
 
@@ -70,6 +78,8 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     } else {
       _projectId = _generateProjectId();
       _projectName = widget.projectName ?? 'Untitled Animation';
+      _canvasWidth = widget.initialCanvasWidth;
+      _canvasHeight = widget.initialCanvasHeight;
     }
   }
 
