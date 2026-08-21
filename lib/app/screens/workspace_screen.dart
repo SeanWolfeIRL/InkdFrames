@@ -662,6 +662,8 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
             child: LayoutBuilder(
               builder: (context, constraints) {
                 final isNarrowToolbarLayout = constraints.maxWidth < 700;
+                final isPortraitWorkspace =
+                    constraints.maxHeight > constraints.maxWidth;
 
                 final frameToolbarExpanded =
                     _frameToolbarExpanded ?? !isNarrowToolbarLayout;
@@ -669,10 +671,12 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                 final editToolbarExpanded =
                     _editToolbarExpanded ?? !isNarrowToolbarLayout;
 
+                final canvasPadding = isPortraitWorkspace ? 0.0 : 16.0;
+
                 return Stack(
                   children: [
                     Padding(
-                      padding: const EdgeInsets.all(16),
+                      padding: EdgeInsets.all(canvasPadding),
                       child: Center(
                         child: FittedBox(
                           fit: BoxFit.contain,
@@ -822,241 +826,265 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                     ),
 
                     Positioned(
-                      top: 110,
+                      top: 78,
                       left: 16,
-                      child: Material(
-                        elevation: 8,
-                        color: const Color(0xE61A1720),
-                        borderRadius: BorderRadius.circular(16),
-                        clipBehavior: Clip.antiAlias,
-                        child: Container(
-                          width: (!_timingExpanded && !_drawingExpanded)
-                              ? 126
-                              : 300,
-                          padding: const EdgeInsets.fromLTRB(14, 10, 14, 14),
-                          child: Column(
-                            mainAxisSize: MainAxisSize.min,
-                            children: [
-                              InkWell(
-                                borderRadius: BorderRadius.circular(8),
-                                onTap: () {
-                                  setState(() {
-                                    _timingExpanded = !_timingExpanded;
-                                  });
-                                },
-                                child: Padding(
-                                  padding: const EdgeInsets.symmetric(
-                                    vertical: 4,
-                                  ),
-                                  child: Row(
-                                    children: [
-                                      const Icon(Icons.schedule, size: 18),
-                                      const SizedBox(width: 8),
-                                      const Expanded(
-                                        child: Text(
-                                          'Timing',
-                                          style: TextStyle(
-                                            fontWeight: FontWeight.w600,
-                                          ),
-                                        ),
-                                      ),
-                                      if (_timingExpanded || _drawingExpanded)
-                                        Icon(
-                                          _timingExpanded
-                                              ? Icons.keyboard_arrow_down
-                                              : Icons.keyboard_arrow_right,
-                                          size: 20,
-                                        ),
-                                    ],
-                                  ),
-                                ),
+                      child: Row(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Material(
+                            elevation: 8,
+                            color: const Color(0xE61A1720),
+                            borderRadius: BorderRadius.circular(16),
+                            clipBehavior: Clip.antiAlias,
+                            child: Padding(
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 4,
+                                vertical: 6,
                               ),
-                              if (_timingExpanded) ...[
-                                const SizedBox(height: 4),
-                                Row(
-                                  children: [
-                                    const SizedBox(
-                                      width: 70,
-                                      child: Text('FPS'),
+                              child: Column(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  IconButton(
+                                    tooltip: _timingExpanded
+                                        ? 'Hide Timing'
+                                        : 'Show Timing',
+                                    visualDensity: VisualDensity.compact,
+                                    onPressed: () {
+                                      setState(() {
+                                        final next = !_timingExpanded;
+                                        _timingExpanded = next;
+
+                                        if (next) {
+                                          _drawingExpanded = false;
+                                        }
+                                      });
+                                    },
+                                    icon: Icon(
+                                      Icons.schedule,
+                                      color: _timingExpanded
+                                          ? Colors.deepPurpleAccent
+                                          : Colors.white70,
                                     ),
-                                    Expanded(
-                                      child: Slider(
-                                        value: _fps,
-                                        min: 1,
-                                        max: 24,
-                                        divisions: 23,
-                                        label: _fps.toStringAsFixed(0),
-                                        onChanged: (value) {
-                                          setState(() => _fps = value);
-                                          if (_isPlaying) {
-                                            _startPlaybackTimer();
-                                          }
-                                        },
-                                      ),
-                                    ),
-                                    SizedBox(
-                                      width: 28,
-                                      child: Text(_fps.toStringAsFixed(0)),
-                                    ),
-                                  ],
-                                ),
-                                Row(
-                                  children: [
-                                    const SizedBox(
-                                      width: 70,
-                                      child: Text('Duration'),
-                                    ),
-                                    Expanded(
-                                      child: Slider(
-                                        value:
-                                            _frameDurations[_selectedFrameIndex]
-                                                .toDouble(),
-                                        min: 1,
-                                        max: 8,
-                                        divisions: 7,
-                                        label:
-                                            '${_frameDurations[_selectedFrameIndex]}',
-                                        onChanged: (value) {
-                                          setState(() {
-                                            _frameDurations[_selectedFrameIndex] =
-                                                value.round();
-                                          });
-                                          _scheduleAutosave();
-                                        },
-                                      ),
-                                    ),
-                                    SizedBox(
-                                      width: 28,
-                                      child: Text(
-                                        '${_frameDurations[_selectedFrameIndex]}x',
-                                      ),
-                                    ),
-                                  ],
-                                ),
-                              ],
-                              const Divider(height: 20),
-                              InkWell(
-                                borderRadius: BorderRadius.circular(8),
-                                onTap: () {
-                                  setState(() {
-                                    _drawingExpanded = !_drawingExpanded;
-                                  });
-                                },
-                                child: Padding(
-                                  padding: const EdgeInsets.symmetric(
-                                    vertical: 4,
                                   ),
-                                  child: Row(
-                                    children: [
-                                      const Icon(Icons.brush, size: 18),
-                                      const SizedBox(width: 8),
-                                      const Expanded(
-                                        child: Text(
-                                          'Drawing',
-                                          style: TextStyle(
-                                            fontWeight: FontWeight.w600,
-                                          ),
-                                        ),
-                                      ),
-                                      if (_timingExpanded || _drawingExpanded)
-                                        Icon(
-                                          _drawingExpanded
-                                              ? Icons.keyboard_arrow_down
-                                              : Icons.keyboard_arrow_right,
-                                          size: 20,
-                                        ),
-                                    ],
+                                  IconButton(
+                                    tooltip: _drawingExpanded
+                                        ? 'Hide Drawing'
+                                        : 'Show Drawing',
+                                    visualDensity: VisualDensity.compact,
+                                    onPressed: () {
+                                      setState(() {
+                                        final next = !_drawingExpanded;
+                                        _drawingExpanded = next;
+
+                                        if (next) {
+                                          _timingExpanded = false;
+                                        }
+                                      });
+                                    },
+                                    icon: Icon(
+                                      Icons.brush,
+                                      color: _drawingExpanded
+                                          ? Colors.deepPurpleAccent
+                                          : Colors.white70,
+                                    ),
                                   ),
-                                ),
+                                ],
                               ),
-                              if (_drawingExpanded) ...[
-                                const SizedBox(height: 4),
-                                Row(
-                                  children: [
-                                    const SizedBox(
-                                      width: 70,
-                                      child: Text('Brush'),
-                                    ),
-                                    Expanded(
-                                      child: Slider(
-                                        value: _brushSize,
-                                        min: 1,
-                                        max: 20,
-                                        divisions: 19,
-                                        label: _brushSize.toStringAsFixed(0),
-                                        onChanged: (value) {
-                                          setState(() {
-                                            _brushSize = value;
-                                          });
-                                        },
-                                      ),
-                                    ),
-                                    SizedBox(
-                                      width: 28,
-                                      child: Text(
-                                        _brushSize.toStringAsFixed(0),
-                                      ),
-                                    ),
-                                  ],
-                                ),
-                                const SizedBox(height: 4),
-                                Row(
-                                  crossAxisAlignment: CrossAxisAlignment.start,
-                                  children: [
-                                    const SizedBox(
-                                      width: 70,
-                                      child: Padding(
-                                        padding: EdgeInsets.only(top: 4),
-                                        child: Text('Colour'),
-                                      ),
-                                    ),
-                                    Expanded(
-                                      child: Wrap(
-                                        spacing: 5,
-                                        runSpacing: 7,
-                                        children: [
-                                          for (final color in const [
-                                            Colors.red,
-                                            Colors.white,
-                                            Colors.blue,
-                                            Colors.green,
-                                            Colors.yellow,
-                                            Colors.purple,
-                                            Colors.black,
-                                          ])
-                                            GestureDetector(
-                                              onTap: () {
-                                                setState(() {
-                                                  _brushColor = color;
-                                                });
-                                              },
-                                              child: Container(
-                                                width: 24,
-                                                height: 24,
-                                                decoration: BoxDecoration(
-                                                  color: color,
-                                                  shape: BoxShape.circle,
-                                                  border: Border.all(
-                                                    color: _brushColor == color
-                                                        ? Colors
-                                                              .deepPurpleAccent
-                                                        : Colors.white38,
-                                                    width: _brushColor == color
-                                                        ? 3
-                                                        : 2,
+                            ),
+                          ),
+                          if (_timingExpanded || _drawingExpanded) ...[
+                            const SizedBox(width: 8),
+                            Material(
+                              elevation: 8,
+                              color: const Color(0xE61A1720),
+                              borderRadius: BorderRadius.circular(16),
+                              clipBehavior: Clip.antiAlias,
+                              child: SizedBox(
+                                width: constraints.maxWidth < 420
+                                    ? constraints.maxWidth - 96
+                                    : 300,
+                                child: Padding(
+                                  padding: const EdgeInsets.fromLTRB(
+                                    14,
+                                    10,
+                                    14,
+                                    12,
+                                  ),
+                                  child: _timingExpanded
+                                      ? Column(
+                                          mainAxisSize: MainAxisSize.min,
+                                          children: [
+                                            Row(
+                                              children: [
+                                                const SizedBox(
+                                                  width: 70,
+                                                  child: Text('FPS'),
+                                                ),
+                                                Expanded(
+                                                  child: Slider(
+                                                    value: _fps,
+                                                    min: 1,
+                                                    max: 24,
+                                                    divisions: 23,
+                                                    label: _fps.toStringAsFixed(
+                                                      0,
+                                                    ),
+                                                    onChanged: (value) {
+                                                      setState(
+                                                        () => _fps = value,
+                                                      );
+
+                                                      if (_isPlaying) {
+                                                        _startPlaybackTimer();
+                                                      }
+                                                    },
                                                   ),
                                                 ),
-                                              ),
+                                                SizedBox(
+                                                  width: 28,
+                                                  child: Text(
+                                                    _fps.toStringAsFixed(0),
+                                                  ),
+                                                ),
+                                              ],
                                             ),
-                                        ],
-                                      ),
-                                    ),
-                                  ],
+                                            Row(
+                                              children: [
+                                                const SizedBox(
+                                                  width: 70,
+                                                  child: Text('Duration'),
+                                                ),
+                                                Expanded(
+                                                  child: Slider(
+                                                    value:
+                                                        _frameDurations[_selectedFrameIndex]
+                                                            .toDouble(),
+                                                    min: 1,
+                                                    max: 8,
+                                                    divisions: 7,
+                                                    label:
+                                                        '${_frameDurations[_selectedFrameIndex]}',
+                                                    onChanged: (value) {
+                                                      setState(() {
+                                                        _frameDurations[_selectedFrameIndex] =
+                                                            value.round();
+                                                      });
+
+                                                      _scheduleAutosave();
+                                                    },
+                                                  ),
+                                                ),
+                                                SizedBox(
+                                                  width: 28,
+                                                  child: Text(
+                                                    '${_frameDurations[_selectedFrameIndex]}x',
+                                                  ),
+                                                ),
+                                              ],
+                                            ),
+                                          ],
+                                        )
+                                      : Column(
+                                          mainAxisSize: MainAxisSize.min,
+                                          children: [
+                                            Row(
+                                              children: [
+                                                const SizedBox(
+                                                  width: 70,
+                                                  child: Text('Brush'),
+                                                ),
+                                                Expanded(
+                                                  child: Slider(
+                                                    value: _brushSize,
+                                                    min: 1,
+                                                    max: 20,
+                                                    divisions: 19,
+                                                    label: _brushSize
+                                                        .toStringAsFixed(0),
+                                                    onChanged: (value) {
+                                                      setState(() {
+                                                        _brushSize = value;
+                                                      });
+                                                    },
+                                                  ),
+                                                ),
+                                                SizedBox(
+                                                  width: 28,
+                                                  child: Text(
+                                                    _brushSize.toStringAsFixed(
+                                                      0,
+                                                    ),
+                                                  ),
+                                                ),
+                                              ],
+                                            ),
+                                            const SizedBox(height: 6),
+                                            Row(
+                                              crossAxisAlignment:
+                                                  CrossAxisAlignment.center,
+                                              children: [
+                                                const SizedBox(
+                                                  width: 70,
+                                                  child: Text('Colour'),
+                                                ),
+                                                Expanded(
+                                                  child: Wrap(
+                                                    spacing: 7,
+                                                    runSpacing: 7,
+                                                    children: [
+                                                      for (final color
+                                                          in const [
+                                                            Colors.red,
+                                                            Colors.white,
+                                                            Colors.blue,
+                                                            Colors.green,
+                                                            Colors.yellow,
+                                                            Colors.purple,
+                                                            Colors.black,
+                                                          ])
+                                                        GestureDetector(
+                                                          onTap: () {
+                                                            setState(() {
+                                                              _brushColor =
+                                                                  color;
+                                                            });
+                                                          },
+                                                          child: Container(
+                                                            width: 24,
+                                                            height: 24,
+                                                            decoration: BoxDecoration(
+                                                              color: color,
+                                                              shape: BoxShape
+                                                                  .circle,
+                                                              border: Border.all(
+                                                                color:
+                                                                    _brushColor ==
+                                                                        color
+                                                                    ? Colors
+                                                                          .deepPurpleAccent
+                                                                    : Colors
+                                                                          .white38,
+                                                                width:
+                                                                    _brushColor ==
+                                                                        color
+                                                                    ? 3
+                                                                    : 2,
+                                                              ),
+                                                            ),
+                                                          ),
+                                                        ),
+                                                    ],
+                                                  ),
+                                                ),
+                                              ],
+                                            ),
+                                          ],
+                                        ),
                                 ),
-                              ],
-                            ],
-                          ),
-                        ),
+                              ),
+                            ),
+                          ],
+                        ],
                       ),
                     ),
 
