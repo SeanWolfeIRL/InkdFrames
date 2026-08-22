@@ -1,3 +1,4 @@
+import 'drawing_layer.dart';
 import 'vector_stroke.dart';
 
 class InkdFramesProject {
@@ -11,60 +12,149 @@ class InkdFramesProject {
     this.canvasHeight = 1080,
     this.referenceMediaPath,
     this.referenceMediaType,
-  });
+    List<DrawingLayer>? layers,
+    this.referenceVisible = true,
+    this.referenceOpacity = 1.0,
+  }) : layers = layers ?? _layersFromLegacyFrames(frames);
 
   factory InkdFramesProject.fromJson(Map<String, dynamic> json) {
+    final legacyFrames = _readLegacyFrames(json['frames']);
+
+    final rawLayers = json['layers'];
+
+    final layers = rawLayers is List && rawLayers.isNotEmpty
+        ? rawLayers
+              .map(
+                (layer) => DrawingLayer.fromJson(
+                  Map<String, dynamic>.from(layer as Map),
+                ),
+              )
+              .toList()
+        : _layersFromLegacyFrames(legacyFrames);
+
+    final frameCount = legacyFrames.isNotEmpty
+        ? legacyFrames.length
+        : layers.isNotEmpty
+        ? layers.first.frames.length
+        : 1;
+
+    final frames = legacyFrames.isNotEmpty
+        ? legacyFrames
+        : _legacyFramesFromLayers(layers, frameCount);
+
     return InkdFramesProject(
       id: json['id'] as String,
       name: json['name'] as String,
       fps: (json['fps'] as num).toDouble(),
-      frames: (json['frames'] as List)
-          .map(
-            (frame) => (frame as List)
-                .map(
-                  (stroke) => VectorStroke.fromJson(
-                    Map<String, dynamic>.from(stroke as Map),
-                  ),
-                )
-                .toList(),
-          )
-          .toList(),
-
+      frames: frames,
       frameDurations: json['frameDurations'] != null
           ? (json['frameDurations'] as List)
                 .map((duration) => (duration as num).toInt())
                 .toList()
-          : List<int>.filled((json['frames'] as List).length, 1),
+          : List<int>.filled(frameCount, 1),
       canvasWidth: (json['canvasWidth'] as num?)?.toDouble() ?? 1920,
       canvasHeight: (json['canvasHeight'] as num?)?.toDouble() ?? 1080,
       referenceMediaPath: json['referenceMediaPath'] as String?,
       referenceMediaType: json['referenceMediaType'] as String?,
+      referenceVisible: json['referenceVisible'] as bool? ?? true,
+      referenceOpacity:
+          (json['referenceOpacity'] as num?)?.toDouble().clamp(0.0, 1.0) ?? 1.0,
+      layers: layers,
     );
   }
 
   final String id;
   final String name;
   final double fps;
+
+  /// Legacy/composited frame representation.
+  ///
+  /// Kept while InkdFrames migrates to drawing layers and for backwards
+  /// compatibility with older saved projects.
   final List<List<VectorStroke>> frames;
+
+  final List<DrawingLayer> layers;
+
   final List<int> frameDurations;
   final double canvasWidth;
   final double canvasHeight;
+
   final String? referenceMediaPath;
   final String? referenceMediaType;
+
+  final bool referenceVisible;
+  final double referenceOpacity;
 
   Map<String, dynamic> toJson() {
     return {
       'id': id,
       'name': name,
       'fps': fps,
+
+      // Keep the legacy representation during the migration so older
+      // InkdFrames builds can still understand the project.
       'frames': frames
           .map((frame) => frame.map((stroke) => stroke.toJson()).toList())
           .toList(),
+
+      'layers': layers.map((layer) => layer.toJson()).toList(),
+
       'frameDurations': frameDurations,
       'canvasWidth': canvasWidth,
       'canvasHeight': canvasHeight,
       'referenceMediaPath': referenceMediaPath,
       'referenceMediaType': referenceMediaType,
+      'referenceVisible': referenceVisible,
+      'referenceOpacity': referenceOpacity,
     };
+  }
+
+  static List<List<VectorStroke>> _readLegacyFrames(dynamic rawFrames) {
+    if (rawFrames is! List) {
+      return <List<VectorStroke>>[];
+    }
+
+    return rawFrames
+        .map(
+          (frame) => (frame as List)
+              .map(
+                (stroke) => VectorStroke.fromJson(
+                  Map<String, dynamic>.from(stroke as Map),
+                ),
+              )
+              .toList(),
+        )
+        .toList();
+  }
+
+  static List<DrawingLayer> _layersFromLegacyFrames(
+    List<List<VectorStroke>> frames,
+  ) {
+    final safeFrames = frames.isEmpty
+        ? <List<VectorStroke>>[<VectorStroke>[]]
+        : frames
+              .map((frame) => frame.map((stroke) => stroke.copy()).toList())
+              .toList();
+
+    return [DrawingLayer(id: 'linework', name: 'Linework', frames: safeFrames)];
+  }
+
+  static List<List<VectorStroke>> _legacyFramesFromLayers(
+    List<DrawingLayer> layers,
+    int frameCount,
+  ) {
+    return List.generate(frameCount, (frameIndex) {
+      final strokes = <VectorStroke>[];
+
+      for (final layer in layers) {
+        if (!layer.visible || frameIndex >= layer.frames.length) {
+          continue;
+        }
+
+        strokes.addAll(layer.frames[frameIndex].map((stroke) => stroke.copy()));
+      }
+
+      return strokes;
+    });
   }
 }

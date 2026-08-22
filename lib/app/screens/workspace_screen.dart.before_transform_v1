@@ -52,12 +52,6 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
   bool _isPlaying = false;
   bool _showOnionSkin = true;
   bool _isEraserActive = false;
-  bool _isTransformActive = false;
-  bool _isTransformDragging = false;
-
-  List<VectorPoint> _lassoPoints = const <VectorPoint>[];
-  Set<int> _selectedStrokeIndices = <int>{};
-  Offset? _transformLastPosition;
   bool _timingExpanded = true;
   bool _drawingExpanded = true;
   bool _timelineExpanded = true;
@@ -260,7 +254,6 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     setState(() {
       _activeLayerIndex = index;
       _draftStroke = const <VectorPoint>[];
-      _clearTransformSelection();
       _resetUndoRedo();
     });
   }
@@ -642,7 +635,6 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     setState(() {
       _selectedFrameIndex = index;
       _draftStroke = const <VectorPoint>[];
-      _clearTransformSelection();
     });
 
     _syncVideoToSelectedFrame();
@@ -711,20 +703,6 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     unawaited(_syncVideoToFrame(_selectedFrameIndex));
   }
 
-  Future<void> _syncVideoToSelectedFrameDuringPlayback() async {
-    final controller = _videoController;
-
-    if (controller == null || !controller.value.isInitialized) {
-      return;
-    }
-
-    await _syncVideoToFrame(_selectedFrameIndex);
-
-    if (_isPlaying) {
-      await controller.play();
-    }
-  }
-
   void _startPlaybackTimer() {
     _playbackTimer?.cancel();
 
@@ -735,18 +713,29 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     _playbackTimer = Timer(Duration(milliseconds: frameMilliseconds), () {
       if (!mounted || !_isPlaying) return;
 
+      var didLoop = false;
+
       setState(() {
         if (_selectedFrameIndex < _frames.length - 1) {
           _selectedFrameIndex += 1;
         } else {
           _selectedFrameIndex = 0;
+          didLoop = true;
         }
       });
 
-      final controller = _videoController;
+      if (didLoop) {
+        final controller = _videoController;
 
-      if (controller != null && controller.value.isInitialized) {
-        unawaited(_syncVideoToSelectedFrameDuringPlayback());
+        if (controller != null && controller.value.isInitialized) {
+          unawaited(
+            _syncVideoToFrame(0).then((_) async {
+              if (_isPlaying) {
+                await controller.play();
+              }
+            }),
+          );
+        }
       }
 
       _startPlaybackTimer();
@@ -787,119 +776,6 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     });
 
     _startPlaybackTimer();
-  }
-
-  void _clearTransformSelection() {
-    _lassoPoints = const <VectorPoint>[];
-    _selectedStrokeIndices = <int>{};
-    _transformLastPosition = null;
-    _isTransformDragging = false;
-  }
-
-  bool _pointInsidePolygon(Offset point, List<VectorPoint> polygon) {
-    if (polygon.length < 3) return false;
-
-    var inside = false;
-
-    for (var i = 0, j = polygon.length - 1; i < polygon.length; j = i++) {
-      final xi = polygon[i].dx;
-      final yi = polygon[i].dy;
-      final xj = polygon[j].dx;
-      final yj = polygon[j].dy;
-
-      final denominator = (yj - yi).abs() < 0.000001 ? 0.000001 : (yj - yi);
-
-      final crosses =
-          ((yi > point.dy) != (yj > point.dy)) &&
-          (point.dx < (xj - xi) * (point.dy - yi) / denominator + xi);
-
-      if (crosses) inside = !inside;
-    }
-
-    return inside;
-  }
-
-  void _finishLassoSelection() {
-    if (_lassoPoints.length < 3) {
-      _clearTransformSelection();
-      return;
-    }
-
-    final strokes = _activeLayer.frames[_selectedFrameIndex];
-    final selected = <int>{};
-
-    for (var strokeIndex = 0; strokeIndex < strokes.length; strokeIndex++) {
-      final stroke = strokes[strokeIndex];
-
-      if (stroke.points.any(
-        (point) =>
-            _pointInsidePolygon(Offset(point.dx, point.dy), _lassoPoints),
-      )) {
-        selected.add(strokeIndex);
-      }
-    }
-
-    _selectedStrokeIndices = selected;
-    _lassoPoints = const <VectorPoint>[];
-  }
-
-  Rect? _selectedStrokeBounds() {
-    if (_selectedStrokeIndices.isEmpty) return null;
-
-    final strokes = _activeLayer.frames[_selectedFrameIndex];
-
-    double? minX;
-    double? minY;
-    double? maxX;
-    double? maxY;
-
-    for (final index in _selectedStrokeIndices) {
-      if (index < 0 || index >= strokes.length) continue;
-
-      for (final point in strokes[index].points) {
-        minX = minX == null ? point.dx : (point.dx < minX ? point.dx : minX);
-        minY = minY == null ? point.dy : (point.dy < minY ? point.dy : minY);
-        maxX = maxX == null ? point.dx : (point.dx > maxX ? point.dx : maxX);
-        maxY = maxY == null ? point.dy : (point.dy > maxY ? point.dy : maxY);
-      }
-    }
-
-    if (minX == null || minY == null || maxX == null || maxY == null) {
-      return null;
-    }
-
-    return Rect.fromLTRB(minX, minY, maxX, maxY);
-  }
-
-  void _moveSelectedStrokes(Offset delta) {
-    if (_selectedStrokeIndices.isEmpty) return;
-
-    final layer = _activeLayer;
-    final frames = _copyLayerFrames(layer.frames);
-    final strokes = frames[_selectedFrameIndex];
-
-    for (final index in _selectedStrokeIndices) {
-      if (index < 0 || index >= strokes.length) continue;
-
-      final stroke = strokes[index];
-
-      strokes[index] = VectorStroke(
-        points: stroke.points
-            .map(
-              (point) => VectorPoint(
-                dx: point.dx + delta.dx,
-                dy: point.dy + delta.dy,
-                pressure: point.pressure,
-              ),
-            )
-            .toList(),
-        strokeWidth: stroke.strokeWidth,
-        color: stroke.color,
-      );
-    }
-
-    _layers[_activeLayerIndex] = layer.copyWith(frames: frames);
-    _rebuildCompositeFrames();
   }
 
   double _distanceSquaredToSegment(Offset point, Offset start, Offset end) {
@@ -1019,32 +895,6 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     final renderBox = canvasContext.findRenderObject() as RenderBox;
     final canvasPosition = renderBox.globalToLocal(event.position);
 
-    if (_isTransformActive) {
-      final bounds = _selectedStrokeBounds();
-
-      if (bounds != null && bounds.inflate(16).contains(canvasPosition)) {
-        _saveUndoState();
-
-        setState(() {
-          _isTransformDragging = true;
-          _transformLastPosition = canvasPosition;
-        });
-      } else {
-        setState(() {
-          _selectedStrokeIndices = <int>{};
-          _lassoPoints = <VectorPoint>[
-            VectorPoint(
-              dx: canvasPosition.dx,
-              dy: canvasPosition.dy,
-              pressure: 1,
-            ),
-          ];
-        });
-      }
-
-      return;
-    }
-
     if (_isEraserActive) {
       _saveUndoState();
       setState(() {
@@ -1075,39 +925,6 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
 
     final renderBox = canvasContext.findRenderObject() as RenderBox;
     final canvasPosition = renderBox.globalToLocal(event.position);
-
-    if (_isTransformActive) {
-      if (_isTransformDragging && _transformLastPosition != null) {
-        final delta = canvasPosition - _transformLastPosition!;
-
-        setState(() {
-          _moveSelectedStrokes(delta);
-          _transformLastPosition = canvasPosition;
-        });
-
-        return;
-      }
-
-      if (_lassoPoints.isNotEmpty) {
-        final last = _lassoPoints.last;
-        final dx = canvasPosition.dx - last.dx;
-        final dy = canvasPosition.dy - last.dy;
-
-        if ((dx * dx) + (dy * dy) >= 4) {
-          setState(() {
-            _lassoPoints.add(
-              VectorPoint(
-                dx: canvasPosition.dx,
-                dy: canvasPosition.dy,
-                pressure: 1,
-              ),
-            );
-          });
-        }
-      }
-
-      return;
-    }
 
     if (_isEraserActive) {
       setState(() {
@@ -1197,20 +1014,6 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
   void _handlePointerUp(PointerUpEvent event) {
     if (_activePointerCount > 0) {
       _activePointerCount -= 1;
-    }
-
-    if (_isTransformActive) {
-      setState(() {
-        if (_isTransformDragging) {
-          _isTransformDragging = false;
-          _transformLastPosition = null;
-        } else {
-          _finishLassoSelection();
-        }
-      });
-
-      _scheduleAutosave();
-      return;
     }
 
     if (_isPlaying || _draftStroke.isEmpty) {
@@ -1509,17 +1312,6 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                                           ),
                                           child: const SizedBox.expand(),
                                         ),
-                                        if (_isTransformActive)
-                                          IgnorePointer(
-                                            child: CustomPaint(
-                                              painter: _TransformOverlayPainter(
-                                                lassoPoints: _lassoPoints,
-                                                selectionBounds:
-                                                    _selectedStrokeBounds(),
-                                              ),
-                                              child: const SizedBox.expand(),
-                                            ),
-                                          ),
                                       ],
                                     ),
                                   ),
@@ -2392,35 +2184,11 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                                   onPressed: () {
                                     setState(() {
                                       _isEraserActive = !_isEraserActive;
-                                      _isTransformActive = false;
-                                      _clearTransformSelection();
                                     });
                                   },
                                   icon: Icon(
                                     Icons.auto_fix_off,
                                     color: _isEraserActive
-                                        ? Colors.deepPurpleAccent
-                                        : Colors.white70,
-                                  ),
-                                ),
-                                IconButton(
-                                  tooltip: 'Transform',
-                                  visualDensity: VisualDensity.compact,
-                                  onPressed: _isPlaying
-                                      ? null
-                                      : () {
-                                          setState(() {
-                                            _isTransformActive =
-                                                !_isTransformActive;
-                                            _isEraserActive = false;
-                                            _draftStroke =
-                                                const <VectorPoint>[];
-                                            _clearTransformSelection();
-                                          });
-                                        },
-                                  icon: Icon(
-                                    Icons.open_with,
-                                    color: _isTransformActive
                                         ? Colors.deepPurpleAccent
                                         : Colors.white70,
                                   ),
@@ -2623,62 +2391,5 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
         ],
       ),
     );
-  }
-}
-
-class _TransformOverlayPainter extends CustomPainter {
-  const _TransformOverlayPainter({
-    required this.lassoPoints,
-    required this.selectionBounds,
-  });
-
-  final List<VectorPoint> lassoPoints;
-  final Rect? selectionBounds;
-
-  @override
-  void paint(Canvas canvas, Size size) {
-    final lassoPaint = Paint()
-      ..color = Colors.cyanAccent
-      ..strokeWidth = 2
-      ..style = PaintingStyle.stroke;
-
-    if (lassoPoints.length > 1) {
-      final path = Path()..moveTo(lassoPoints.first.dx, lassoPoints.first.dy);
-
-      for (var i = 1; i < lassoPoints.length; i++) {
-        path.lineTo(lassoPoints[i].dx, lassoPoints[i].dy);
-      }
-
-      canvas.drawPath(path, lassoPaint);
-    }
-
-    final bounds = selectionBounds;
-
-    if (bounds != null) {
-      final boxPaint = Paint()
-        ..color = Colors.cyanAccent
-        ..strokeWidth = 2
-        ..style = PaintingStyle.stroke;
-
-      canvas.drawRect(bounds.inflate(6), boxPaint);
-
-      final handlePaint = Paint()
-        ..color = Colors.cyanAccent
-        ..style = PaintingStyle.fill;
-
-      for (final point in [
-        bounds.topLeft,
-        bounds.topRight,
-        bounds.bottomLeft,
-        bounds.bottomRight,
-      ]) {
-        canvas.drawCircle(point, 6, handlePaint);
-      }
-    }
-  }
-
-  @override
-  bool shouldRepaint(covariant _TransformOverlayPainter oldDelegate) {
-    return true;
   }
 }
