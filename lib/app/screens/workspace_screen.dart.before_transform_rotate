@@ -1,7 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
-import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:video_player/video_player.dart';
 import '../models/drawing_layer.dart';
@@ -59,7 +58,6 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
   bool _isTransformActive = false;
   bool _isTransformDragging = false;
   bool _isTransformScaling = false;
-  bool _isTransformRotating = false;
 
   List<VectorPoint> _lassoPoints = const <VectorPoint>[];
   Map<String, Set<int>> _selectedTransformStrokes = <String, Set<int>>{};
@@ -67,10 +65,6 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
   Offset? _transformScaleAnchor;
   double? _transformScaleStartDistance;
   Map<String, List<VectorStroke>>? _transformScaleSnapshot;
-
-  Offset? _transformRotationCenter;
-  double? _transformRotationStartAngle;
-  Map<String, List<VectorStroke>>? _transformRotationSnapshot;
   bool _timingExpanded = true;
   bool _drawingExpanded = true;
   bool _timelineExpanded = true;
@@ -1050,12 +1044,8 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     _transformScaleAnchor = null;
     _transformScaleStartDistance = null;
     _transformScaleSnapshot = null;
-    _transformRotationCenter = null;
-    _transformRotationStartAngle = null;
-    _transformRotationSnapshot = null;
     _isTransformDragging = false;
     _isTransformScaling = false;
-    _isTransformRotating = false;
   }
 
   bool _pointInsidePolygon(Offset point, List<VectorPoint> polygon) {
@@ -1230,79 +1220,6 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
               .toList(),
           strokeWidth: stroke.strokeWidth,
           color: stroke.color,
-        );
-      }
-
-      _layers[layerIndex] = layer.copyWith(frames: frames);
-    }
-
-    _rebuildCompositeFrames();
-  }
-
-  Offset _transformRotationHandle(Rect bounds) {
-    return bounds.topCenter + const Offset(0, -34);
-  }
-
-  bool _transformRotationHandleHit(Offset position, Rect bounds) {
-    const hitRadius = 24.0;
-
-    return (position - _transformRotationHandle(bounds)).distance <= hitRadius;
-  }
-
-  double _angleFromCenter(Offset point, Offset center) {
-    return math.atan2(point.dy - center.dy, point.dx - center.dx);
-  }
-
-  void _rotateSelectedStrokes(
-    double angle,
-    Offset center,
-    Map<String, List<VectorStroke>> snapshot,
-  ) {
-    if (_selectedTransformStrokes.isEmpty) return;
-
-    final cosAngle = math.cos(angle);
-    final sinAngle = math.sin(angle);
-
-    for (final entry in _selectedTransformStrokes.entries) {
-      final layerIndex = _layerIndexForId(entry.key);
-
-      if (layerIndex == -1) continue;
-
-      final sourceStrokes = snapshot[entry.key];
-
-      if (sourceStrokes == null) continue;
-
-      final layer = _layers[layerIndex];
-
-      if (_selectedFrameIndex >= layer.frames.length) {
-        continue;
-      }
-
-      final frames = _copyLayerFrames(layer.frames);
-      final strokes = frames[_selectedFrameIndex];
-
-      for (final strokeIndex in entry.value) {
-        if (strokeIndex < 0 ||
-            strokeIndex >= strokes.length ||
-            strokeIndex >= sourceStrokes.length) {
-          continue;
-        }
-
-        final source = sourceStrokes[strokeIndex];
-
-        strokes[strokeIndex] = VectorStroke(
-          points: source.points.map((point) {
-            final x = point.dx - center.dx;
-            final y = point.dy - center.dy;
-
-            return VectorPoint(
-              dx: center.dx + (x * cosAngle) - (y * sinAngle),
-              dy: center.dy + (x * sinAngle) + (y * cosAngle),
-              pressure: point.pressure,
-            );
-          }).toList(),
-          strokeWidth: source.strokeWidth,
-          color: source.color,
         );
       }
 
@@ -1540,30 +1457,6 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
       final bounds = _selectedStrokeBounds();
 
       if (bounds != null) {
-        if (_transformRotationHandleHit(canvasPosition, bounds)) {
-          if (_activeLayerGroup == null) {
-            _saveUndoState();
-          } else {
-            _saveGroupUndoState();
-          }
-
-          final center = bounds.center;
-
-          setState(() {
-            _isTransformRotating = true;
-            _isTransformScaling = false;
-            _isTransformDragging = false;
-            _transformRotationCenter = center;
-            _transformRotationStartAngle = _angleFromCenter(
-              canvasPosition,
-              center,
-            );
-            _transformRotationSnapshot = _selectedTransformSnapshot();
-          });
-
-          return;
-        }
-
         final corner = _transformCornerHit(canvasPosition, bounds);
 
         if (corner != null) {
@@ -1580,7 +1473,6 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
           setState(() {
             _isTransformScaling = true;
             _isTransformDragging = false;
-            _isTransformRotating = false;
             _transformScaleAnchor = anchor;
             _transformScaleStartDistance = startDistance < 0.001
                 ? 0.001
@@ -1602,7 +1494,6 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
         setState(() {
           _isTransformDragging = true;
           _isTransformScaling = false;
-          _isTransformRotating = false;
           _transformLastPosition = canvasPosition;
         });
       } else {
@@ -1653,28 +1544,6 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     final canvasPosition = renderBox.globalToLocal(event.position);
 
     if (_isTransformActive) {
-      if (_isTransformRotating &&
-          _transformRotationCenter != null &&
-          _transformRotationStartAngle != null &&
-          _transformRotationSnapshot != null) {
-        final currentAngle = _angleFromCenter(
-          canvasPosition,
-          _transformRotationCenter!,
-        );
-
-        final angle = currentAngle - _transformRotationStartAngle!;
-
-        setState(() {
-          _rotateSelectedStrokes(
-            angle,
-            _transformRotationCenter!,
-            _transformRotationSnapshot!,
-          );
-        });
-
-        return;
-      }
-
       if (_isTransformScaling &&
           _transformScaleAnchor != null &&
           _transformScaleStartDistance != null &&
@@ -1929,12 +1798,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
 
     if (_isTransformActive) {
       setState(() {
-        if (_isTransformRotating) {
-          _isTransformRotating = false;
-          _transformRotationCenter = null;
-          _transformRotationStartAngle = null;
-          _transformRotationSnapshot = null;
-        } else if (_isTransformScaling) {
+        if (_isTransformScaling) {
           _isTransformScaling = false;
           _transformScaleAnchor = null;
           _transformScaleStartDistance = null;
@@ -3456,16 +3320,6 @@ class _TransformOverlayPainter extends CustomPainter {
         ..style = PaintingStyle.stroke;
 
       canvas.drawRect(bounds.inflate(6), boxPaint);
-
-      final rotationHandle = bounds.topCenter + const Offset(0, -34);
-
-      canvas.drawLine(bounds.topCenter, rotationHandle, boxPaint);
-
-      final rotationHandlePaint = Paint()
-        ..color = Colors.cyanAccent
-        ..style = PaintingStyle.fill;
-
-      canvas.drawCircle(rotationHandle, 7, rotationHandlePaint);
 
       final handlePaint = Paint()
         ..color = Colors.cyanAccent
