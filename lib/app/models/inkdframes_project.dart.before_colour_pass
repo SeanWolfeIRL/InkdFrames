@@ -11,7 +11,6 @@ class InkdFramesProject {
     required this.frameDurations,
     this.canvasWidth = 1920,
     this.canvasHeight = 1080,
-    this.canvasBackgroundColor = 0xFF1F1B24,
     this.referenceMediaPath,
     this.referenceMediaType,
     List<DrawingLayer>? layers,
@@ -69,8 +68,6 @@ class InkdFramesProject {
           : List<int>.filled(frameCount, 1),
       canvasWidth: (json['canvasWidth'] as num?)?.toDouble() ?? 1920,
       canvasHeight: (json['canvasHeight'] as num?)?.toDouble() ?? 1080,
-      canvasBackgroundColor:
-          (json['canvasBackgroundColor'] as num?)?.toInt() ?? 0xFF1F1B24,
       referenceMediaPath: json['referenceMediaPath'] as String?,
       referenceMediaType: json['referenceMediaType'] as String?,
       referenceVisible: json['referenceVisible'] as bool? ?? true,
@@ -97,7 +94,6 @@ class InkdFramesProject {
   final List<int> frameDurations;
   final double canvasWidth;
   final double canvasHeight;
-  final int canvasBackgroundColor;
 
   final String? referenceMediaPath;
   final String? referenceMediaType;
@@ -123,7 +119,6 @@ class InkdFramesProject {
       'frameDurations': frameDurations,
       'canvasWidth': canvasWidth,
       'canvasHeight': canvasHeight,
-      'canvasBackgroundColor': canvasBackgroundColor,
       'referenceMediaPath': referenceMediaPath,
       'referenceMediaType': referenceMediaType,
       'referenceVisible': referenceVisible,

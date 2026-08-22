@@ -82,8 +82,6 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
   double _canvasWidth = 1920;
   double _canvasHeight = 1080;
   Color _brushColor = Colors.white;
-  Color _canvasBackgroundColor = const Color(0xFF1F1B24);
-  final List<Color> _recentColors = <Color>[];
   final List<List<List<VectorStroke>>> _undoStacks = [[]];
   final List<List<List<VectorStroke>>> _redoStacks = [[]];
 
@@ -157,7 +155,6 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
       frameDurations: _frameDurations,
       canvasWidth: _canvasWidth,
       canvasHeight: _canvasHeight,
-      canvasBackgroundColor: _canvasBackgroundColor.toARGB32(),
       referenceMediaPath: _referenceMediaPath,
       referenceMediaType: _referenceMediaType,
       referenceVisible: _referenceVisible,
@@ -704,7 +701,6 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
       _fps = project.fps;
       _canvasWidth = project.canvasWidth;
       _canvasHeight = project.canvasHeight;
-      _canvasBackgroundColor = Color(project.canvasBackgroundColor);
       _referenceMediaPath = project.referenceMediaPath;
       _referenceMediaType = project.referenceMediaType;
       _referenceVisible = project.referenceVisible;
@@ -2063,182 +2059,6 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     return _frames[_selectedFrameIndex + 1];
   }
 
-  void _rememberRecentColor(Color color) {
-    _recentColors.removeWhere(
-      (existing) => existing.toARGB32() == color.toARGB32(),
-    );
-
-    _recentColors.insert(0, color);
-
-    if (_recentColors.length > 8) {
-      _recentColors.removeRange(8, _recentColors.length);
-    }
-  }
-
-  String _colorHex(Color color) {
-    return color
-        .toARGB32()
-        .toRadixString(16)
-        .padLeft(8, '0')
-        .substring(2)
-        .toUpperCase();
-  }
-
-  Color? _colorFromHex(String input) {
-    final cleaned = input.trim().replaceAll('#', '').toUpperCase();
-
-    if (!RegExp(r'^[0-9A-F]{6}$').hasMatch(cleaned)) {
-      return null;
-    }
-
-    final value = int.tryParse('FF$cleaned', radix: 16);
-
-    if (value == null) return null;
-
-    return Color(value);
-  }
-
-  Future<Color?> _showColourPicker(
-    Color initialColor, {
-    required String title,
-  }) async {
-    var hsv = HSVColor.fromColor(initialColor);
-    var hexInput = _colorHex(initialColor);
-
-    return showDialog<Color>(
-      context: context,
-      builder: (dialogContext) {
-        return StatefulBuilder(
-          builder: (dialogContext, setDialogState) {
-            final selectedColor = hsv.toColor();
-
-            return AlertDialog(
-              title: Text(title),
-              content: SizedBox(
-                width: 360,
-                child: SingleChildScrollView(
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Container(
-                        height: 56,
-                        decoration: BoxDecoration(
-                          color: selectedColor,
-                          borderRadius: BorderRadius.circular(12),
-                          border: Border.all(color: Colors.white24),
-                        ),
-                      ),
-                      const SizedBox(height: 16),
-
-                      Row(
-                        children: [
-                          const SizedBox(width: 80, child: Text('Hue')),
-                          Expanded(
-                            child: Slider(
-                              value: hsv.hue,
-                              min: 0,
-                              max: 360,
-                              onChanged: (value) {
-                                setDialogState(() {
-                                  hsv = hsv.withHue(value);
-                                  hexInput = _colorHex(hsv.toColor());
-                                });
-                              },
-                            ),
-                          ),
-                        ],
-                      ),
-
-                      Row(
-                        children: [
-                          const SizedBox(width: 80, child: Text('Saturation')),
-                          Expanded(
-                            child: Slider(
-                              value: hsv.saturation,
-                              min: 0,
-                              max: 1,
-                              onChanged: (value) {
-                                setDialogState(() {
-                                  hsv = hsv.withSaturation(value);
-                                  hexInput = _colorHex(hsv.toColor());
-                                });
-                              },
-                            ),
-                          ),
-                        ],
-                      ),
-
-                      Row(
-                        children: [
-                          const SizedBox(width: 80, child: Text('Brightness')),
-                          Expanded(
-                            child: Slider(
-                              value: hsv.value,
-                              min: 0,
-                              max: 1,
-                              onChanged: (value) {
-                                setDialogState(() {
-                                  hsv = hsv.withValue(value);
-                                  hexInput = _colorHex(hsv.toColor());
-                                });
-                              },
-                            ),
-                          ),
-                        ],
-                      ),
-
-                      const SizedBox(height: 8),
-
-                      TextFormField(
-                        initialValue: hexInput,
-                        decoration: const InputDecoration(
-                          labelText: 'HEX',
-                          prefixText: '#',
-                          hintText: 'FF5722',
-                        ),
-                        textCapitalization: TextCapitalization.characters,
-                        onChanged: (value) {
-                          hexInput = value;
-
-                          final parsed = _colorFromHex(value);
-
-                          if (parsed != null) {
-                            setDialogState(() {
-                              hsv = HSVColor.fromColor(parsed);
-                            });
-                          }
-                        },
-                      ),
-
-                      const SizedBox(height: 10),
-
-                      Text(
-                        '#${_colorHex(selectedColor)}',
-                        style: Theme.of(dialogContext).textTheme.bodySmall,
-                      ),
-                    ],
-                  ),
-                ),
-              ),
-              actions: [
-                TextButton(
-                  onPressed: () => Navigator.pop(dialogContext),
-                  child: const Text('Cancel'),
-                ),
-                FilledButton(
-                  onPressed: () {
-                    Navigator.pop(dialogContext, hsv.toColor());
-                  },
-                  child: const Text('Use Colour'),
-                ),
-              ],
-            );
-          },
-        );
-      },
-    );
-  }
-
   List<Widget> _buildLayerPanelEntries() {
     final widgets = <Widget>[];
 
@@ -2613,8 +2433,8 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                                     child: Stack(
                                       fit: StackFit.expand,
                                       children: [
-                                        ColoredBox(
-                                          color: _canvasBackgroundColor,
+                                        const ColoredBox(
+                                          color: Color(0xFF1F1B24),
                                         ),
                                         if (_referenceVisible &&
                                             _referenceMediaType == 'video' &&
@@ -2691,8 +2511,6 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                                                 : const <VectorStroke>[],
                                             strokeColor: _brushColor,
                                             strokeWidth: _brushSize,
-                                            backgroundColor:
-                                                _canvasBackgroundColor,
                                             paintBackground:
                                                 _referenceMediaPath == null ||
                                                 (_referenceMediaType !=
@@ -3024,35 +2842,19 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                                                     children: [
                                                       for (final color
                                                           in const [
-                                                            Color(0xFFFFFFFF),
-                                                            Color(0xFFBDBDBD),
-                                                            Color(0xFF616161),
-                                                            Color(0xFF000000),
-                                                            Color(0xFFF44336),
-                                                            Color(0xFFFF7043),
-                                                            Color(0xFFFF9800),
-                                                            Color(0xFFFFC107),
-                                                            Color(0xFFFFEB3B),
-                                                            Color(0xFF8BC34A),
-                                                            Color(0xFF4CAF50),
-                                                            Color(0xFF009688),
-                                                            Color(0xFF00BCD4),
-                                                            Color(0xFF03A9F4),
-                                                            Color(0xFF2196F3),
-                                                            Color(0xFF3F51B5),
-                                                            Color(0xFF673AB7),
-                                                            Color(0xFF9C27B0),
-                                                            Color(0xFFE91E63),
-                                                            Color(0xFF795548),
+                                                            Colors.red,
+                                                            Colors.white,
+                                                            Colors.blue,
+                                                            Colors.green,
+                                                            Colors.yellow,
+                                                            Colors.purple,
+                                                            Colors.black,
                                                           ])
                                                         GestureDetector(
                                                           onTap: () {
                                                             setState(() {
                                                               _brushColor =
                                                                   color;
-                                                              _rememberRecentColor(
-                                                                color,
-                                                              );
                                                             });
                                                           },
                                                           child: Container(
@@ -3079,223 +2881,6 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                                                             ),
                                                           ),
                                                         ),
-                                                      Tooltip(
-                                                        message:
-                                                            'Custom Colour',
-                                                        child: GestureDetector(
-                                                          onTap: () async {
-                                                            final color =
-                                                                await _showColourPicker(
-                                                                  _brushColor,
-                                                                  title:
-                                                                      'Brush Colour',
-                                                                );
-
-                                                            if (color == null ||
-                                                                !mounted) {
-                                                              return;
-                                                            }
-
-                                                            setState(() {
-                                                              _brushColor =
-                                                                  color;
-                                                              _rememberRecentColor(
-                                                                color,
-                                                              );
-                                                            });
-                                                          },
-                                                          child: Container(
-                                                            width: 24,
-                                                            height: 24,
-                                                            decoration: BoxDecoration(
-                                                              shape: BoxShape
-                                                                  .circle,
-                                                              border: Border.all(
-                                                                color: Colors
-                                                                    .cyanAccent,
-                                                                width: 2,
-                                                              ),
-                                                            ),
-                                                            child: const Icon(
-                                                              Icons.colorize,
-                                                              size: 15,
-                                                            ),
-                                                          ),
-                                                        ),
-                                                      ),
-                                                    ],
-                                                  ),
-                                                ),
-                                              ],
-                                            ),
-
-                                            if (_recentColors.isNotEmpty) ...[
-                                              const SizedBox(height: 10),
-                                              Row(
-                                                crossAxisAlignment:
-                                                    CrossAxisAlignment.center,
-                                                children: [
-                                                  const SizedBox(
-                                                    width: 70,
-                                                    child: Text('Recent'),
-                                                  ),
-                                                  Expanded(
-                                                    child: Wrap(
-                                                      spacing: 7,
-                                                      runSpacing: 7,
-                                                      children: [
-                                                        for (final color
-                                                            in _recentColors)
-                                                          GestureDetector(
-                                                            onTap: () {
-                                                              setState(() {
-                                                                _brushColor =
-                                                                    color;
-                                                                _rememberRecentColor(
-                                                                  color,
-                                                                );
-                                                              });
-                                                            },
-                                                            child: Container(
-                                                              width: 24,
-                                                              height: 24,
-                                                              decoration: BoxDecoration(
-                                                                color: color,
-                                                                shape: BoxShape
-                                                                    .circle,
-                                                                border: Border.all(
-                                                                  color:
-                                                                      _brushColor ==
-                                                                          color
-                                                                      ? Colors
-                                                                            .deepPurpleAccent
-                                                                      : Colors
-                                                                            .white38,
-                                                                  width:
-                                                                      _brushColor ==
-                                                                          color
-                                                                      ? 3
-                                                                      : 2,
-                                                                ),
-                                                              ),
-                                                            ),
-                                                          ),
-                                                      ],
-                                                    ),
-                                                  ),
-                                                ],
-                                              ),
-                                            ],
-
-                                            const SizedBox(height: 10),
-                                            Row(
-                                              crossAxisAlignment:
-                                                  CrossAxisAlignment.center,
-                                              children: [
-                                                const SizedBox(
-                                                  width: 70,
-                                                  child: Text('Background'),
-                                                ),
-                                                Expanded(
-                                                  child: Wrap(
-                                                    spacing: 7,
-                                                    runSpacing: 7,
-                                                    children: [
-                                                      for (final color
-                                                          in const [
-                                                            Color(0xFF1F1B24),
-                                                            Color(0xFFF4EFD8),
-                                                            Color(0xFFFFFFFF),
-                                                            Color(0xFFF5F5F5),
-                                                            Color(0xFFBDBDBD),
-                                                            Color(0xFF616161),
-                                                            Color(0xFF000000),
-                                                            Color(0xFFFFCDD2),
-                                                            Color(0xFFFFE0B2),
-                                                            Color(0xFFFFF9C4),
-                                                            Color(0xFFC8E6C9),
-                                                            Color(0xFFB2EBF2),
-                                                            Color(0xFFBBDEFB),
-                                                            Color(0xFFD1C4E9),
-                                                            Color(0xFFF8BBD0),
-                                                          ])
-                                                        GestureDetector(
-                                                          onTap: () {
-                                                            setState(() {
-                                                              _canvasBackgroundColor =
-                                                                  color;
-                                                            });
-
-                                                            _scheduleAutosave();
-                                                          },
-                                                          child: Container(
-                                                            width: 24,
-                                                            height: 24,
-                                                            decoration: BoxDecoration(
-                                                              color: color,
-                                                              shape: BoxShape
-                                                                  .circle,
-                                                              border: Border.all(
-                                                                color:
-                                                                    _canvasBackgroundColor ==
-                                                                        color
-                                                                    ? Colors
-                                                                          .deepPurpleAccent
-                                                                    : Colors
-                                                                          .white38,
-                                                                width:
-                                                                    _canvasBackgroundColor ==
-                                                                        color
-                                                                    ? 3
-                                                                    : 2,
-                                                              ),
-                                                            ),
-                                                          ),
-                                                        ),
-                                                      Tooltip(
-                                                        message:
-                                                            'Custom Background',
-                                                        child: GestureDetector(
-                                                          onTap: () async {
-                                                            final color =
-                                                                await _showColourPicker(
-                                                                  _canvasBackgroundColor,
-                                                                  title:
-                                                                      'Canvas Background',
-                                                                );
-
-                                                            if (color == null ||
-                                                                !mounted) {
-                                                              return;
-                                                            }
-
-                                                            setState(() {
-                                                              _canvasBackgroundColor =
-                                                                  color;
-                                                            });
-
-                                                            _scheduleAutosave();
-                                                          },
-                                                          child: Container(
-                                                            width: 24,
-                                                            height: 24,
-                                                            decoration: BoxDecoration(
-                                                              shape: BoxShape
-                                                                  .circle,
-                                                              border: Border.all(
-                                                                color: Colors
-                                                                    .cyanAccent,
-                                                                width: 2,
-                                                              ),
-                                                            ),
-                                                            child: const Icon(
-                                                              Icons
-                                                                  .palette_outlined,
-                                                              size: 15,
-                                                            ),
-                                                          ),
-                                                        ),
-                                                      ),
                                                     ],
                                                   ),
                                                 ),
