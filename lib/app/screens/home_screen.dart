@@ -15,12 +15,7 @@ class HomeScreen extends StatelessWidget {
       appBar: AppBar(title: const Text('InkdFrames'), centerTitle: true),
       body: SafeArea(
         child: SingleChildScrollView(
-          padding: EdgeInsets.fromLTRB(
-            24,
-            32,
-            24,
-            32 + MediaQuery.of(context).viewInsets.bottom,
-          ),
+          padding: const EdgeInsets.fromLTRB(24, 32, 24, 32),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
@@ -90,106 +85,25 @@ class HomeScreen extends StatelessWidget {
                     return;
                   }
 
-                  final controller = TextEditingController(
-                    text: pickedFile.name.replaceFirst(RegExp(r'\.[^.]+$'), ''),
-                  );
-
                   final screenSize = MediaQuery.sizeOf(context);
-                  var isPortrait = screenSize.height > screenSize.width;
+                  final initialPortrait = screenSize.height > screenSize.width;
 
                   final result =
                       await showDialog<({String name, bool portrait})>(
                         context: context,
                         builder: (context) {
-                          return StatefulBuilder(
-                            builder: (context, setDialogState) {
-                              return AlertDialog(
-                                title: Text(
-                                  mediaType == 'image'
-                                      ? 'Create from image'
-                                      : 'Create from video',
-                                ),
-                                content: SizedBox(
-                                  width: 360,
-                                  child: Column(
-                                    mainAxisSize: MainAxisSize.min,
-                                    crossAxisAlignment:
-                                        CrossAxisAlignment.stretch,
-                                    children: [
-                                      TextField(
-                                        controller: controller,
-                                        autofocus: true,
-                                        decoration: const InputDecoration(
-                                          labelText: 'Animation name',
-                                        ),
-                                      ),
-                                      const SizedBox(height: 24),
-                                      const Text(
-                                        'Canvas orientation',
-                                        style: TextStyle(
-                                          fontWeight: FontWeight.w600,
-                                        ),
-                                      ),
-                                      const SizedBox(height: 10),
-                                      SegmentedButton<bool>(
-                                        segments: const [
-                                          ButtonSegment<bool>(
-                                            value: false,
-                                            icon: Icon(Icons.crop_landscape),
-                                            label: Text('Landscape'),
-                                          ),
-                                          ButtonSegment<bool>(
-                                            value: true,
-                                            icon: Icon(Icons.crop_portrait),
-                                            label: Text('Portrait'),
-                                          ),
-                                        ],
-                                        selected: {isPortrait},
-                                        onSelectionChanged: (selection) {
-                                          setDialogState(() {
-                                            isPortrait = selection.first;
-                                          });
-                                        },
-                                      ),
-                                      const SizedBox(height: 10),
-                                      Text(
-                                        isPortrait
-                                            ? '1080 × 1920'
-                                            : '1920 × 1080',
-                                        textAlign: TextAlign.center,
-                                        style: Theme.of(
-                                          context,
-                                        ).textTheme.bodySmall,
-                                      ),
-                                    ],
-                                  ),
-                                ),
-                                actions: [
-                                  TextButton(
-                                    onPressed: () => Navigator.pop(context),
-                                    child: const Text('Cancel'),
-                                  ),
-                                  FilledButton(
-                                    onPressed: () {
-                                      final name = controller.text.trim();
-
-                                      if (name.isEmpty) return;
-
-                                      Navigator.pop(context, (
-                                        name: name,
-                                        portrait: isPortrait,
-                                      ));
-                                    },
-                                    child: const Text('Create'),
-                                  ),
-                                ],
-                              );
-                            },
+                          return _CreateAnimationDialog(
+                            title: mediaType == 'image'
+                                ? 'Create from image'
+                                : 'Create from video',
+                            initialName: pickedFile.name.replaceFirst(
+                              RegExp(r'\.[^.]+$'),
+                              '',
+                            ),
+                            initialPortrait: initialPortrait,
                           );
                         },
                       );
-
-                  controller.dispose();
 
                   if (result == null || !context.mounted) return;
 
@@ -230,103 +144,20 @@ class HomeScreen extends StatelessWidget {
               const SizedBox(height: 16),
               TextButton(
                 onPressed: () async {
-                  final controller = TextEditingController();
-
                   final screenSize = MediaQuery.sizeOf(context);
-                  var isPortrait = screenSize.height > screenSize.width;
+                  final initialPortrait = screenSize.height > screenSize.width;
 
                   final result =
                       await showDialog<({String name, bool portrait})>(
                         context: context,
                         builder: (context) {
-                          return StatefulBuilder(
-                            builder: (context, setDialogState) {
-                              return AlertDialog(
-                                title: const Text('Create animation'),
-                                content: SizedBox(
-                                  width: 360,
-                                  child: Column(
-                                    mainAxisSize: MainAxisSize.min,
-                                    crossAxisAlignment:
-                                        CrossAxisAlignment.stretch,
-                                    children: [
-                                      TextField(
-                                        controller: controller,
-                                        autofocus: true,
-                                        decoration: const InputDecoration(
-                                          labelText: 'Animation name',
-                                          hintText: 'e.g. Bouncing Ball',
-                                        ),
-                                      ),
-                                      const SizedBox(height: 24),
-                                      const Text(
-                                        'Canvas orientation',
-                                        style: TextStyle(
-                                          fontWeight: FontWeight.w600,
-                                        ),
-                                      ),
-                                      const SizedBox(height: 10),
-                                      SegmentedButton<bool>(
-                                        segments: const [
-                                          ButtonSegment<bool>(
-                                            value: false,
-                                            icon: Icon(Icons.crop_landscape),
-                                            label: Text('Landscape'),
-                                          ),
-                                          ButtonSegment<bool>(
-                                            value: true,
-                                            icon: Icon(Icons.crop_portrait),
-                                            label: Text('Portrait'),
-                                          ),
-                                        ],
-                                        selected: {isPortrait},
-                                        onSelectionChanged: (selection) {
-                                          setDialogState(() {
-                                            isPortrait = selection.first;
-                                          });
-                                        },
-                                      ),
-                                      const SizedBox(height: 10),
-                                      Text(
-                                        isPortrait
-                                            ? '1080 × 1920'
-                                            : '1920 × 1080',
-                                        textAlign: TextAlign.center,
-                                        style: Theme.of(
-                                          context,
-                                        ).textTheme.bodySmall,
-                                      ),
-                                    ],
-                                  ),
-                                ),
-                                actions: [
-                                  TextButton(
-                                    onPressed: () => Navigator.pop(context),
-                                    child: const Text('Cancel'),
-                                  ),
-                                  FilledButton(
-                                    onPressed: () {
-                                      final name = controller.text.trim();
-
-                                      if (name.isEmpty) {
-                                        return;
-                                      }
-
-                                      Navigator.pop(context, (
-                                        name: name,
-                                        portrait: isPortrait,
-                                      ));
-                                    },
-                                    child: const Text('Create'),
-                                  ),
-                                ],
-                              );
-                            },
+                          return _CreateAnimationDialog(
+                            title: 'Create animation',
+                            initialName: '',
+                            initialPortrait: initialPortrait,
                           );
                         },
                       );
-
-                  controller.dispose();
 
                   if (result == null || !context.mounted) return;
 
@@ -361,6 +192,111 @@ class HomeScreen extends StatelessWidget {
           ),
         ),
       ),
+    );
+  }
+}
+
+class _CreateAnimationDialog extends StatefulWidget {
+  const _CreateAnimationDialog({
+    required this.title,
+    required this.initialName,
+    required this.initialPortrait,
+  });
+
+  final String title;
+  final String initialName;
+  final bool initialPortrait;
+
+  @override
+  State<_CreateAnimationDialog> createState() => _CreateAnimationDialogState();
+}
+
+class _CreateAnimationDialogState extends State<_CreateAnimationDialog> {
+  late final TextEditingController _controller;
+  late bool _isPortrait;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = TextEditingController(text: widget.initialName);
+    _isPortrait = widget.initialPortrait;
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: Text(widget.title),
+      content: SizedBox(
+        width: 360,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            TextField(
+              controller: _controller,
+              autofocus: true,
+              decoration: const InputDecoration(
+                labelText: 'Animation name',
+                hintText: 'e.g. Bouncing Ball',
+              ),
+            ),
+            const SizedBox(height: 24),
+            const Text(
+              'Canvas orientation',
+              style: TextStyle(fontWeight: FontWeight.w600),
+            ),
+            const SizedBox(height: 10),
+            SegmentedButton<bool>(
+              segments: const [
+                ButtonSegment<bool>(
+                  value: false,
+                  icon: Icon(Icons.crop_landscape),
+                  label: Text('Landscape'),
+                ),
+                ButtonSegment<bool>(
+                  value: true,
+                  icon: Icon(Icons.crop_portrait),
+                  label: Text('Portrait'),
+                ),
+              ],
+              selected: {_isPortrait},
+              onSelectionChanged: (selection) {
+                setState(() {
+                  _isPortrait = selection.first;
+                });
+              },
+            ),
+            const SizedBox(height: 10),
+            Text(
+              _isPortrait ? '1080 × 1920' : '1920 × 1080',
+              textAlign: TextAlign.center,
+              style: Theme.of(context).textTheme.bodySmall,
+            ),
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: const Text('Cancel'),
+        ),
+        FilledButton(
+          onPressed: () {
+            final name = _controller.text.trim();
+
+            if (name.isEmpty) return;
+
+            Navigator.pop(context, (name: name, portrait: _isPortrait));
+          },
+          child: const Text('Create'),
+        ),
+      ],
     );
   }
 }
