@@ -1,5 +1,4 @@
 import 'drawing_layer.dart';
-import 'layer_group.dart';
 import 'vector_stroke.dart';
 
 class InkdFramesProject {
@@ -14,17 +13,14 @@ class InkdFramesProject {
     this.referenceMediaPath,
     this.referenceMediaType,
     List<DrawingLayer>? layers,
-    List<LayerGroup>? layerGroups,
     this.referenceVisible = true,
     this.referenceOpacity = 1.0,
-  }) : layers = layers ?? _layersFromLegacyFrames(frames),
-       layerGroups = layerGroups ?? <LayerGroup>[];
+  }) : layers = layers ?? _layersFromLegacyFrames(frames);
 
   factory InkdFramesProject.fromJson(Map<String, dynamic> json) {
     final legacyFrames = _readLegacyFrames(json['frames']);
 
     final rawLayers = json['layers'];
-    final rawLayerGroups = json['layerGroups'];
 
     final layers = rawLayers is List && rawLayers.isNotEmpty
         ? rawLayers
@@ -35,16 +31,6 @@ class InkdFramesProject {
               )
               .toList()
         : _layersFromLegacyFrames(legacyFrames);
-
-    final layerGroups = rawLayerGroups is List
-        ? rawLayerGroups
-              .map(
-                (group) => LayerGroup.fromJson(
-                  Map<String, dynamic>.from(group as Map),
-                ),
-              )
-              .toList()
-        : <LayerGroup>[];
 
     final frameCount = legacyFrames.isNotEmpty
         ? legacyFrames.length
@@ -74,7 +60,6 @@ class InkdFramesProject {
       referenceOpacity:
           (json['referenceOpacity'] as num?)?.toDouble().clamp(0.0, 1.0) ?? 1.0,
       layers: layers,
-      layerGroups: layerGroups,
     );
   }
 
@@ -89,7 +74,6 @@ class InkdFramesProject {
   final List<List<VectorStroke>> frames;
 
   final List<DrawingLayer> layers;
-  final List<LayerGroup> layerGroups;
 
   final List<int> frameDurations;
   final double canvasWidth;
@@ -114,7 +98,6 @@ class InkdFramesProject {
           .toList(),
 
       'layers': layers.map((layer) => layer.toJson()).toList(),
-      'layerGroups': layerGroups.map((group) => group.toJson()).toList(),
 
       'frameDurations': frameDurations,
       'canvasWidth': canvasWidth,

@@ -75,9 +75,6 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
   final List<List<List<VectorStroke>>> _undoStacks = [[]];
   final List<List<List<VectorStroke>>> _redoStacks = [[]];
 
-  final List<List<Map<String, List<VectorStroke>>>> _groupUndoStacks = [[]];
-  final List<List<Map<String, List<VectorStroke>>>> _groupRedoStacks = [[]];
-
   final TransformationController _transformationController =
       TransformationController();
 
@@ -258,24 +255,6 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
       ..clear()
       ..addAll(
         List.generate(_frameDurations.length, (_) => <List<VectorStroke>>[]),
-      );
-
-    _groupUndoStacks
-      ..clear()
-      ..addAll(
-        List.generate(
-          _frameDurations.length,
-          (_) => <Map<String, List<VectorStroke>>>[],
-        ),
-      );
-
-    _groupRedoStacks
-      ..clear()
-      ..addAll(
-        List.generate(
-          _frameDurations.length,
-          (_) => <Map<String, List<VectorStroke>>>[],
-        ),
       );
   }
 
@@ -1344,8 +1323,6 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
       if (bounds != null && bounds.inflate(16).contains(canvasPosition)) {
         if (_activeLayerGroup == null) {
           _saveUndoState();
-        } else {
-          _saveGroupUndoState();
         }
 
         setState(() {
@@ -1465,94 +1442,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     });
   }
 
-  Map<String, List<VectorStroke>> _groupTransformSnapshot() {
-    final snapshot = <String, List<VectorStroke>>{};
-
-    for (final layerIndex in _transformLayerIndices()) {
-      if (layerIndex < 0 || layerIndex >= _layers.length) {
-        continue;
-      }
-
-      final layer = _layers[layerIndex];
-
-      if (_selectedFrameIndex < 0 ||
-          _selectedFrameIndex >= layer.frames.length) {
-        continue;
-      }
-
-      snapshot[layer.id] = layer.frames[_selectedFrameIndex]
-          .map((stroke) => stroke.copy())
-          .toList();
-    }
-
-    return snapshot;
-  }
-
-  void _restoreGroupTransformSnapshot(
-    Map<String, List<VectorStroke>> snapshot,
-  ) {
-    for (final entry in snapshot.entries) {
-      final layerIndex = _layerIndexForId(entry.key);
-
-      if (layerIndex == -1) continue;
-
-      final layer = _layers[layerIndex];
-
-      if (_selectedFrameIndex < 0 ||
-          _selectedFrameIndex >= layer.frames.length) {
-        continue;
-      }
-
-      final frames = _copyLayerFrames(layer.frames);
-
-      frames[_selectedFrameIndex] = entry.value
-          .map((stroke) => stroke.copy())
-          .toList();
-
-      _layers[layerIndex] = layer.copyWith(frames: frames);
-    }
-
-    _rebuildCompositeFrames();
-  }
-
-  void _saveGroupUndoState() {
-    if (_selectedFrameIndex < 0 ||
-        _selectedFrameIndex >= _groupUndoStacks.length) {
-      return;
-    }
-
-    final snapshot = _groupTransformSnapshot();
-
-    if (snapshot.isEmpty) return;
-
-    _groupUndoStacks[_selectedFrameIndex].add(snapshot);
-    _groupRedoStacks[_selectedFrameIndex].clear();
-  }
-
   void _undo() {
-    if (_activeLayerGroup != null) {
-      final undoStack = _groupUndoStacks[_selectedFrameIndex];
-      final redoStack = _groupRedoStacks[_selectedFrameIndex];
-
-      if (undoStack.isEmpty) return;
-
-      setState(() {
-        final currentSnapshot = _groupTransformSnapshot();
-
-        if (currentSnapshot.isNotEmpty) {
-          redoStack.add(currentSnapshot);
-        }
-
-        final snapshot = undoStack.removeLast();
-
-        _restoreGroupTransformSnapshot(snapshot);
-        _clearTransformSelection();
-      });
-
-      _scheduleAutosave();
-      return;
-    }
-
     final undoStack = _undoStacks[_selectedFrameIndex];
     final redoStack = _redoStacks[_selectedFrameIndex];
 
@@ -1579,29 +1469,6 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
   }
 
   void _redo() {
-    if (_activeLayerGroup != null) {
-      final undoStack = _groupUndoStacks[_selectedFrameIndex];
-      final redoStack = _groupRedoStacks[_selectedFrameIndex];
-
-      if (redoStack.isEmpty) return;
-
-      setState(() {
-        final currentSnapshot = _groupTransformSnapshot();
-
-        if (currentSnapshot.isNotEmpty) {
-          undoStack.add(currentSnapshot);
-        }
-
-        final snapshot = redoStack.removeLast();
-
-        _restoreGroupTransformSnapshot(snapshot);
-        _clearTransformSelection();
-      });
-
-      _scheduleAutosave();
-      return;
-    }
-
     final undoStack = _undoStacks[_selectedFrameIndex];
     final redoStack = _redoStacks[_selectedFrameIndex];
 

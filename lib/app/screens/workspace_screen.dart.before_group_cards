@@ -59,7 +59,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
   bool _isTransformDragging = false;
 
   List<VectorPoint> _lassoPoints = const <VectorPoint>[];
-  Map<String, Set<int>> _selectedTransformStrokes = <String, Set<int>>{};
+  Set<int> _selectedStrokeIndices = <int>{};
   Offset? _transformLastPosition;
   bool _timingExpanded = true;
   bool _drawingExpanded = true;
@@ -74,9 +74,6 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
   Color _brushColor = Colors.white;
   final List<List<List<VectorStroke>>> _undoStacks = [[]];
   final List<List<List<VectorStroke>>> _redoStacks = [[]];
-
-  final List<List<Map<String, List<VectorStroke>>>> _groupUndoStacks = [[]];
-  final List<List<Map<String, List<VectorStroke>>>> _groupRedoStacks = [[]];
 
   final TransformationController _transformationController =
       TransformationController();
@@ -258,24 +255,6 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
       ..clear()
       ..addAll(
         List.generate(_frameDurations.length, (_) => <List<VectorStroke>>[]),
-      );
-
-    _groupUndoStacks
-      ..clear()
-      ..addAll(
-        List.generate(
-          _frameDurations.length,
-          (_) => <Map<String, List<VectorStroke>>>[],
-        ),
-      );
-
-    _groupRedoStacks
-      ..clear()
-      ..addAll(
-        List.generate(
-          _frameDurations.length,
-          (_) => <Map<String, List<VectorStroke>>>[],
-        ),
       );
   }
 
@@ -1035,7 +1014,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
 
   void _clearTransformSelection() {
     _lassoPoints = const <VectorPoint>[];
-    _selectedTransformStrokes = <String, Set<int>>{};
+    _selectedStrokeIndices = <int>{};
     _transformLastPosition = null;
     _isTransformDragging = false;
   }
@@ -1063,107 +1042,48 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     return inside;
   }
 
-  List<int> _transformLayerIndices() {
-    final group = _activeLayerGroup;
-
-    if (group == null) {
-      return <int>[_activeLayerIndex];
-    }
-
-    final indices = <int>[];
-
-    for (var index = 0; index < _layers.length; index++) {
-      if (group.childLayerIds.contains(_layers[index].id)) {
-        indices.add(index);
-      }
-    }
-
-    return indices;
-  }
-
-  int _layerIndexForId(String layerId) {
-    return _layers.indexWhere((layer) => layer.id == layerId);
-  }
-
   void _finishLassoSelection() {
     if (_lassoPoints.length < 3) {
       _clearTransformSelection();
       return;
     }
 
-    final selected = <String, Set<int>>{};
+    final strokes = _activeLayer.frames[_selectedFrameIndex];
+    final selected = <int>{};
 
-    for (final layerIndex in _transformLayerIndices()) {
-      if (layerIndex < 0 || layerIndex >= _layers.length) {
-        continue;
-      }
+    for (var strokeIndex = 0; strokeIndex < strokes.length; strokeIndex++) {
+      final stroke = strokes[strokeIndex];
 
-      final layer = _layers[layerIndex];
-
-      if (_selectedFrameIndex >= layer.frames.length) {
-        continue;
-      }
-
-      final strokes = layer.frames[_selectedFrameIndex];
-      final strokeIndices = <int>{};
-
-      for (var strokeIndex = 0; strokeIndex < strokes.length; strokeIndex++) {
-        final stroke = strokes[strokeIndex];
-
-        if (stroke.points.any(
-          (point) =>
-              _pointInsidePolygon(Offset(point.dx, point.dy), _lassoPoints),
-        )) {
-          strokeIndices.add(strokeIndex);
-        }
-      }
-
-      if (strokeIndices.isNotEmpty) {
-        selected[layer.id] = strokeIndices;
+      if (stroke.points.any(
+        (point) =>
+            _pointInsidePolygon(Offset(point.dx, point.dy), _lassoPoints),
+      )) {
+        selected.add(strokeIndex);
       }
     }
 
-    _selectedTransformStrokes = selected;
+    _selectedStrokeIndices = selected;
     _lassoPoints = const <VectorPoint>[];
   }
 
   Rect? _selectedStrokeBounds() {
-    if (_selectedTransformStrokes.isEmpty) {
-      return null;
-    }
+    if (_selectedStrokeIndices.isEmpty) return null;
+
+    final strokes = _activeLayer.frames[_selectedFrameIndex];
 
     double? minX;
     double? minY;
     double? maxX;
     double? maxY;
 
-    for (final entry in _selectedTransformStrokes.entries) {
-      final layerIndex = _layerIndexForId(entry.key);
+    for (final index in _selectedStrokeIndices) {
+      if (index < 0 || index >= strokes.length) continue;
 
-      if (layerIndex == -1) continue;
-
-      final layer = _layers[layerIndex];
-
-      if (_selectedFrameIndex >= layer.frames.length) {
-        continue;
-      }
-
-      final strokes = layer.frames[_selectedFrameIndex];
-
-      for (final strokeIndex in entry.value) {
-        if (strokeIndex < 0 || strokeIndex >= strokes.length) {
-          continue;
-        }
-
-        for (final point in strokes[strokeIndex].points) {
-          minX = minX == null ? point.dx : (point.dx < minX ? point.dx : minX);
-
-          minY = minY == null ? point.dy : (point.dy < minY ? point.dy : minY);
-
-          maxX = maxX == null ? point.dx : (point.dx > maxX ? point.dx : maxX);
-
-          maxY = maxY == null ? point.dy : (point.dy > maxY ? point.dy : maxY);
-        }
+      for (final point in strokes[index].points) {
+        minX = minX == null ? point.dx : (point.dx < minX ? point.dx : minX);
+        minY = minY == null ? point.dy : (point.dy < minY ? point.dy : minY);
+        maxX = maxX == null ? point.dx : (point.dx > maxX ? point.dx : maxX);
+        maxY = maxY == null ? point.dy : (point.dy > maxY ? point.dy : maxY);
       }
     }
 
@@ -1175,49 +1095,33 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
   }
 
   void _moveSelectedStrokes(Offset delta) {
-    if (_selectedTransformStrokes.isEmpty) {
-      return;
+    if (_selectedStrokeIndices.isEmpty) return;
+
+    final layer = _activeLayer;
+    final frames = _copyLayerFrames(layer.frames);
+    final strokes = frames[_selectedFrameIndex];
+
+    for (final index in _selectedStrokeIndices) {
+      if (index < 0 || index >= strokes.length) continue;
+
+      final stroke = strokes[index];
+
+      strokes[index] = VectorStroke(
+        points: stroke.points
+            .map(
+              (point) => VectorPoint(
+                dx: point.dx + delta.dx,
+                dy: point.dy + delta.dy,
+                pressure: point.pressure,
+              ),
+            )
+            .toList(),
+        strokeWidth: stroke.strokeWidth,
+        color: stroke.color,
+      );
     }
 
-    for (final entry in _selectedTransformStrokes.entries) {
-      final layerIndex = _layerIndexForId(entry.key);
-
-      if (layerIndex == -1) continue;
-
-      final layer = _layers[layerIndex];
-
-      if (_selectedFrameIndex >= layer.frames.length) {
-        continue;
-      }
-
-      final frames = _copyLayerFrames(layer.frames);
-      final strokes = frames[_selectedFrameIndex];
-
-      for (final strokeIndex in entry.value) {
-        if (strokeIndex < 0 || strokeIndex >= strokes.length) {
-          continue;
-        }
-
-        final stroke = strokes[strokeIndex];
-
-        strokes[strokeIndex] = VectorStroke(
-          points: stroke.points
-              .map(
-                (point) => VectorPoint(
-                  dx: point.dx + delta.dx,
-                  dy: point.dy + delta.dy,
-                  pressure: point.pressure,
-                ),
-              )
-              .toList(),
-          strokeWidth: stroke.strokeWidth,
-          color: stroke.color,
-        );
-      }
-
-      _layers[layerIndex] = layer.copyWith(frames: frames);
-    }
-
+    _layers[_activeLayerIndex] = layer.copyWith(frames: frames);
     _rebuildCompositeFrames();
   }
 
@@ -1342,11 +1246,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
       final bounds = _selectedStrokeBounds();
 
       if (bounds != null && bounds.inflate(16).contains(canvasPosition)) {
-        if (_activeLayerGroup == null) {
-          _saveUndoState();
-        } else {
-          _saveGroupUndoState();
-        }
+        _saveUndoState();
 
         setState(() {
           _isTransformDragging = true;
@@ -1354,7 +1254,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
         });
       } else {
         setState(() {
-          _selectedTransformStrokes = <String, Set<int>>{};
+          _selectedStrokeIndices = <int>{};
           _lassoPoints = <VectorPoint>[
             VectorPoint(
               dx: canvasPosition.dx,
@@ -1465,94 +1365,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     });
   }
 
-  Map<String, List<VectorStroke>> _groupTransformSnapshot() {
-    final snapshot = <String, List<VectorStroke>>{};
-
-    for (final layerIndex in _transformLayerIndices()) {
-      if (layerIndex < 0 || layerIndex >= _layers.length) {
-        continue;
-      }
-
-      final layer = _layers[layerIndex];
-
-      if (_selectedFrameIndex < 0 ||
-          _selectedFrameIndex >= layer.frames.length) {
-        continue;
-      }
-
-      snapshot[layer.id] = layer.frames[_selectedFrameIndex]
-          .map((stroke) => stroke.copy())
-          .toList();
-    }
-
-    return snapshot;
-  }
-
-  void _restoreGroupTransformSnapshot(
-    Map<String, List<VectorStroke>> snapshot,
-  ) {
-    for (final entry in snapshot.entries) {
-      final layerIndex = _layerIndexForId(entry.key);
-
-      if (layerIndex == -1) continue;
-
-      final layer = _layers[layerIndex];
-
-      if (_selectedFrameIndex < 0 ||
-          _selectedFrameIndex >= layer.frames.length) {
-        continue;
-      }
-
-      final frames = _copyLayerFrames(layer.frames);
-
-      frames[_selectedFrameIndex] = entry.value
-          .map((stroke) => stroke.copy())
-          .toList();
-
-      _layers[layerIndex] = layer.copyWith(frames: frames);
-    }
-
-    _rebuildCompositeFrames();
-  }
-
-  void _saveGroupUndoState() {
-    if (_selectedFrameIndex < 0 ||
-        _selectedFrameIndex >= _groupUndoStacks.length) {
-      return;
-    }
-
-    final snapshot = _groupTransformSnapshot();
-
-    if (snapshot.isEmpty) return;
-
-    _groupUndoStacks[_selectedFrameIndex].add(snapshot);
-    _groupRedoStacks[_selectedFrameIndex].clear();
-  }
-
   void _undo() {
-    if (_activeLayerGroup != null) {
-      final undoStack = _groupUndoStacks[_selectedFrameIndex];
-      final redoStack = _groupRedoStacks[_selectedFrameIndex];
-
-      if (undoStack.isEmpty) return;
-
-      setState(() {
-        final currentSnapshot = _groupTransformSnapshot();
-
-        if (currentSnapshot.isNotEmpty) {
-          redoStack.add(currentSnapshot);
-        }
-
-        final snapshot = undoStack.removeLast();
-
-        _restoreGroupTransformSnapshot(snapshot);
-        _clearTransformSelection();
-      });
-
-      _scheduleAutosave();
-      return;
-    }
-
     final undoStack = _undoStacks[_selectedFrameIndex];
     final redoStack = _redoStacks[_selectedFrameIndex];
 
@@ -1579,29 +1392,6 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
   }
 
   void _redo() {
-    if (_activeLayerGroup != null) {
-      final undoStack = _groupUndoStacks[_selectedFrameIndex];
-      final redoStack = _groupRedoStacks[_selectedFrameIndex];
-
-      if (redoStack.isEmpty) return;
-
-      setState(() {
-        final currentSnapshot = _groupTransformSnapshot();
-
-        if (currentSnapshot.isNotEmpty) {
-          undoStack.add(currentSnapshot);
-        }
-
-        final snapshot = redoStack.removeLast();
-
-        _restoreGroupTransformSnapshot(snapshot);
-        _clearTransformSelection();
-      });
-
-      _scheduleAutosave();
-      return;
-    }
-
     final undoStack = _undoStacks[_selectedFrameIndex];
     final redoStack = _redoStacks[_selectedFrameIndex];
 
@@ -1752,285 +1542,6 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     }
 
     return _frames[_selectedFrameIndex + 1];
-  }
-
-  List<Widget> _buildLayerPanelEntries() {
-    final widgets = <Widget>[];
-
-    for (final group in _layerGroups) {
-      widgets.add(_buildLayerGroupCard(group));
-    }
-
-    for (var index = 0; index < _layers.length; index++) {
-      final layer = _layers[index];
-
-      if (_groupContainingLayer(layer.id) == null) {
-        widgets.add(_buildDrawingLayerCard(index, indented: false));
-      }
-    }
-
-    return widgets;
-  }
-
-  Widget _buildLayerGroupCard(LayerGroup group) {
-    final selected = _activeLayerGroupId == group.id;
-
-    final childIndices = <int>[];
-
-    for (var index = 0; index < _layers.length; index++) {
-      if (group.childLayerIds.contains(_layers[index].id)) {
-        childIndices.add(index);
-      }
-    }
-
-    return Container(
-      margin: const EdgeInsets.fromLTRB(6, 4, 6, 0),
-      decoration: BoxDecoration(
-        color: selected
-            ? Colors.deepPurpleAccent.withValues(alpha: 0.14)
-            : Colors.transparent,
-        borderRadius: BorderRadius.circular(10),
-        border: Border.all(
-          color: selected ? Colors.deepPurpleAccent : Colors.white12,
-        ),
-      ),
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          InkWell(
-            borderRadius: BorderRadius.circular(10),
-            onTap: () => _selectLayerGroup(group.id),
-            onDoubleTap: _isPlaying ? null : () => _renameLayerGroup(group.id),
-            child: Row(
-              children: [
-                IconButton(
-                  tooltip: group.expanded ? 'Collapse Group' : 'Expand Group',
-                  visualDensity: VisualDensity.compact,
-                  onPressed: () {
-                    _toggleLayerGroupExpanded(group.id);
-                  },
-                  icon: Icon(
-                    group.expanded
-                        ? Icons.keyboard_arrow_down
-                        : Icons.keyboard_arrow_right,
-                    size: 20,
-                  ),
-                ),
-                IconButton(
-                  tooltip: group.visible ? 'Hide Group' : 'Show Group',
-                  visualDensity: VisualDensity.compact,
-                  onPressed: () {
-                    _setLayerGroupVisible(group.id, !group.visible);
-                  },
-                  icon: Icon(
-                    group.visible ? Icons.visibility : Icons.visibility_off,
-                    size: 20,
-                  ),
-                ),
-                const Icon(Icons.folder_outlined, size: 19),
-                const SizedBox(width: 6),
-                Expanded(
-                  child: Text(
-                    group.name,
-                    overflow: TextOverflow.ellipsis,
-                    style: TextStyle(
-                      fontWeight: selected
-                          ? FontWeight.w600
-                          : FontWeight.normal,
-                    ),
-                  ),
-                ),
-                Text(
-                  '${childIndices.length}',
-                  style: const TextStyle(fontSize: 11, color: Colors.white54),
-                ),
-                PopupMenuButton<String>(
-                  tooltip: 'Group Options',
-                  onSelected: (value) {
-                    if (value == 'rename') {
-                      _renameLayerGroup(group.id);
-                    } else if (value == 'delete') {
-                      _deleteLayerGroup(group.id);
-                    }
-                  },
-                  itemBuilder: (context) => const [
-                    PopupMenuItem(value: 'rename', child: Text('Rename')),
-                    PopupMenuItem(value: 'delete', child: Text('Delete Group')),
-                  ],
-                ),
-              ],
-            ),
-          ),
-
-          if (group.expanded) ...[
-            for (final layerIndex in childIndices)
-              _buildDrawingLayerCard(layerIndex, indented: true),
-          ],
-        ],
-      ),
-    );
-  }
-
-  Widget _buildDrawingLayerCard(int index, {required bool indented}) {
-    final layer = _layers[index];
-    final selected = _activeLayerGroupId == null && index == _activeLayerIndex;
-
-    final currentGroup = _groupContainingLayer(layer.id);
-
-    return Container(
-      margin: EdgeInsets.fromLTRB(indented ? 22 : 6, 4, 6, 0),
-      decoration: BoxDecoration(
-        color: selected
-            ? Colors.deepPurpleAccent.withValues(alpha: 0.14)
-            : Colors.transparent,
-        borderRadius: BorderRadius.circular(10),
-        border: Border.all(
-          color: selected ? Colors.deepPurpleAccent : Colors.white12,
-        ),
-      ),
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          InkWell(
-            borderRadius: BorderRadius.circular(10),
-            onTap: () => _selectLayer(index),
-            onDoubleTap: _isPlaying ? null : () => _renameDrawingLayer(index),
-            child: Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 4),
-              child: Row(
-                children: [
-                  IconButton(
-                    tooltip: layer.visible ? 'Hide Layer' : 'Show Layer',
-                    visualDensity: VisualDensity.compact,
-                    onPressed: () {
-                      _setLayerVisible(index, !layer.visible);
-                    },
-                    icon: Icon(
-                      layer.visible ? Icons.visibility : Icons.visibility_off,
-                      size: 20,
-                    ),
-                  ),
-                  if (indented)
-                    const Padding(
-                      padding: EdgeInsets.only(right: 5),
-                      child: Icon(
-                        Icons.subdirectory_arrow_right,
-                        size: 16,
-                        color: Colors.white38,
-                      ),
-                    ),
-                  Expanded(
-                    child: Text(
-                      layer.name,
-                      overflow: TextOverflow.ellipsis,
-                      style: TextStyle(
-                        fontWeight: selected
-                            ? FontWeight.w600
-                            : FontWeight.normal,
-                      ),
-                    ),
-                  ),
-                  IconButton(
-                    tooltip: 'Move Layer Up',
-                    visualDensity: VisualDensity.compact,
-                    onPressed: _isPlaying || index == 0
-                        ? null
-                        : () => _moveDrawingLayer(index, index - 1),
-                    icon: const Icon(Icons.keyboard_arrow_up, size: 20),
-                  ),
-                  IconButton(
-                    tooltip: 'Move Layer Down',
-                    visualDensity: VisualDensity.compact,
-                    onPressed: _isPlaying || index == _layers.length - 1
-                        ? null
-                        : () => _moveDrawingLayer(index, index + 1),
-                    icon: const Icon(Icons.keyboard_arrow_down, size: 20),
-                  ),
-                  PopupMenuButton<String>(
-                    tooltip: 'Layer Options',
-                    onSelected: (value) {
-                      if (value == 'rename') {
-                        _renameDrawingLayer(index);
-                      } else if (value == 'delete') {
-                        _deleteDrawingLayer(index);
-                      } else if (value == 'ungroup') {
-                        _assignLayerToGroup(layer.id, null);
-                      } else if (value.startsWith('group:')) {
-                        _assignLayerToGroup(layer.id, value.substring(6));
-                      }
-                    },
-                    itemBuilder: (context) {
-                      return [
-                        const PopupMenuItem(
-                          value: 'rename',
-                          child: Text('Rename'),
-                        ),
-                        PopupMenuItem(
-                          value: 'delete',
-                          enabled: _layers.length > 1,
-                          child: const Text('Delete'),
-                        ),
-                        if (currentGroup != null)
-                          const PopupMenuItem(
-                            value: 'ungroup',
-                            child: Text('Remove from Group'),
-                          ),
-                        if (_layerGroups.isNotEmpty) const PopupMenuDivider(),
-                        for (final group in _layerGroups)
-                          PopupMenuItem(
-                            value: 'group:${group.id}',
-                            child: Row(
-                              children: [
-                                const Icon(Icons.folder_outlined, size: 18),
-                                const SizedBox(width: 8),
-                                Expanded(
-                                  child: Text(
-                                    currentGroup?.id == group.id
-                                        ? '${group.name} ✓'
-                                        : group.name,
-                                  ),
-                                ),
-                              ],
-                            ),
-                          ),
-                      ];
-                    },
-                  ),
-                ],
-              ),
-            ),
-          ),
-          Padding(
-            padding: const EdgeInsets.fromLTRB(12, 0, 10, 4),
-            child: Row(
-              children: [
-                const SizedBox(
-                  width: 50,
-                  child: Text('Opacity', style: TextStyle(fontSize: 11)),
-                ),
-                Expanded(
-                  child: Slider(
-                    value: layer.opacity,
-                    min: 0,
-                    max: 1,
-                    onChanged: (value) {
-                      _setLayerOpacity(index, value);
-                    },
-                  ),
-                ),
-                SizedBox(
-                  width: 38,
-                  child: Text(
-                    '${(layer.opacity * 100).round()}%',
-                    style: const TextStyle(fontSize: 10),
-                  ),
-                ),
-              ],
-            ),
-          ),
-        ],
-      ),
-    );
   }
 
   @override
@@ -2659,7 +2170,239 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                                       child: Column(
                                         mainAxisSize: MainAxisSize.min,
                                         children: [
-                                          ..._buildLayerPanelEntries(),
+                                          for (
+                                            var index = 0;
+                                            index < _layers.length;
+                                            index++
+                                          )
+                                            Container(
+                                              margin: const EdgeInsets.fromLTRB(
+                                                6,
+                                                4,
+                                                6,
+                                                0,
+                                              ),
+                                              decoration: BoxDecoration(
+                                                color:
+                                                    index == _activeLayerIndex
+                                                    ? Colors.deepPurpleAccent
+                                                          .withValues(
+                                                            alpha: 0.14,
+                                                          )
+                                                    : Colors.transparent,
+                                                borderRadius:
+                                                    BorderRadius.circular(10),
+                                                border: Border.all(
+                                                  color:
+                                                      index == _activeLayerIndex
+                                                      ? Colors.deepPurpleAccent
+                                                      : Colors.white12,
+                                                ),
+                                              ),
+                                              child: Column(
+                                                mainAxisSize: MainAxisSize.min,
+                                                children: [
+                                                  InkWell(
+                                                    borderRadius:
+                                                        BorderRadius.circular(
+                                                          10,
+                                                        ),
+                                                    onTap: () =>
+                                                        _selectLayer(index),
+                                                    onDoubleTap: _isPlaying
+                                                        ? null
+                                                        : () =>
+                                                              _renameDrawingLayer(
+                                                                index,
+                                                              ),
+                                                    child: Padding(
+                                                      padding:
+                                                          const EdgeInsets.symmetric(
+                                                            horizontal: 4,
+                                                          ),
+                                                      child: Row(
+                                                        children: [
+                                                          IconButton(
+                                                            tooltip:
+                                                                _layers[index]
+                                                                    .visible
+                                                                ? 'Hide Layer'
+                                                                : 'Show Layer',
+                                                            visualDensity:
+                                                                VisualDensity
+                                                                    .compact,
+                                                            onPressed: () {
+                                                              _setLayerVisible(
+                                                                index,
+                                                                !_layers[index]
+                                                                    .visible,
+                                                              );
+                                                            },
+                                                            icon: Icon(
+                                                              _layers[index]
+                                                                      .visible
+                                                                  ? Icons
+                                                                        .visibility
+                                                                  : Icons
+                                                                        .visibility_off,
+                                                              size: 20,
+                                                            ),
+                                                          ),
+                                                          Expanded(
+                                                            child: Text(
+                                                              _layers[index]
+                                                                  .name,
+                                                              overflow:
+                                                                  TextOverflow
+                                                                      .ellipsis,
+                                                              style: TextStyle(
+                                                                fontWeight:
+                                                                    index ==
+                                                                        _activeLayerIndex
+                                                                    ? FontWeight
+                                                                          .w600
+                                                                    : FontWeight
+                                                                          .normal,
+                                                              ),
+                                                            ),
+                                                          ),
+                                                          IconButton(
+                                                            tooltip:
+                                                                'Move Layer Up',
+                                                            visualDensity:
+                                                                VisualDensity
+                                                                    .compact,
+                                                            onPressed:
+                                                                _isPlaying ||
+                                                                    index == 0
+                                                                ? null
+                                                                : () =>
+                                                                      _moveDrawingLayer(
+                                                                        index,
+                                                                        index -
+                                                                            1,
+                                                                      ),
+                                                            icon: const Icon(
+                                                              Icons
+                                                                  .keyboard_arrow_up,
+                                                              size: 20,
+                                                            ),
+                                                          ),
+                                                          IconButton(
+                                                            tooltip:
+                                                                'Move Layer Down',
+                                                            visualDensity:
+                                                                VisualDensity
+                                                                    .compact,
+                                                            onPressed:
+                                                                _isPlaying ||
+                                                                    index ==
+                                                                        _layers.length -
+                                                                            1
+                                                                ? null
+                                                                : () =>
+                                                                      _moveDrawingLayer(
+                                                                        index,
+                                                                        index +
+                                                                            1,
+                                                                      ),
+                                                            icon: const Icon(
+                                                              Icons
+                                                                  .keyboard_arrow_down,
+                                                              size: 20,
+                                                            ),
+                                                          ),
+                                                          PopupMenuButton<
+                                                            String
+                                                          >(
+                                                            tooltip:
+                                                                'Layer Options',
+                                                            onSelected: (value) {
+                                                              if (value ==
+                                                                  'rename') {
+                                                                _renameDrawingLayer(
+                                                                  index,
+                                                                );
+                                                              } else if (value ==
+                                                                  'delete') {
+                                                                _deleteDrawingLayer(
+                                                                  index,
+                                                                );
+                                                              }
+                                                            },
+                                                            itemBuilder: (context) => [
+                                                              const PopupMenuItem(
+                                                                value: 'rename',
+                                                                child: Text(
+                                                                  'Rename',
+                                                                ),
+                                                              ),
+                                                              PopupMenuItem(
+                                                                value: 'delete',
+                                                                enabled:
+                                                                    _layers
+                                                                        .length >
+                                                                    1,
+                                                                child:
+                                                                    const Text(
+                                                                      'Delete',
+                                                                    ),
+                                                              ),
+                                                            ],
+                                                          ),
+                                                        ],
+                                                      ),
+                                                    ),
+                                                  ),
+                                                  Padding(
+                                                    padding:
+                                                        const EdgeInsets.fromLTRB(
+                                                          12,
+                                                          0,
+                                                          10,
+                                                          4,
+                                                        ),
+                                                    child: Row(
+                                                      children: [
+                                                        const SizedBox(
+                                                          width: 50,
+                                                          child: Text(
+                                                            'Opacity',
+                                                            style: TextStyle(
+                                                              fontSize: 11,
+                                                            ),
+                                                          ),
+                                                        ),
+                                                        Expanded(
+                                                          child: Slider(
+                                                            value:
+                                                                _layers[index]
+                                                                    .opacity,
+                                                            min: 0,
+                                                            max: 1,
+                                                            onChanged: (value) =>
+                                                                _setLayerOpacity(
+                                                                  index,
+                                                                  value,
+                                                                ),
+                                                          ),
+                                                        ),
+                                                        SizedBox(
+                                                          width: 38,
+                                                          child: Text(
+                                                            '${(_layers[index].opacity * 100).round()}%',
+                                                            style:
+                                                                const TextStyle(
+                                                                  fontSize: 10,
+                                                                ),
+                                                          ),
+                                                        ),
+                                                      ],
+                                                    ),
+                                                  ),
+                                                ],
+                                              ),
+                                            ),
 
                                           if (_referenceMediaPath != null) ...[
                                             const Padding(

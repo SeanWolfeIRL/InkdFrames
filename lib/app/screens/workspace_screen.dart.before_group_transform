@@ -59,7 +59,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
   bool _isTransformDragging = false;
 
   List<VectorPoint> _lassoPoints = const <VectorPoint>[];
-  Map<String, Set<int>> _selectedTransformStrokes = <String, Set<int>>{};
+  Set<int> _selectedStrokeIndices = <int>{};
   Offset? _transformLastPosition;
   bool _timingExpanded = true;
   bool _drawingExpanded = true;
@@ -74,9 +74,6 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
   Color _brushColor = Colors.white;
   final List<List<List<VectorStroke>>> _undoStacks = [[]];
   final List<List<List<VectorStroke>>> _redoStacks = [[]];
-
-  final List<List<Map<String, List<VectorStroke>>>> _groupUndoStacks = [[]];
-  final List<List<Map<String, List<VectorStroke>>>> _groupRedoStacks = [[]];
 
   final TransformationController _transformationController =
       TransformationController();
@@ -258,24 +255,6 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
       ..clear()
       ..addAll(
         List.generate(_frameDurations.length, (_) => <List<VectorStroke>>[]),
-      );
-
-    _groupUndoStacks
-      ..clear()
-      ..addAll(
-        List.generate(
-          _frameDurations.length,
-          (_) => <Map<String, List<VectorStroke>>>[],
-        ),
-      );
-
-    _groupRedoStacks
-      ..clear()
-      ..addAll(
-        List.generate(
-          _frameDurations.length,
-          (_) => <Map<String, List<VectorStroke>>>[],
-        ),
       );
   }
 
@@ -1035,7 +1014,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
 
   void _clearTransformSelection() {
     _lassoPoints = const <VectorPoint>[];
-    _selectedTransformStrokes = <String, Set<int>>{};
+    _selectedStrokeIndices = <int>{};
     _transformLastPosition = null;
     _isTransformDragging = false;
   }
@@ -1063,107 +1042,48 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     return inside;
   }
 
-  List<int> _transformLayerIndices() {
-    final group = _activeLayerGroup;
-
-    if (group == null) {
-      return <int>[_activeLayerIndex];
-    }
-
-    final indices = <int>[];
-
-    for (var index = 0; index < _layers.length; index++) {
-      if (group.childLayerIds.contains(_layers[index].id)) {
-        indices.add(index);
-      }
-    }
-
-    return indices;
-  }
-
-  int _layerIndexForId(String layerId) {
-    return _layers.indexWhere((layer) => layer.id == layerId);
-  }
-
   void _finishLassoSelection() {
     if (_lassoPoints.length < 3) {
       _clearTransformSelection();
       return;
     }
 
-    final selected = <String, Set<int>>{};
+    final strokes = _activeLayer.frames[_selectedFrameIndex];
+    final selected = <int>{};
 
-    for (final layerIndex in _transformLayerIndices()) {
-      if (layerIndex < 0 || layerIndex >= _layers.length) {
-        continue;
-      }
+    for (var strokeIndex = 0; strokeIndex < strokes.length; strokeIndex++) {
+      final stroke = strokes[strokeIndex];
 
-      final layer = _layers[layerIndex];
-
-      if (_selectedFrameIndex >= layer.frames.length) {
-        continue;
-      }
-
-      final strokes = layer.frames[_selectedFrameIndex];
-      final strokeIndices = <int>{};
-
-      for (var strokeIndex = 0; strokeIndex < strokes.length; strokeIndex++) {
-        final stroke = strokes[strokeIndex];
-
-        if (stroke.points.any(
-          (point) =>
-              _pointInsidePolygon(Offset(point.dx, point.dy), _lassoPoints),
-        )) {
-          strokeIndices.add(strokeIndex);
-        }
-      }
-
-      if (strokeIndices.isNotEmpty) {
-        selected[layer.id] = strokeIndices;
+      if (stroke.points.any(
+        (point) =>
+            _pointInsidePolygon(Offset(point.dx, point.dy), _lassoPoints),
+      )) {
+        selected.add(strokeIndex);
       }
     }
 
-    _selectedTransformStrokes = selected;
+    _selectedStrokeIndices = selected;
     _lassoPoints = const <VectorPoint>[];
   }
 
   Rect? _selectedStrokeBounds() {
-    if (_selectedTransformStrokes.isEmpty) {
-      return null;
-    }
+    if (_selectedStrokeIndices.isEmpty) return null;
+
+    final strokes = _activeLayer.frames[_selectedFrameIndex];
 
     double? minX;
     double? minY;
     double? maxX;
     double? maxY;
 
-    for (final entry in _selectedTransformStrokes.entries) {
-      final layerIndex = _layerIndexForId(entry.key);
+    for (final index in _selectedStrokeIndices) {
+      if (index < 0 || index >= strokes.length) continue;
 
-      if (layerIndex == -1) continue;
-
-      final layer = _layers[layerIndex];
-
-      if (_selectedFrameIndex >= layer.frames.length) {
-        continue;
-      }
-
-      final strokes = layer.frames[_selectedFrameIndex];
-
-      for (final strokeIndex in entry.value) {
-        if (strokeIndex < 0 || strokeIndex >= strokes.length) {
-          continue;
-        }
-
-        for (final point in strokes[strokeIndex].points) {
-          minX = minX == null ? point.dx : (point.dx < minX ? point.dx : minX);
-
-          minY = minY == null ? point.dy : (point.dy < minY ? point.dy : minY);
-
-          maxX = maxX == null ? point.dx : (point.dx > maxX ? point.dx : maxX);
-
-          maxY = maxY == null ? point.dy : (point.dy > maxY ? point.dy : maxY);
-        }
+      for (final point in strokes[index].points) {
+        minX = minX == null ? point.dx : (point.dx < minX ? point.dx : minX);
+        minY = minY == null ? point.dy : (point.dy < minY ? point.dy : minY);
+        maxX = maxX == null ? point.dx : (point.dx > maxX ? point.dx : maxX);
+        maxY = maxY == null ? point.dy : (point.dy > maxY ? point.dy : maxY);
       }
     }
 
@@ -1175,49 +1095,33 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
   }
 
   void _moveSelectedStrokes(Offset delta) {
-    if (_selectedTransformStrokes.isEmpty) {
-      return;
+    if (_selectedStrokeIndices.isEmpty) return;
+
+    final layer = _activeLayer;
+    final frames = _copyLayerFrames(layer.frames);
+    final strokes = frames[_selectedFrameIndex];
+
+    for (final index in _selectedStrokeIndices) {
+      if (index < 0 || index >= strokes.length) continue;
+
+      final stroke = strokes[index];
+
+      strokes[index] = VectorStroke(
+        points: stroke.points
+            .map(
+              (point) => VectorPoint(
+                dx: point.dx + delta.dx,
+                dy: point.dy + delta.dy,
+                pressure: point.pressure,
+              ),
+            )
+            .toList(),
+        strokeWidth: stroke.strokeWidth,
+        color: stroke.color,
+      );
     }
 
-    for (final entry in _selectedTransformStrokes.entries) {
-      final layerIndex = _layerIndexForId(entry.key);
-
-      if (layerIndex == -1) continue;
-
-      final layer = _layers[layerIndex];
-
-      if (_selectedFrameIndex >= layer.frames.length) {
-        continue;
-      }
-
-      final frames = _copyLayerFrames(layer.frames);
-      final strokes = frames[_selectedFrameIndex];
-
-      for (final strokeIndex in entry.value) {
-        if (strokeIndex < 0 || strokeIndex >= strokes.length) {
-          continue;
-        }
-
-        final stroke = strokes[strokeIndex];
-
-        strokes[strokeIndex] = VectorStroke(
-          points: stroke.points
-              .map(
-                (point) => VectorPoint(
-                  dx: point.dx + delta.dx,
-                  dy: point.dy + delta.dy,
-                  pressure: point.pressure,
-                ),
-              )
-              .toList(),
-          strokeWidth: stroke.strokeWidth,
-          color: stroke.color,
-        );
-      }
-
-      _layers[layerIndex] = layer.copyWith(frames: frames);
-    }
-
+    _layers[_activeLayerIndex] = layer.copyWith(frames: frames);
     _rebuildCompositeFrames();
   }
 
@@ -1342,11 +1246,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
       final bounds = _selectedStrokeBounds();
 
       if (bounds != null && bounds.inflate(16).contains(canvasPosition)) {
-        if (_activeLayerGroup == null) {
-          _saveUndoState();
-        } else {
-          _saveGroupUndoState();
-        }
+        _saveUndoState();
 
         setState(() {
           _isTransformDragging = true;
@@ -1354,7 +1254,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
         });
       } else {
         setState(() {
-          _selectedTransformStrokes = <String, Set<int>>{};
+          _selectedStrokeIndices = <int>{};
           _lassoPoints = <VectorPoint>[
             VectorPoint(
               dx: canvasPosition.dx,
@@ -1465,94 +1365,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     });
   }
 
-  Map<String, List<VectorStroke>> _groupTransformSnapshot() {
-    final snapshot = <String, List<VectorStroke>>{};
-
-    for (final layerIndex in _transformLayerIndices()) {
-      if (layerIndex < 0 || layerIndex >= _layers.length) {
-        continue;
-      }
-
-      final layer = _layers[layerIndex];
-
-      if (_selectedFrameIndex < 0 ||
-          _selectedFrameIndex >= layer.frames.length) {
-        continue;
-      }
-
-      snapshot[layer.id] = layer.frames[_selectedFrameIndex]
-          .map((stroke) => stroke.copy())
-          .toList();
-    }
-
-    return snapshot;
-  }
-
-  void _restoreGroupTransformSnapshot(
-    Map<String, List<VectorStroke>> snapshot,
-  ) {
-    for (final entry in snapshot.entries) {
-      final layerIndex = _layerIndexForId(entry.key);
-
-      if (layerIndex == -1) continue;
-
-      final layer = _layers[layerIndex];
-
-      if (_selectedFrameIndex < 0 ||
-          _selectedFrameIndex >= layer.frames.length) {
-        continue;
-      }
-
-      final frames = _copyLayerFrames(layer.frames);
-
-      frames[_selectedFrameIndex] = entry.value
-          .map((stroke) => stroke.copy())
-          .toList();
-
-      _layers[layerIndex] = layer.copyWith(frames: frames);
-    }
-
-    _rebuildCompositeFrames();
-  }
-
-  void _saveGroupUndoState() {
-    if (_selectedFrameIndex < 0 ||
-        _selectedFrameIndex >= _groupUndoStacks.length) {
-      return;
-    }
-
-    final snapshot = _groupTransformSnapshot();
-
-    if (snapshot.isEmpty) return;
-
-    _groupUndoStacks[_selectedFrameIndex].add(snapshot);
-    _groupRedoStacks[_selectedFrameIndex].clear();
-  }
-
   void _undo() {
-    if (_activeLayerGroup != null) {
-      final undoStack = _groupUndoStacks[_selectedFrameIndex];
-      final redoStack = _groupRedoStacks[_selectedFrameIndex];
-
-      if (undoStack.isEmpty) return;
-
-      setState(() {
-        final currentSnapshot = _groupTransformSnapshot();
-
-        if (currentSnapshot.isNotEmpty) {
-          redoStack.add(currentSnapshot);
-        }
-
-        final snapshot = undoStack.removeLast();
-
-        _restoreGroupTransformSnapshot(snapshot);
-        _clearTransformSelection();
-      });
-
-      _scheduleAutosave();
-      return;
-    }
-
     final undoStack = _undoStacks[_selectedFrameIndex];
     final redoStack = _redoStacks[_selectedFrameIndex];
 
@@ -1579,29 +1392,6 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
   }
 
   void _redo() {
-    if (_activeLayerGroup != null) {
-      final undoStack = _groupUndoStacks[_selectedFrameIndex];
-      final redoStack = _groupRedoStacks[_selectedFrameIndex];
-
-      if (redoStack.isEmpty) return;
-
-      setState(() {
-        final currentSnapshot = _groupTransformSnapshot();
-
-        if (currentSnapshot.isNotEmpty) {
-          undoStack.add(currentSnapshot);
-        }
-
-        final snapshot = redoStack.removeLast();
-
-        _restoreGroupTransformSnapshot(snapshot);
-        _clearTransformSelection();
-      });
-
-      _scheduleAutosave();
-      return;
-    }
-
     final undoStack = _undoStacks[_selectedFrameIndex];
     final redoStack = _redoStacks[_selectedFrameIndex];
 
