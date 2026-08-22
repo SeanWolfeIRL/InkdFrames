@@ -58,9 +58,6 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
   bool _isPlaying = false;
   bool _showOnionSkin = true;
   bool _isEraserActive = false;
-  bool _isFillToolActive = false;
-  List<VectorPoint> _fillLassoPoints = const <VectorPoint>[];
-
   bool _isShapeToolActive = false;
   _ShapeToolType _shapeToolType = _ShapeToolType.line;
   Offset? _shapeStartPosition;
@@ -236,7 +233,6 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     return VectorStroke(
       points: List<VectorPoint>.from(stroke.points),
       strokeWidth: stroke.strokeWidth,
-      filled: stroke.filled,
       color: stroke.color.withValues(
         alpha: (sourceAlpha * opacity).clamp(0.0, 1.0),
       ),
@@ -1245,7 +1241,6 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
               .toList(),
           strokeWidth: stroke.strokeWidth,
           color: stroke.color,
-          filled: stroke.filled,
         );
       }
 
@@ -1319,7 +1314,6 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
           }).toList(),
           strokeWidth: source.strokeWidth,
           color: source.color,
-          filled: source.filled,
         );
       }
 
@@ -1425,50 +1419,14 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                 ),
               )
               .toList(),
-          strokeWidth: source.filled
-              ? source.strokeWidth
-              : (source.strokeWidth * safeScale).clamp(0.25, 500.0),
+          strokeWidth: (source.strokeWidth * safeScale).clamp(0.25, 500.0),
           color: source.color,
-          filled: source.filled,
         );
       }
 
       _layers[layerIndex] = layer.copyWith(frames: frames);
     }
 
-    _rebuildCompositeFrames();
-  }
-
-  void _clearFillLasso() {
-    _fillLassoPoints = const <VectorPoint>[];
-  }
-
-  void _commitFillLasso() {
-    if (_fillLassoPoints.length < 3) {
-      _clearFillLasso();
-      return;
-    }
-
-    _saveUndoState();
-
-    final layer = _activeLayer;
-    final frames = _copyLayerFrames(layer.frames);
-
-    final fillStroke = VectorStroke(
-      points: List<VectorPoint>.from(_fillLassoPoints),
-      strokeWidth: 0,
-      color: _brushColor,
-      filled: true,
-    );
-
-    frames[_selectedFrameIndex] = <VectorStroke>[
-      ...frames[_selectedFrameIndex],
-      fillStroke,
-    ];
-
-    _layers[_activeLayerIndex] = layer.copyWith(frames: frames);
-
-    _clearFillLasso();
     _rebuildCompositeFrames();
   }
 
@@ -1786,20 +1744,6 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
       return;
     }
 
-    if (_isFillToolActive) {
-      setState(() {
-        _fillLassoPoints = <VectorPoint>[
-          VectorPoint(
-            dx: canvasPosition.dx,
-            dy: canvasPosition.dy,
-            pressure: 1,
-          ),
-        ];
-      });
-
-      return;
-    }
-
     if (_isShapeToolActive) {
       setState(() {
         _shapeStartPosition = canvasPosition;
@@ -1910,26 +1854,6 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
             );
           });
         }
-      }
-
-      return;
-    }
-
-    if (_isFillToolActive && _fillLassoPoints.isNotEmpty) {
-      final last = _fillLassoPoints.last;
-      final dx = canvasPosition.dx - last.dx;
-      final dy = canvasPosition.dy - last.dy;
-
-      if ((dx * dx) + (dy * dy) >= 4) {
-        setState(() {
-          _fillLassoPoints.add(
-            VectorPoint(
-              dx: canvasPosition.dx,
-              dy: canvasPosition.dy,
-              pressure: 1,
-            ),
-          );
-        });
       }
 
       return;
@@ -2143,15 +2067,6 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
       _activePointerCount -= 1;
     }
 
-    if (_isFillToolActive && _fillLassoPoints.isNotEmpty) {
-      setState(() {
-        _commitFillLasso();
-      });
-
-      _scheduleAutosave();
-      return;
-    }
-
     if (_isShapeToolActive && _shapeStartPosition != null) {
       setState(() {
         _commitShape();
@@ -2224,7 +2139,6 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     }
     setState(() {
       _draftStroke = const <VectorPoint>[];
-      _clearFillLasso();
       _clearShapeDraft();
     });
   }
@@ -2940,16 +2854,6 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                                           ),
                                           child: const SizedBox.expand(),
                                         ),
-                                        if (_fillLassoPoints.length > 1)
-                                          IgnorePointer(
-                                            child: CustomPaint(
-                                              painter: _FillLassoPainter(
-                                                points: _fillLassoPoints,
-                                                color: _brushColor,
-                                              ),
-                                              child: const SizedBox.expand(),
-                                            ),
-                                          ),
                                         if (_draftShapeStrokes.isNotEmpty)
                                           IgnorePointer(
                                             child: CustomPaint(
@@ -3867,8 +3771,6 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                                   onPressed: () {
                                     setState(() {
                                       _isEraserActive = !_isEraserActive;
-                                      _isFillToolActive = false;
-                                      _clearFillLasso();
                                       _isShapeToolActive = false;
                                       _clearShapeDraft();
                                       _isTransformActive = false;
@@ -3892,8 +3794,6 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                                             _isTransformActive =
                                                 !_isTransformActive;
                                             _isEraserActive = false;
-                                            _isFillToolActive = false;
-                                            _clearFillLasso();
                                             _isShapeToolActive = false;
                                             _clearShapeDraft();
                                             _draftStroke =
@@ -3908,37 +3808,6 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                                         : Colors.white70,
                                   ),
                                 ),
-                                IconButton(
-                                  tooltip: 'Fill Tool',
-                                  visualDensity: VisualDensity.compact,
-                                  onPressed: _isPlaying
-                                      ? null
-                                      : () {
-                                          setState(() {
-                                            _isFillToolActive =
-                                                !_isFillToolActive;
-
-                                            _isEraserActive = false;
-                                            _isShapeToolActive = false;
-                                            _isTransformActive = false;
-
-                                            _draftStroke =
-                                                const <VectorPoint>[];
-                                            _clearShapeDraft();
-                                            _clearTransformSelection();
-
-                                            if (!_isFillToolActive) {
-                                              _clearFillLasso();
-                                            }
-                                          });
-                                        },
-                                  icon: Icon(
-                                    Icons.format_color_fill,
-                                    color: _isFillToolActive
-                                        ? Colors.deepPurpleAccent
-                                        : Colors.white70,
-                                  ),
-                                ),
                                 PopupMenuButton<_ShapeToolType>(
                                   tooltip: 'Shape Tool',
                                   enabled: !_isPlaying,
@@ -3947,8 +3816,6 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                                       _shapeToolType = shape;
                                       _isShapeToolActive = true;
 
-                                      _isFillToolActive = false;
-                                      _clearFillLasso();
                                       _isEraserActive = false;
                                       _isTransformActive = false;
                                       _activeLayerGroupId = null;
@@ -4259,43 +4126,6 @@ class _TransformOverlayPainter extends CustomPainter {
 
   @override
   bool shouldRepaint(covariant _TransformOverlayPainter oldDelegate) {
-    return true;
-  }
-}
-
-class _FillLassoPainter extends CustomPainter {
-  const _FillLassoPainter({required this.points, required this.color});
-
-  final List<VectorPoint> points;
-  final Color color;
-
-  @override
-  void paint(Canvas canvas, Size size) {
-    if (points.length < 2) return;
-
-    final path = Path()..moveTo(points.first.dx, points.first.dy);
-
-    for (var i = 1; i < points.length; i++) {
-      path.lineTo(points[i].dx, points[i].dy);
-    }
-
-    path.close();
-
-    final fillPaint = Paint()
-      ..color = color.withValues(alpha: 0.18)
-      ..style = PaintingStyle.fill;
-
-    final outlinePaint = Paint()
-      ..color = color.withValues(alpha: 0.9)
-      ..strokeWidth = 2
-      ..style = PaintingStyle.stroke;
-
-    canvas.drawPath(path, fillPaint);
-    canvas.drawPath(path, outlinePaint);
-  }
-
-  @override
-  bool shouldRepaint(covariant _FillLassoPainter oldDelegate) {
     return true;
   }
 }

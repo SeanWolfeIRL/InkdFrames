@@ -137,7 +137,9 @@ class AnimationExportService {
       ..strokeWidth = stroke.strokeWidth
       ..strokeCap = ui.StrokeCap.round
       ..strokeJoin = ui.StrokeJoin.round
-      ..style = stroke.filled ? ui.PaintingStyle.fill : ui.PaintingStyle.stroke
+      ..style = stroke.filled
+          ? ui.PaintingStyle.fill
+          : ui.PaintingStyle.stroke
       ..isAntiAlias = true;
 
     if (points.length == 1) {
@@ -182,10 +184,6 @@ class AnimationExportService {
         p2.dx,
         p2.dy,
       );
-    }
-
-    if (stroke.filled) {
-      path.close();
     }
 
     if (stroke.filled) {

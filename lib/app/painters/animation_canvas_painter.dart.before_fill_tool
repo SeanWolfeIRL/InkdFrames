@@ -107,7 +107,9 @@ class AnimationCanvasPainter extends CustomPainter {
       ..strokeWidth = stroke.strokeWidth
       ..strokeCap = StrokeCap.round
       ..strokeJoin = StrokeJoin.round
-      ..style = stroke.filled ? PaintingStyle.fill : PaintingStyle.stroke
+      ..style = stroke.filled
+          ? PaintingStyle.fill
+          : PaintingStyle.stroke
       ..isAntiAlias = true;
 
     if (points.length == 1) {
@@ -154,10 +156,6 @@ class AnimationCanvasPainter extends CustomPainter {
         p2.dx,
         p2.dy,
       );
-    }
-
-    if (stroke.filled) {
-      path.close();
     }
 
     if (stroke.filled) {

@@ -14,8 +14,6 @@ import '../painters/frame_thumbnail_painter.dart';
 import '../services/animation_export_service.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
-enum _ShapeToolType { line, rectangle, square, circle }
-
 class WorkspaceScreen extends StatefulWidget {
   const WorkspaceScreen({
     super.key,
@@ -58,14 +56,6 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
   bool _isPlaying = false;
   bool _showOnionSkin = true;
   bool _isEraserActive = false;
-  bool _isFillToolActive = false;
-  List<VectorPoint> _fillLassoPoints = const <VectorPoint>[];
-
-  bool _isShapeToolActive = false;
-  _ShapeToolType _shapeToolType = _ShapeToolType.line;
-  Offset? _shapeStartPosition;
-  List<VectorStroke> _draftShapeStrokes = const <VectorStroke>[];
-
   bool _isTransformActive = false;
   bool _isTransformDragging = false;
   bool _isTransformScaling = false;
@@ -236,7 +226,6 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     return VectorStroke(
       points: List<VectorPoint>.from(stroke.points),
       strokeWidth: stroke.strokeWidth,
-      filled: stroke.filled,
       color: stroke.color.withValues(
         alpha: (sourceAlpha * opacity).clamp(0.0, 1.0),
       ),
@@ -1245,7 +1234,6 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
               .toList(),
           strokeWidth: stroke.strokeWidth,
           color: stroke.color,
-          filled: stroke.filled,
         );
       }
 
@@ -1319,7 +1307,6 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
           }).toList(),
           strokeWidth: source.strokeWidth,
           color: source.color,
-          filled: source.filled,
         );
       }
 
@@ -1425,162 +1412,14 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                 ),
               )
               .toList(),
-          strokeWidth: source.filled
-              ? source.strokeWidth
-              : (source.strokeWidth * safeScale).clamp(0.25, 500.0),
+          strokeWidth: (source.strokeWidth * safeScale).clamp(0.25, 500.0),
           color: source.color,
-          filled: source.filled,
         );
       }
 
       _layers[layerIndex] = layer.copyWith(frames: frames);
     }
 
-    _rebuildCompositeFrames();
-  }
-
-  void _clearFillLasso() {
-    _fillLassoPoints = const <VectorPoint>[];
-  }
-
-  void _commitFillLasso() {
-    if (_fillLassoPoints.length < 3) {
-      _clearFillLasso();
-      return;
-    }
-
-    _saveUndoState();
-
-    final layer = _activeLayer;
-    final frames = _copyLayerFrames(layer.frames);
-
-    final fillStroke = VectorStroke(
-      points: List<VectorPoint>.from(_fillLassoPoints),
-      strokeWidth: 0,
-      color: _brushColor,
-      filled: true,
-    );
-
-    frames[_selectedFrameIndex] = <VectorStroke>[
-      ...frames[_selectedFrameIndex],
-      fillStroke,
-    ];
-
-    _layers[_activeLayerIndex] = layer.copyWith(frames: frames);
-
-    _clearFillLasso();
-    _rebuildCompositeFrames();
-  }
-
-  List<VectorStroke> _shapeStrokes(Offset start, Offset end) {
-    VectorPoint point(Offset offset) {
-      return VectorPoint(dx: offset.dx, dy: offset.dy, pressure: 1);
-    }
-
-    VectorStroke stroke(List<Offset> points) {
-      return VectorStroke(
-        points: points.map(point).toList(),
-        strokeWidth: _brushSize,
-        color: _brushColor,
-      );
-    }
-
-    switch (_shapeToolType) {
-      case _ShapeToolType.line:
-        return <VectorStroke>[
-          stroke(<Offset>[start, end]),
-        ];
-
-      case _ShapeToolType.rectangle:
-        final rect = Rect.fromPoints(start, end);
-
-        return <VectorStroke>[
-          stroke(<Offset>[rect.topLeft, rect.topRight]),
-          stroke(<Offset>[rect.topRight, rect.bottomRight]),
-          stroke(<Offset>[rect.bottomRight, rect.bottomLeft]),
-          stroke(<Offset>[rect.bottomLeft, rect.topLeft]),
-        ];
-
-      case _ShapeToolType.square:
-        final dx = end.dx - start.dx;
-        final dy = end.dy - start.dy;
-
-        final side = math.max(dx.abs(), dy.abs());
-
-        final squareEnd = Offset(
-          start.dx + (dx < 0 ? -side : side),
-          start.dy + (dy < 0 ? -side : side),
-        );
-
-        final rect = Rect.fromPoints(start, squareEnd);
-
-        return <VectorStroke>[
-          stroke(<Offset>[rect.topLeft, rect.topRight]),
-          stroke(<Offset>[rect.topRight, rect.bottomRight]),
-          stroke(<Offset>[rect.bottomRight, rect.bottomLeft]),
-          stroke(<Offset>[rect.bottomLeft, rect.topLeft]),
-        ];
-
-      case _ShapeToolType.circle:
-        final rect = Rect.fromPoints(start, end);
-        final center = rect.center;
-        final radiusX = rect.width / 2;
-        final radiusY = rect.height / 2;
-
-        if (radiusX < 0.5 || radiusY < 0.5) {
-          return const <VectorStroke>[];
-        }
-
-        const segments = 64;
-        final points = <Offset>[];
-
-        for (var i = 0; i <= segments; i++) {
-          final angle = (i / segments) * math.pi * 2;
-
-          points.add(
-            Offset(
-              center.dx + math.cos(angle) * radiusX,
-              center.dy + math.sin(angle) * radiusY,
-            ),
-          );
-        }
-
-        return <VectorStroke>[stroke(points)];
-    }
-  }
-
-  void _updateShapePreview(Offset position) {
-    final start = _shapeStartPosition;
-
-    if (start == null) return;
-
-    _draftShapeStrokes = _shapeStrokes(start, position);
-  }
-
-  void _clearShapeDraft() {
-    _shapeStartPosition = null;
-    _draftShapeStrokes = const <VectorStroke>[];
-  }
-
-  void _commitShape() {
-    if (_draftShapeStrokes.isEmpty) {
-      _clearShapeDraft();
-      return;
-    }
-
-    _saveUndoState();
-
-    final layer = _activeLayer;
-    final frames = _copyLayerFrames(layer.frames);
-
-    frames[_selectedFrameIndex] = <VectorStroke>[
-      ...frames[_selectedFrameIndex],
-      ..._draftShapeStrokes.map((stroke) => stroke.copy()),
-    ];
-
-    _layers[_activeLayerIndex] = layer.copyWith(frames: frames);
-
-    _clearShapeDraft();
     _rebuildCompositeFrames();
   }
 
@@ -1786,29 +1625,6 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
       return;
     }
 
-    if (_isFillToolActive) {
-      setState(() {
-        _fillLassoPoints = <VectorPoint>[
-          VectorPoint(
-            dx: canvasPosition.dx,
-            dy: canvasPosition.dy,
-            pressure: 1,
-          ),
-        ];
-      });
-
-      return;
-    }
-
-    if (_isShapeToolActive) {
-      setState(() {
-        _shapeStartPosition = canvasPosition;
-        _draftShapeStrokes = _shapeStrokes(canvasPosition, canvasPosition);
-      });
-
-      return;
-    }
-
     if (_isEraserActive) {
       _saveUndoState();
       setState(() {
@@ -1911,34 +1727,6 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
           });
         }
       }
-
-      return;
-    }
-
-    if (_isFillToolActive && _fillLassoPoints.isNotEmpty) {
-      final last = _fillLassoPoints.last;
-      final dx = canvasPosition.dx - last.dx;
-      final dy = canvasPosition.dy - last.dy;
-
-      if ((dx * dx) + (dy * dy) >= 4) {
-        setState(() {
-          _fillLassoPoints.add(
-            VectorPoint(
-              dx: canvasPosition.dx,
-              dy: canvasPosition.dy,
-              pressure: 1,
-            ),
-          );
-        });
-      }
-
-      return;
-    }
-
-    if (_isShapeToolActive && _shapeStartPosition != null) {
-      setState(() {
-        _updateShapePreview(canvasPosition);
-      });
 
       return;
     }
@@ -2143,24 +1931,6 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
       _activePointerCount -= 1;
     }
 
-    if (_isFillToolActive && _fillLassoPoints.isNotEmpty) {
-      setState(() {
-        _commitFillLasso();
-      });
-
-      _scheduleAutosave();
-      return;
-    }
-
-    if (_isShapeToolActive && _shapeStartPosition != null) {
-      setState(() {
-        _commitShape();
-      });
-
-      _scheduleAutosave();
-      return;
-    }
-
     if (_isTransformActive) {
       setState(() {
         if (_isTransformRotating) {
@@ -2224,8 +1994,6 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     }
     setState(() {
       _draftStroke = const <VectorPoint>[];
-      _clearFillLasso();
-      _clearShapeDraft();
     });
   }
 
@@ -2940,39 +2708,6 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                                           ),
                                           child: const SizedBox.expand(),
                                         ),
-                                        if (_fillLassoPoints.length > 1)
-                                          IgnorePointer(
-                                            child: CustomPaint(
-                                              painter: _FillLassoPainter(
-                                                points: _fillLassoPoints,
-                                                color: _brushColor,
-                                              ),
-                                              child: const SizedBox.expand(),
-                                            ),
-                                          ),
-                                        if (_draftShapeStrokes.isNotEmpty)
-                                          IgnorePointer(
-                                            child: CustomPaint(
-                                              painter: AnimationCanvasPainter(
-                                                strokes: _draftShapeStrokes,
-                                                currentStroke: null,
-                                                previousOnionSkinStrokes:
-                                                    const <VectorStroke>[],
-                                                nextOnionSkinStrokes:
-                                                    const <VectorStroke>[],
-                                                strokeColor: _brushColor,
-                                                previousOnionSkinColor:
-                                                    Colors.transparent,
-                                                nextOnionSkinColor:
-                                                    Colors.transparent,
-                                                strokeWidth: _brushSize,
-                                                backgroundColor:
-                                                    _canvasBackgroundColor,
-                                                paintBackground: false,
-                                              ),
-                                              child: const SizedBox.expand(),
-                                            ),
-                                          ),
                                         if (_isTransformActive)
                                           IgnorePointer(
                                             child: CustomPaint(
@@ -3867,10 +3602,6 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                                   onPressed: () {
                                     setState(() {
                                       _isEraserActive = !_isEraserActive;
-                                      _isFillToolActive = false;
-                                      _clearFillLasso();
-                                      _isShapeToolActive = false;
-                                      _clearShapeDraft();
                                       _isTransformActive = false;
                                       _clearTransformSelection();
                                     });
@@ -3892,10 +3623,6 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                                             _isTransformActive =
                                                 !_isTransformActive;
                                             _isEraserActive = false;
-                                            _isFillToolActive = false;
-                                            _clearFillLasso();
-                                            _isShapeToolActive = false;
-                                            _clearShapeDraft();
                                             _draftStroke =
                                                 const <VectorPoint>[];
                                             _clearTransformSelection();
@@ -3904,93 +3631,6 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                                   icon: Icon(
                                     Icons.open_with,
                                     color: _isTransformActive
-                                        ? Colors.deepPurpleAccent
-                                        : Colors.white70,
-                                  ),
-                                ),
-                                IconButton(
-                                  tooltip: 'Fill Tool',
-                                  visualDensity: VisualDensity.compact,
-                                  onPressed: _isPlaying
-                                      ? null
-                                      : () {
-                                          setState(() {
-                                            _isFillToolActive =
-                                                !_isFillToolActive;
-
-                                            _isEraserActive = false;
-                                            _isShapeToolActive = false;
-                                            _isTransformActive = false;
-
-                                            _draftStroke =
-                                                const <VectorPoint>[];
-                                            _clearShapeDraft();
-                                            _clearTransformSelection();
-
-                                            if (!_isFillToolActive) {
-                                              _clearFillLasso();
-                                            }
-                                          });
-                                        },
-                                  icon: Icon(
-                                    Icons.format_color_fill,
-                                    color: _isFillToolActive
-                                        ? Colors.deepPurpleAccent
-                                        : Colors.white70,
-                                  ),
-                                ),
-                                PopupMenuButton<_ShapeToolType>(
-                                  tooltip: 'Shape Tool',
-                                  enabled: !_isPlaying,
-                                  onSelected: (shape) {
-                                    setState(() {
-                                      _shapeToolType = shape;
-                                      _isShapeToolActive = true;
-
-                                      _isFillToolActive = false;
-                                      _clearFillLasso();
-                                      _isEraserActive = false;
-                                      _isTransformActive = false;
-                                      _activeLayerGroupId = null;
-
-                                      _draftStroke = const <VectorPoint>[];
-                                      _clearTransformSelection();
-                                      _clearShapeDraft();
-                                    });
-                                  },
-                                  itemBuilder: (context) => const [
-                                    PopupMenuItem(
-                                      value: _ShapeToolType.line,
-                                      child: ListTile(
-                                        leading: Icon(Icons.horizontal_rule),
-                                        title: Text('Line'),
-                                      ),
-                                    ),
-                                    PopupMenuItem(
-                                      value: _ShapeToolType.rectangle,
-                                      child: ListTile(
-                                        leading: Icon(Icons.rectangle_outlined),
-                                        title: Text('Rectangle'),
-                                      ),
-                                    ),
-                                    PopupMenuItem(
-                                      value: _ShapeToolType.square,
-                                      child: ListTile(
-                                        leading: Icon(Icons.crop_square),
-                                        title: Text('Square'),
-                                      ),
-                                    ),
-                                    PopupMenuItem(
-                                      value: _ShapeToolType.circle,
-                                      child: ListTile(
-                                        leading: Icon(Icons.circle_outlined),
-                                        title: Text('Circle'),
-                                      ),
-                                    ),
-                                  ],
-                                  icon: Icon(
-                                    Icons.category_outlined,
-                                    color: _isShapeToolActive
                                         ? Colors.deepPurpleAccent
                                         : Colors.white70,
                                   ),
@@ -4259,43 +3899,6 @@ class _TransformOverlayPainter extends CustomPainter {
 
   @override
   bool shouldRepaint(covariant _TransformOverlayPainter oldDelegate) {
-    return true;
-  }
-}
-
-class _FillLassoPainter extends CustomPainter {
-  const _FillLassoPainter({required this.points, required this.color});
-
-  final List<VectorPoint> points;
-  final Color color;
-
-  @override
-  void paint(Canvas canvas, Size size) {
-    if (points.length < 2) return;
-
-    final path = Path()..moveTo(points.first.dx, points.first.dy);
-
-    for (var i = 1; i < points.length; i++) {
-      path.lineTo(points[i].dx, points[i].dy);
-    }
-
-    path.close();
-
-    final fillPaint = Paint()
-      ..color = color.withValues(alpha: 0.18)
-      ..style = PaintingStyle.fill;
-
-    final outlinePaint = Paint()
-      ..color = color.withValues(alpha: 0.9)
-      ..strokeWidth = 2
-      ..style = PaintingStyle.stroke;
-
-    canvas.drawPath(path, fillPaint);
-    canvas.drawPath(path, outlinePaint);
-  }
-
-  @override
-  bool shouldRepaint(covariant _FillLassoPainter oldDelegate) {
     return true;
   }
 }
