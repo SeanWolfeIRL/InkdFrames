@@ -80,11 +80,6 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
 
   List<VectorPoint> _lassoPoints = const <VectorPoint>[];
   Map<String, Set<int>> _selectedTransformStrokes = <String, Set<int>>{};
-
-  /// Temporary in-memory clipboard used by Transform copy/paste.
-  final Map<String, List<VectorStroke>> _strokeClipboard =
-      <String, List<VectorStroke>>{};
-
   Offset? _transformLastPosition;
   Offset? _transformScaleAnchor;
   double? _transformScaleStartDistance;
@@ -1543,141 +1538,6 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     }
 
     return bounds.topLeft;
-  }
-
-  void _copySelectedStrokes() {
-    if (_selectedTransformStrokes.isEmpty) return;
-
-    final copied = <String, List<VectorStroke>>{};
-
-    for (final entry in _selectedTransformStrokes.entries) {
-      final layerIndex = _layerIndexForId(entry.key);
-
-      if (layerIndex == -1) continue;
-
-      final layer = _layers[layerIndex];
-
-      if (_selectedFrameIndex < 0 ||
-          _selectedFrameIndex >= layer.frames.length) {
-        continue;
-      }
-
-      final sourceStrokes = layer.frames[_selectedFrameIndex];
-      final selected = <VectorStroke>[];
-
-      final sortedIndices = entry.value.toList()..sort();
-
-      for (final strokeIndex in sortedIndices) {
-        if (strokeIndex < 0 || strokeIndex >= sourceStrokes.length) {
-          continue;
-        }
-
-        selected.add(sourceStrokes[strokeIndex].copy());
-      }
-
-      if (selected.isNotEmpty) {
-        copied[layer.id] = selected;
-      }
-    }
-
-    if (copied.isEmpty) return;
-
-    setState(() {
-      _strokeClipboard
-        ..clear()
-        ..addAll(copied);
-    });
-  }
-
-  void _pasteCopiedStrokes() {
-    if (_strokeClipboard.isEmpty || _frames.isEmpty) return;
-
-    // Save undo before modifying the destination frame.
-    if (_activeLayerGroup != null) {
-      _saveGroupUndoState();
-    } else {
-      _saveUndoState();
-    }
-
-    const pasteOffset = Offset(18, 18);
-    final pastedSelection = <String, Set<int>>{};
-
-    for (final clipboardEntry in _strokeClipboard.entries) {
-      var layerIndex = _layerIndexForId(clipboardEntry.key);
-
-      // If the original source layer no longer exists, paste into
-      // the currently active drawing layer instead.
-      if (layerIndex == -1) {
-        layerIndex = _activeLayerIndex;
-      }
-
-      if (layerIndex < 0 || layerIndex >= _layers.length) {
-        continue;
-      }
-
-      final layer = _layers[layerIndex];
-
-      if (_selectedFrameIndex < 0 ||
-          _selectedFrameIndex >= layer.frames.length) {
-        continue;
-      }
-
-      final frames = _copyLayerFrames(layer.frames);
-      final destination = frames[_selectedFrameIndex];
-      final firstPastedIndex = destination.length;
-
-      for (final source in clipboardEntry.value) {
-        destination.add(
-          VectorStroke(
-            points: source.points
-                .map(
-                  (point) => VectorPoint(
-                    dx: point.dx + pasteOffset.dx,
-                    dy: point.dy + pasteOffset.dy,
-                    pressure: point.pressure,
-                  ),
-                )
-                .toList(),
-            strokeWidth: source.strokeWidth,
-            color: source.color,
-            filled: source.filled,
-          ),
-        );
-      }
-
-      final layerId = layer.id;
-
-      pastedSelection[layerId] = {
-        for (var index = firstPastedIndex; index < destination.length; index++)
-          index,
-      };
-
-      _layers[layerIndex] = layer.copyWith(frames: frames);
-    }
-
-    if (pastedSelection.isEmpty) return;
-
-    setState(() {
-      _isTransformActive = true;
-      _isEraserActive = false;
-      _isFillToolActive = false;
-      _isShapeToolActive = false;
-
-      _draftStroke = const <VectorPoint>[];
-      _clearFillLasso();
-      _clearShapeDraft();
-
-      _selectedTransformStrokes = pastedSelection;
-      _lassoPoints = const <VectorPoint>[];
-
-      _isTransformDragging = false;
-      _isTransformScaling = false;
-      _isTransformRotating = false;
-      _transformLastPosition = null;
-    });
-
-    _rebuildCompositeFrames();
-    _scheduleAutosave();
   }
 
   Map<String, List<VectorStroke>> _selectedTransformSnapshot() {
@@ -4225,25 +4085,6 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                                         ? Colors.deepPurpleAccent
                                         : Colors.white70,
                                   ),
-                                ),
-                                IconButton(
-                                  tooltip: 'Copy Selection',
-                                  visualDensity: VisualDensity.compact,
-                                  onPressed:
-                                      _isPlaying ||
-                                          _selectedTransformStrokes.isEmpty
-                                      ? null
-                                      : _copySelectedStrokes,
-                                  icon: const Icon(Icons.content_copy),
-                                ),
-                                IconButton(
-                                  tooltip: 'Paste Selection',
-                                  visualDensity: VisualDensity.compact,
-                                  onPressed:
-                                      _isPlaying || _strokeClipboard.isEmpty
-                                      ? null
-                                      : _pasteCopiedStrokes,
-                                  icon: const Icon(Icons.content_paste),
                                 ),
                                 IconButton(
                                   tooltip: 'Fill Tool',
