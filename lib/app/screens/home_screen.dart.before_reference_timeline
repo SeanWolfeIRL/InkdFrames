@@ -89,9 +89,7 @@ class HomeScreen extends StatelessWidget {
                   final initialPortrait = screenSize.height > screenSize.width;
 
                   final result =
-                      await showDialog<
-                        ({String name, bool portrait, double fps})
-                      >(
+                      await showDialog<({String name, bool portrait})>(
                         context: context,
                         builder: (context) {
                           return _CreateAnimationDialog(
@@ -103,8 +101,6 @@ class HomeScreen extends StatelessWidget {
                               '',
                             ),
                             initialPortrait: initialPortrait,
-                            showFps: mediaType == 'video',
-                            initialFps: mediaType == 'video' ? 12 : 8,
                           );
                         },
                       );
@@ -139,8 +135,6 @@ class HomeScreen extends StatelessWidget {
                         initialCanvasHeight: result.portrait ? 1920 : 1080,
                         initialReferenceMediaPath: storedPath,
                         initialReferenceMediaType: mediaType,
-                        initialFps: result.fps,
-                        initialGenerateVideoTimeline: mediaType == 'video',
                       ),
                     ),
                   );
@@ -154,9 +148,7 @@ class HomeScreen extends StatelessWidget {
                   final initialPortrait = screenSize.height > screenSize.width;
 
                   final result =
-                      await showDialog<
-                        ({String name, bool portrait, double fps})
-                      >(
+                      await showDialog<({String name, bool portrait})>(
                         context: context,
                         builder: (context) {
                           return _CreateAnimationDialog(
@@ -175,7 +167,6 @@ class HomeScreen extends StatelessWidget {
                         projectName: result.name,
                         initialCanvasWidth: result.portrait ? 1080 : 1920,
                         initialCanvasHeight: result.portrait ? 1920 : 1080,
-                        initialFps: result.fps,
                       ),
                     ),
                   );
@@ -210,15 +201,11 @@ class _CreateAnimationDialog extends StatefulWidget {
     required this.title,
     required this.initialName,
     required this.initialPortrait,
-    this.showFps = false,
-    this.initialFps = 8,
   });
 
   final String title;
   final String initialName;
   final bool initialPortrait;
-  final bool showFps;
-  final double initialFps;
 
   @override
   State<_CreateAnimationDialog> createState() => _CreateAnimationDialogState();
@@ -227,14 +214,12 @@ class _CreateAnimationDialog extends StatefulWidget {
 class _CreateAnimationDialogState extends State<_CreateAnimationDialog> {
   late final TextEditingController _controller;
   late bool _isPortrait;
-  late double _fps;
 
   @override
   void initState() {
     super.initState();
     _controller = TextEditingController(text: widget.initialName);
     _isPortrait = widget.initialPortrait;
-    _fps = widget.initialFps;
   }
 
   @override
@@ -293,39 +278,6 @@ class _CreateAnimationDialogState extends State<_CreateAnimationDialog> {
               textAlign: TextAlign.center,
               style: Theme.of(context).textTheme.bodySmall,
             ),
-            if (widget.showFps) ...[
-              const SizedBox(height: 24),
-              Row(
-                children: [
-                  const Expanded(
-                    child: Text(
-                      'Rotoscope FPS',
-                      style: TextStyle(fontWeight: FontWeight.w600),
-                    ),
-                  ),
-                  Text('${_fps.round()} FPS'),
-                ],
-              ),
-              Slider(
-                value: _fps,
-                min: 6,
-                max: 24,
-                divisions: 18,
-                label: '${_fps.round()} FPS',
-                onChanged: (value) {
-                  setState(() {
-                    _fps = value;
-                  });
-                },
-              ),
-              Text(
-                _fps == 12
-                    ? '12 FPS · Classic smooth rotoscoping'
-                    : '${_fps.round()} drawing frames per second',
-                textAlign: TextAlign.center,
-                style: Theme.of(context).textTheme.bodySmall,
-              ),
-            ],
           ],
         ),
       ),
@@ -340,11 +292,7 @@ class _CreateAnimationDialogState extends State<_CreateAnimationDialog> {
 
             if (name.isEmpty) return;
 
-            Navigator.pop(context, (
-              name: name,
-              portrait: _isPortrait,
-              fps: _fps,
-            ));
+            Navigator.pop(context, (name: name, portrait: _isPortrait));
           },
           child: const Text('Create'),
         ),

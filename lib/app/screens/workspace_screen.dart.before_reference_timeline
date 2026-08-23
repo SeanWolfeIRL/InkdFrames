@@ -25,8 +25,6 @@ class WorkspaceScreen extends StatefulWidget {
     this.initialCanvasHeight = 1080,
     this.initialReferenceMediaPath,
     this.initialReferenceMediaType,
-    this.initialFps = 8,
-    this.initialGenerateVideoTimeline = false,
   });
 
   final String? projectId;
@@ -35,10 +33,6 @@ class WorkspaceScreen extends StatefulWidget {
   final double initialCanvasHeight;
   final String? initialReferenceMediaPath;
   final String? initialReferenceMediaType;
-  final double initialFps;
-
-  /// True only when creating a brand-new project directly from video.
-  final bool initialGenerateVideoTimeline;
 
   static const routeName = '/workspace';
 
@@ -56,7 +50,6 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
   String? _activeLayerGroupId;
 
   final List<int> _frameDurations = [1];
-  final List<int> _referenceFrameTimesMs = <int>[];
   int _selectedFrameIndex = 0;
   int _activePointerCount = 0;
   List<VectorPoint> _draftStroke = const <VectorPoint>[];
@@ -140,7 +133,6 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     } else {
       _projectId = _generateProjectId();
       _projectName = widget.projectName ?? 'Untitled Animation';
-      _fps = widget.initialFps;
       _canvasWidth = widget.initialCanvasWidth;
       _canvasHeight = widget.initialCanvasHeight;
       _referenceMediaPath = widget.initialReferenceMediaPath;
@@ -180,7 +172,6 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
       referenceMediaType: _referenceMediaType,
       referenceVisible: _referenceVisible,
       referenceOpacity: _referenceOpacity,
-      referenceFrameTimesMs: _referenceFrameTimesMs,
     );
 
     final jsonString = jsonEncode(project.toJson());
@@ -729,11 +720,6 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
       _referenceMediaType = project.referenceMediaType;
       _referenceVisible = project.referenceVisible;
       _referenceOpacity = project.referenceOpacity;
-
-      _referenceFrameTimesMs
-        ..clear()
-        ..addAll(project.referenceFrameTimesMs);
-
       _selectedFrameIndex = 0;
       _draftStroke = const <VectorPoint>[];
     });
@@ -782,11 +768,6 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
         _videoReady = true;
       });
 
-      if (widget.initialGenerateVideoTimeline &&
-          _referenceFrameTimesMs.isEmpty) {
-        _generateReferenceTimeline(newController.value.duration);
-      }
-
       _syncVideoToSelectedFrame();
 
       if (oldController != null && oldController != newController) {
@@ -805,48 +786,6 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     }
   }
 
-  void _generateReferenceTimeline(Duration duration) {
-    final durationMs = duration.inMilliseconds;
-
-    if (durationMs <= 0 || _fps <= 0) {
-      return;
-    }
-
-    final frameCount = math.max(1, (durationMs * _fps / 1000).ceil()).toInt();
-
-    final timestamps = List<int>.generate(frameCount, (index) {
-      final time = ((index * 1000) / _fps).round();
-
-      return math.min(durationMs - 1, time);
-    });
-
-    setState(() {
-      _referenceFrameTimesMs
-        ..clear()
-        ..addAll(timestamps);
-
-      _frameDurations
-        ..clear()
-        ..addAll(List<int>.filled(frameCount, 1));
-
-      for (var layerIndex = 0; layerIndex < _layers.length; layerIndex++) {
-        final layer = _layers[layerIndex];
-
-        _layers[layerIndex] = layer.copyWith(
-          frames: List.generate(frameCount, (_) => <VectorStroke>[]),
-        );
-      }
-
-      _selectedFrameIndex = 0;
-      _draftStroke = const <VectorPoint>[];
-
-      _resetUndoRedo();
-      _rebuildCompositeFrames();
-    });
-
-    _scheduleAutosave();
-  }
-
   void _resetCanvasView() {
     _transformationController.value = Matrix4.identity();
   }
@@ -854,20 +793,6 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
   void _addFrame() {
     setState(() {
       _frameDurations.add(1);
-
-      if (_referenceFrameTimesMs.isNotEmpty) {
-        final intervalMs = (1000 / _fps).round();
-        final lastTime = _referenceFrameTimesMs.last;
-
-        final videoDurationMs =
-            _videoController?.value.duration.inMilliseconds ?? 0;
-
-        final nextTime = videoDurationMs > 0
-            ? math.min(videoDurationMs - 1, lastTime + intervalMs)
-            : lastTime + intervalMs;
-
-        _referenceFrameTimesMs.add(nextTime);
-      }
 
       for (var i = 0; i < _layers.length; i++) {
         final layer = _layers[i];
@@ -903,11 +828,6 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
 
       _frameDurations.add(_frameDurations[_selectedFrameIndex]);
 
-      if (_referenceFrameTimesMs.isNotEmpty &&
-          _selectedFrameIndex < _referenceFrameTimesMs.length) {
-        _referenceFrameTimesMs.add(_referenceFrameTimesMs[_selectedFrameIndex]);
-      }
-
       _selectedFrameIndex = _frameDurations.length - 1;
       _draftStroke = const <VectorPoint>[];
 
@@ -931,10 +851,6 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
       }
 
       _frameDurations.removeAt(_selectedFrameIndex);
-
-      if (_selectedFrameIndex < _referenceFrameTimesMs.length) {
-        _referenceFrameTimesMs.removeAt(_selectedFrameIndex);
-      }
 
       if (_selectedFrameIndex >= _frameDurations.length) {
         _selectedFrameIndex = _frameDurations.length - 1;
@@ -969,14 +885,6 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
 
       final duration = _frameDurations.removeAt(oldIndex);
       _frameDurations.insert(newIndex, duration);
-
-      if (oldIndex < _referenceFrameTimesMs.length) {
-        final referenceTime = _referenceFrameTimesMs.removeAt(oldIndex);
-
-        final safeNewIndex = newIndex.clamp(0, _referenceFrameTimesMs.length);
-
-        _referenceFrameTimesMs.insert(safeNewIndex, referenceTime);
-      }
 
       if (_selectedFrameIndex == oldIndex) {
         _selectedFrameIndex = newIndex;
@@ -1037,12 +945,6 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
   }
 
   Duration _videoPositionForFrame(int index) {
-    if (index >= 0 && index < _referenceFrameTimesMs.length) {
-      return Duration(milliseconds: _referenceFrameTimesMs[index]);
-    }
-
-    // Legacy fallback for older projects created before
-    // permanent reference timestamps existed.
     var timelineUnits = 0;
 
     for (var i = 0; i < index && i < _frameDurations.length; i++) {

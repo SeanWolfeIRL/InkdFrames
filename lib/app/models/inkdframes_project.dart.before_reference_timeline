@@ -16,12 +16,10 @@ class InkdFramesProject {
     this.referenceMediaType,
     List<DrawingLayer>? layers,
     List<LayerGroup>? layerGroups,
-    List<int>? referenceFrameTimesMs,
     this.referenceVisible = true,
     this.referenceOpacity = 1.0,
   }) : layers = layers ?? _layersFromLegacyFrames(frames),
-       layerGroups = layerGroups ?? <LayerGroup>[],
-       referenceFrameTimesMs = referenceFrameTimesMs ?? <int>[];
+       layerGroups = layerGroups ?? <LayerGroup>[];
 
   factory InkdFramesProject.fromJson(Map<String, dynamic> json) {
     final legacyFrames = _readLegacyFrames(json['frames']);
@@ -80,11 +78,6 @@ class InkdFramesProject {
           (json['referenceOpacity'] as num?)?.toDouble().clamp(0.0, 1.0) ?? 1.0,
       layers: layers,
       layerGroups: layerGroups,
-      referenceFrameTimesMs: json['referenceFrameTimesMs'] is List
-          ? (json['referenceFrameTimesMs'] as List)
-                .map((time) => (time as num).toInt())
-                .toList()
-          : <int>[],
     );
   }
 
@@ -112,11 +105,6 @@ class InkdFramesProject {
   final bool referenceVisible;
   final double referenceOpacity;
 
-  /// Exact video timestamp belonging to each animation frame.
-  ///
-  /// Empty for blank animations, image references, and legacy projects.
-  final List<int> referenceFrameTimesMs;
-
   Map<String, dynamic> toJson() {
     return {
       'id': id,
@@ -140,7 +128,6 @@ class InkdFramesProject {
       'referenceMediaType': referenceMediaType,
       'referenceVisible': referenceVisible,
       'referenceOpacity': referenceOpacity,
-      'referenceFrameTimesMs': referenceFrameTimesMs,
     };
   }
 
