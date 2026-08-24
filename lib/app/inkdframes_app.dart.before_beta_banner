@@ -9,21 +9,6 @@ class InkdFramesApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      debugShowCheckedModeBanner: false,
-      builder: (context, child) {
-        return Banner(
-          message: 'BETA',
-          location: BannerLocation.topEnd,
-          color: Colors.deepPurple,
-          textStyle: const TextStyle(
-            color: Colors.white,
-            fontWeight: FontWeight.w700,
-            fontSize: 10,
-            letterSpacing: 1.1,
-          ),
-          child: child ?? const SizedBox.shrink(),
-        );
-      },
       title: 'InkdFrames',
       theme: ThemeData.dark().copyWith(
         colorScheme: const ColorScheme.dark(

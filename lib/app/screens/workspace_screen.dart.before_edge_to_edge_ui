@@ -96,6 +96,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
   bool _timingExpanded = true;
   bool _drawingExpanded = true;
   bool _timelineExpanded = true;
+  bool? _frameToolbarExpanded;
   bool? _editToolbarExpanded;
   bool _isExporting = false;
   double _fps = 8;
@@ -125,7 +126,6 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
   bool _referenceVisible = true;
   double _referenceOpacity = 1.0;
   bool _layersPanelExpanded = false;
-  bool _transformToolbarExpanded = false;
 
   @override
   void dispose() {
@@ -3074,24 +3074,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     final nextFrameStrokes = _getNextFrameStrokes();
 
     return Scaffold(
-      extendBodyBehindAppBar: true,
       appBar: AppBar(
-        backgroundColor: Colors.transparent,
-        surfaceTintColor: Colors.transparent,
-        elevation: 0,
-        flexibleSpace: const DecoratedBox(
-          decoration: BoxDecoration(
-            gradient: LinearGradient(
-              begin: Alignment.topCenter,
-              end: Alignment.bottomCenter,
-              colors: [
-                Color(0xCC121016),
-                Color(0x66121016),
-                Colors.transparent,
-              ],
-            ),
-          ),
-        ),
         title: Text(_projectName, overflow: TextOverflow.ellipsis),
         centerTitle: false,
         actions: [
@@ -3115,12 +3098,23 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
       ),
       body: Column(
         children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
+            child: Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: [const SizedBox(width: 8)],
+            ),
+          ),
           Expanded(
             child: LayoutBuilder(
               builder: (context, constraints) {
                 final isNarrowToolbarLayout = constraints.maxWidth < 700;
                 final isPortraitWorkspace =
                     constraints.maxHeight > constraints.maxWidth;
+
+                final frameToolbarExpanded =
+                    _frameToolbarExpanded ?? !isNarrowToolbarLayout;
 
                 final editToolbarExpanded =
                     _editToolbarExpanded ?? !isNarrowToolbarLayout;
@@ -3318,6 +3312,90 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                         ),
                       ),
                     ),
+                    Positioned(
+                      top: 16,
+                      left: 16,
+                      child: Material(
+                        elevation: 8,
+                        color: const Color(0xE61A1720),
+                        borderRadius: BorderRadius.circular(16),
+                        clipBehavior: Clip.antiAlias,
+                        child: Padding(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 6,
+                            vertical: 4,
+                          ),
+                          child: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              IconButton(
+                                tooltip: frameToolbarExpanded
+                                    ? 'Hide Frame Tools'
+                                    : 'Show Frame Tools',
+                                visualDensity: VisualDensity.compact,
+                                onPressed: () {
+                                  setState(() {
+                                    final next = !frameToolbarExpanded;
+                                    _frameToolbarExpanded = next;
+
+                                    if (isNarrowToolbarLayout && next) {
+                                      _editToolbarExpanded = false;
+                                    }
+                                  });
+                                },
+                                icon: Icon(
+                                  frameToolbarExpanded
+                                      ? Icons.chevron_left
+                                      : Icons.video_collection_outlined,
+                                ),
+                              ),
+                              if (frameToolbarExpanded) ...[
+                                IconButton(
+                                  tooltip: 'Add Frame',
+                                  visualDensity: VisualDensity.compact,
+                                  onPressed: _isPlaying ? null : _addFrame,
+                                  icon: const Icon(Icons.add),
+                                ),
+                                IconButton(
+                                  tooltip: 'Duplicate Frame',
+                                  visualDensity: VisualDensity.compact,
+                                  onPressed: _isPlaying
+                                      ? null
+                                      : _duplicateFrame,
+                                  icon: const Icon(Icons.copy),
+                                ),
+                                IconButton(
+                                  tooltip: 'Delete Frame',
+                                  visualDensity: VisualDensity.compact,
+                                  onPressed: _isPlaying ? null : _deleteFrame,
+                                  icon: const Icon(Icons.delete_outline),
+                                ),
+                                IconButton(
+                                  tooltip: 'Clear Frame',
+                                  visualDensity: VisualDensity.compact,
+                                  onPressed: _isPlaying
+                                      ? null
+                                      : _clearCurrentFrame,
+                                  icon: const Icon(Icons.clear),
+                                ),
+                                IconButton(
+                                  tooltip: _isPlaying ? 'Pause' : 'Play',
+                                  visualDensity: VisualDensity.compact,
+                                  onPressed: _togglePlayback,
+                                  icon: Icon(
+                                    _isPlaying ? Icons.pause : Icons.play_arrow,
+                                    color: _isPlaying
+                                        ? Colors.deepPurpleAccent
+                                        : Colors.white70,
+                                  ),
+                                ),
+                              ],
+                            ],
+                          ),
+                        ),
+                      ),
+                    ),
+
                     Positioned(
                       top: 78,
                       left: 16,
@@ -4056,10 +4134,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                     ),
 
                     Positioned(
-                      top:
-                          MediaQuery.of(context).viewPadding.top +
-                          kToolbarHeight +
-                          8,
+                      top: 16,
                       right: 16,
                       child: Material(
                         elevation: 8,
@@ -4126,26 +4201,49 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                                   ),
                                 ),
                                 IconButton(
-                                  tooltip: _transformToolbarExpanded
-                                      ? 'Hide Transform Tools'
-                                      : 'Show Transform Tools',
+                                  tooltip: 'Transform',
                                   visualDensity: VisualDensity.compact,
                                   onPressed: _isPlaying
                                       ? null
                                       : () {
                                           setState(() {
-                                            _transformToolbarExpanded =
-                                                !_transformToolbarExpanded;
+                                            _isTransformActive =
+                                                !_isTransformActive;
+                                            _isEraserActive = false;
+                                            _isFillToolActive = false;
+                                            _clearFillLasso();
+                                            _isShapeToolActive = false;
+                                            _clearShapeDraft();
+                                            _draftStroke =
+                                                const <VectorPoint>[];
+                                            _clearTransformSelection();
                                           });
                                         },
                                   icon: Icon(
                                     Icons.open_with,
-                                    color:
-                                        _isTransformActive ||
-                                            _transformToolbarExpanded
+                                    color: _isTransformActive
                                         ? Colors.deepPurpleAccent
                                         : Colors.white70,
                                   ),
+                                ),
+                                IconButton(
+                                  tooltip: 'Copy Selection',
+                                  visualDensity: VisualDensity.compact,
+                                  onPressed:
+                                      _isPlaying ||
+                                          _selectedTransformStrokes.isEmpty
+                                      ? null
+                                      : _copySelectedStrokes,
+                                  icon: const Icon(Icons.content_copy),
+                                ),
+                                IconButton(
+                                  tooltip: 'Paste Selection',
+                                  visualDensity: VisualDensity.compact,
+                                  onPressed:
+                                      _isPlaying || _strokeClipboard.isEmpty
+                                      ? null
+                                      : _pasteCopiedStrokes,
+                                  icon: const Icon(Icons.content_paste),
                                 ),
                                 IconButton(
                                   tooltip: 'Fill Tool',
@@ -4244,6 +4342,10 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                                   setState(() {
                                     final next = !editToolbarExpanded;
                                     _editToolbarExpanded = next;
+
+                                    if (isNarrowToolbarLayout && next) {
+                                      _frameToolbarExpanded = false;
+                                    }
                                   });
                                 },
                                 icon: Icon(
@@ -4257,95 +4359,6 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                         ),
                       ),
                     ),
-                    if (_transformToolbarExpanded)
-                      Positioned(
-                        top:
-                            MediaQuery.of(context).viewPadding.top +
-                            kToolbarHeight +
-                            68,
-                        right: 16,
-                        child: Material(
-                          elevation: 8,
-                          color: const Color(0xE61A1720),
-                          borderRadius: BorderRadius.circular(16),
-                          clipBehavior: Clip.antiAlias,
-                          child: Padding(
-                            padding: const EdgeInsets.symmetric(
-                              horizontal: 6,
-                              vertical: 4,
-                            ),
-                            child: Row(
-                              mainAxisSize: MainAxisSize.min,
-                              children: [
-                                IconButton(
-                                  tooltip: _isTransformActive
-                                      ? 'Exit Transform'
-                                      : 'Transform / Lasso',
-                                  visualDensity: VisualDensity.compact,
-                                  onPressed: _isPlaying
-                                      ? null
-                                      : () {
-                                          setState(() {
-                                            _isTransformActive =
-                                                !_isTransformActive;
-
-                                            _isEraserActive = false;
-                                            _isFillToolActive = false;
-                                            _isShapeToolActive = false;
-
-                                            _clearFillLasso();
-                                            _clearShapeDraft();
-                                            _draftStroke =
-                                                const <VectorPoint>[];
-
-                                            if (!_isTransformActive) {
-                                              _clearTransformSelection();
-                                            }
-                                          });
-                                        },
-                                  icon: Icon(
-                                    Icons.select_all,
-                                    color: _isTransformActive
-                                        ? Colors.deepPurpleAccent
-                                        : Colors.white70,
-                                  ),
-                                ),
-                                IconButton(
-                                  tooltip: 'Copy Selection',
-                                  visualDensity: VisualDensity.compact,
-                                  onPressed:
-                                      _isPlaying ||
-                                          _selectedTransformStrokes.isEmpty
-                                      ? null
-                                      : _copySelectedStrokes,
-                                  icon: const Icon(Icons.content_copy),
-                                ),
-                                IconButton(
-                                  tooltip: 'Paste Selection',
-                                  visualDensity: VisualDensity.compact,
-                                  onPressed:
-                                      _isPlaying || _strokeClipboard.isEmpty
-                                      ? null
-                                      : _pasteCopiedStrokes,
-                                  icon: const Icon(Icons.content_paste),
-                                ),
-                                const SizedBox(width: 2),
-                                IconButton(
-                                  tooltip: 'Collapse Transform Tools',
-                                  visualDensity: VisualDensity.compact,
-                                  onPressed: () {
-                                    setState(() {
-                                      _transformToolbarExpanded = false;
-                                    });
-                                  },
-                                  icon: const Icon(Icons.chevron_right),
-                                ),
-                              ],
-                            ),
-                          ),
-                        ),
-                      ),
-
                     Positioned(
                       bottom: 16 + MediaQuery.of(context).viewPadding.bottom,
                       left: 16,
@@ -4388,178 +4401,6 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                                         child: Column(
                                           mainAxisSize: MainAxisSize.min,
                                           children: [
-                                            Row(
-                                              mainAxisAlignment:
-                                                  MainAxisAlignment.center,
-                                              children: [
-                                                IconButton(
-                                                  tooltip: 'Add Frame',
-                                                  visualDensity:
-                                                      VisualDensity.compact,
-                                                  onPressed: _isPlaying
-                                                      ? null
-                                                      : _addFrame,
-                                                  icon: const Icon(Icons.add),
-                                                ),
-                                                IconButton(
-                                                  tooltip: 'Duplicate Frame',
-                                                  visualDensity:
-                                                      VisualDensity.compact,
-                                                  onPressed: _isPlaying
-                                                      ? null
-                                                      : _duplicateFrame,
-                                                  icon: const Icon(Icons.copy),
-                                                ),
-                                                IconButton(
-                                                  tooltip: 'Delete Frame',
-                                                  visualDensity:
-                                                      VisualDensity.compact,
-                                                  onPressed: _isPlaying
-                                                      ? null
-                                                      : _deleteFrame,
-                                                  icon: const Icon(
-                                                    Icons.delete_outline,
-                                                  ),
-                                                ),
-                                                IconButton(
-                                                  tooltip: 'Clear Frame',
-                                                  visualDensity:
-                                                      VisualDensity.compact,
-                                                  onPressed: _isPlaying
-                                                      ? null
-                                                      : _clearCurrentFrame,
-                                                  icon: const Icon(Icons.clear),
-                                                ),
-                                                IconButton(
-                                                  tooltip: _isPlaying
-                                                      ? 'Pause'
-                                                      : 'Play',
-                                                  visualDensity:
-                                                      VisualDensity.compact,
-                                                  onPressed: _togglePlayback,
-                                                  icon: Icon(
-                                                    _isPlaying
-                                                        ? Icons.pause
-                                                        : Icons.play_arrow,
-                                                    color: _isPlaying
-                                                        ? Colors
-                                                              .deepPurpleAccent
-                                                        : Colors.white70,
-                                                  ),
-                                                ),
-                                              ],
-                                            ),
-                                            const SizedBox(height: 2),
-                                            SizedBox(
-                                              height: 64,
-                                              child: ReorderableListView.builder(
-                                                scrollController:
-                                                    _timelineScrollController,
-                                                scrollDirection:
-                                                    Axis.horizontal,
-                                                padding:
-                                                    const EdgeInsets.symmetric(
-                                                      horizontal: 4,
-                                                    ),
-                                                itemCount: _frames.length,
-                                                onReorderItem: _reorderFrame,
-                                                itemBuilder: (context, index) {
-                                                  final isSelected =
-                                                      index ==
-                                                      _selectedFrameIndex;
-
-                                                  return Padding(
-                                                    key: Key('frame-$index'),
-                                                    padding:
-                                                        const EdgeInsets.only(
-                                                          right: 6,
-                                                        ),
-                                                    child: InkWell(
-                                                      onTap: () =>
-                                                          _selectFrame(index),
-                                                      child: Container(
-                                                        width: 64,
-                                                        clipBehavior:
-                                                            Clip.antiAlias,
-                                                        decoration: BoxDecoration(
-                                                          color: Theme.of(context)
-                                                              .colorScheme
-                                                              .surfaceContainerHighest,
-                                                          borderRadius:
-                                                              BorderRadius.circular(
-                                                                10,
-                                                              ),
-                                                          border: Border.all(
-                                                            color: isSelected
-                                                                ? Colors
-                                                                      .deepPurpleAccent
-                                                                : Colors
-                                                                      .white12,
-                                                            width: isSelected
-                                                                ? 3
-                                                                : 1,
-                                                          ),
-                                                        ),
-                                                        child: Stack(
-                                                          children: [
-                                                            CustomPaint(
-                                                              painter:
-                                                                  FrameThumbnailPainter(
-                                                                    strokes:
-                                                                        _frames[index],
-                                                                  ),
-                                                              child:
-                                                                  const SizedBox.expand(),
-                                                            ),
-                                                            Positioned(
-                                                              right: 4,
-                                                              bottom: 4,
-                                                              child: Container(
-                                                                padding:
-                                                                    const EdgeInsets.symmetric(
-                                                                      horizontal:
-                                                                          6,
-                                                                      vertical:
-                                                                          2,
-                                                                    ),
-                                                                decoration: BoxDecoration(
-                                                                  color: const Color(
-                                                                    0xCC121016,
-                                                                  ),
-                                                                  borderRadius:
-                                                                      BorderRadius.circular(
-                                                                        10,
-                                                                      ),
-                                                                  border: Border.all(
-                                                                    color:
-                                                                        isSelected
-                                                                        ? Colors
-                                                                              .deepPurpleAccent
-                                                                        : Colors
-                                                                              .white12,
-                                                                    width: 1,
-                                                                  ),
-                                                                ),
-                                                                child: Text(
-                                                                  '${_frameDurations[index]}x',
-                                                                  style: const TextStyle(
-                                                                    fontSize:
-                                                                        11,
-                                                                    color: Colors
-                                                                        .white,
-                                                                  ),
-                                                                ),
-                                                              ),
-                                                            ),
-                                                          ],
-                                                        ),
-                                                      ),
-                                                    ),
-                                                  );
-                                                },
-                                              ),
-                                            ),
-                                            const SizedBox(height: 6),
                                             Row(
                                               children: [
                                                 IconButton(
@@ -4677,6 +4518,116 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                                                   ),
                                                 ),
                                               ],
+                                            ),
+                                            const SizedBox(height: 2),
+                                            SizedBox(
+                                              height: 64,
+                                              child: ReorderableListView.builder(
+                                                scrollController:
+                                                    _timelineScrollController,
+                                                scrollDirection:
+                                                    Axis.horizontal,
+                                                padding:
+                                                    const EdgeInsets.symmetric(
+                                                      horizontal: 4,
+                                                    ),
+                                                itemCount: _frames.length,
+                                                onReorderItem: _reorderFrame,
+                                                itemBuilder: (context, index) {
+                                                  final isSelected =
+                                                      index ==
+                                                      _selectedFrameIndex;
+
+                                                  return Padding(
+                                                    key: Key('frame-$index'),
+                                                    padding:
+                                                        const EdgeInsets.only(
+                                                          right: 6,
+                                                        ),
+                                                    child: InkWell(
+                                                      onTap: () =>
+                                                          _selectFrame(index),
+                                                      child: Container(
+                                                        width: 64,
+                                                        clipBehavior:
+                                                            Clip.antiAlias,
+                                                        decoration: BoxDecoration(
+                                                          color: Theme.of(context)
+                                                              .colorScheme
+                                                              .surfaceContainerHighest,
+                                                          borderRadius:
+                                                              BorderRadius.circular(
+                                                                10,
+                                                              ),
+                                                          border: Border.all(
+                                                            color: isSelected
+                                                                ? Colors
+                                                                      .deepPurpleAccent
+                                                                : Colors
+                                                                      .white12,
+                                                            width: isSelected
+                                                                ? 3
+                                                                : 1,
+                                                          ),
+                                                        ),
+                                                        child: Stack(
+                                                          children: [
+                                                            CustomPaint(
+                                                              painter:
+                                                                  FrameThumbnailPainter(
+                                                                    strokes:
+                                                                        _frames[index],
+                                                                  ),
+                                                              child:
+                                                                  const SizedBox.expand(),
+                                                            ),
+                                                            Positioned(
+                                                              right: 4,
+                                                              bottom: 4,
+                                                              child: Container(
+                                                                padding:
+                                                                    const EdgeInsets.symmetric(
+                                                                      horizontal:
+                                                                          6,
+                                                                      vertical:
+                                                                          2,
+                                                                    ),
+                                                                decoration: BoxDecoration(
+                                                                  color: const Color(
+                                                                    0xCC121016,
+                                                                  ),
+                                                                  borderRadius:
+                                                                      BorderRadius.circular(
+                                                                        10,
+                                                                      ),
+                                                                  border: Border.all(
+                                                                    color:
+                                                                        isSelected
+                                                                        ? Colors
+                                                                              .deepPurpleAccent
+                                                                        : Colors
+                                                                              .white12,
+                                                                    width: 1,
+                                                                  ),
+                                                                ),
+                                                                child: Text(
+                                                                  '${_frameDurations[index]}x',
+                                                                  style: const TextStyle(
+                                                                    fontSize:
+                                                                        11,
+                                                                    color: Colors
+                                                                        .white,
+                                                                  ),
+                                                                ),
+                                                              ),
+                                                            ),
+                                                          ],
+                                                        ),
+                                                      ),
+                                                    ),
+                                                  );
+                                                },
+                                              ),
                                             ),
                                           ],
                                         ),
