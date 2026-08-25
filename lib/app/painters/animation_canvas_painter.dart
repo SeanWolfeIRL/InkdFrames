@@ -105,12 +105,13 @@ class AnimationCanvasPainter extends CustomPainter {
   double _pressureWidth(VectorPoint point, double maximumWidth) {
     final pressure = point.pressure.clamp(0.0, 1.0);
 
-    // Gentle curve:
-    // light pressure remains usable while heavy pressure still has range.
-    final response = math.sqrt(pressure);
+    // Finer taper at very light contact while still reaching
+    // the full selected brush width under firm pressure.
+    final response = math.pow(pressure, 1.35).toDouble();
 
-    // Never collapse completely to zero width.
-    final factor = 0.08 + (response * 0.92);
+    const minimumFactor = 0.015;
+
+    final factor = minimumFactor + (response * (1.0 - minimumFactor));
 
     return maximumWidth * factor;
   }

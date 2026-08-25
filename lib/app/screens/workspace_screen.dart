@@ -93,14 +93,17 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
   Offset? _transformRotationCenter;
   double? _transformRotationStartAngle;
   Map<String, List<VectorStroke>>? _transformRotationSnapshot;
-  bool _timingExpanded = true;
-  bool _drawingExpanded = true;
-  bool _timelineExpanded = true;
-  bool? _editToolbarExpanded;
+  bool _timingExpanded = false;
+  bool _drawingExpanded = false;
+  bool _timelineExpanded = false;
+  bool? _editToolbarExpanded = false;
   bool _isExporting = false;
   double _fps = 8;
   double _brushSize = 4.0;
   StrokeBrushType _brushType = StrokeBrushType.solid;
+  double _stabilizerStrength = 0.55;
+  double _stabilizerPullDistance = 14.0;
+  Offset? _stabilizerTrailingPosition;
   double _canvasWidth = 1920;
   double _canvasHeight = 1080;
   Color _brushColor = Colors.white;
@@ -1105,6 +1108,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
       _layers[_activeLayerIndex] = layer.copyWith(frames: frames);
 
       _draftStroke = const <VectorPoint>[];
+      _stabilizerTrailingPosition = null;
       _rebuildCompositeFrames();
     });
 
@@ -2013,6 +2017,44 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     _rebuildCompositeFrames();
   }
 
+  Offset _stabilizePosition(Offset rawPosition) {
+    if (_stabilizerStrength <= 0 || _draftStroke.isEmpty) {
+      _stabilizerTrailingPosition = rawPosition;
+      return rawPosition;
+    }
+
+    final previous =
+        _stabilizerTrailingPosition ??
+        Offset(_draftStroke.last.dx, _draftStroke.last.dy);
+
+    final delta = rawPosition - previous;
+    final distance = delta.distance;
+
+    if (distance <= 0.001) {
+      return previous;
+    }
+
+    final pullDistance = _stabilizerPullDistance.clamp(0.0, 120.0);
+
+    // Hold the rendered point slightly behind the real pen tip.
+    final allowedDistance = math.max(0.0, distance - pullDistance);
+
+    final target = allowedDistance <= 0
+        ? previous
+        : previous + (delta / distance) * allowedDistance;
+
+    // Blend toward the pulled target.
+    final response = (1.0 - _stabilizerStrength).clamp(0.08, 1.0);
+
+    final stabilized = Offset(
+      previous.dx + ((target.dx - previous.dx) * response),
+      previous.dy + ((target.dy - previous.dy) * response),
+    );
+
+    _stabilizerTrailingPosition = stabilized;
+    return stabilized;
+  }
+
   void _handlePointerDown(PointerDownEvent event, BuildContext canvasContext) {
     _activePointerCount += 1;
     if (_activePointerCount > 1) {
@@ -2143,6 +2185,8 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
       });
       return;
     }
+
+    _stabilizerTrailingPosition = canvasPosition;
 
     setState(() {
       _draftStroke = <VectorPoint>[
@@ -2281,9 +2325,11 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
       return;
     }
 
+    final stabilizedPosition = _stabilizePosition(canvasPosition);
+
     final lastPoint = _draftStroke.last;
-    final dx = canvasPosition.dx - lastPoint.dx;
-    final dy = canvasPosition.dy - lastPoint.dy;
+    final dx = stabilizedPosition.dx - lastPoint.dx;
+    final dy = stabilizedPosition.dy - lastPoint.dy;
     final distanceSquared = (dx * dx) + (dy * dy);
 
     const minimumDistanceSquared = 2.25;
@@ -2295,8 +2341,10 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     setState(() {
       _draftStroke.add(
         VectorPoint(
-          dx: canvasPosition.dx,
-          dy: canvasPosition.dy,
+          dx: stabilizedPosition.dx,
+          dy: stabilizedPosition.dy,
+
+          // Pressure remains completely untouched by stabilisation.
           pressure: event.pressure,
         ),
       );
@@ -3357,12 +3405,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                                     visualDensity: VisualDensity.compact,
                                     onPressed: () {
                                       setState(() {
-                                        final next = !_timingExpanded;
-                                        _timingExpanded = next;
-
-                                        if (next) {
-                                          _drawingExpanded = false;
-                                        }
+                                        _timingExpanded = !_timingExpanded;
                                       });
                                     },
                                     icon: Icon(
@@ -3374,21 +3417,16 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                                   ),
                                   IconButton(
                                     tooltip: _drawingExpanded
-                                        ? 'Hide Drawing'
-                                        : 'Show Drawing',
+                                        ? 'Hide Pen'
+                                        : 'Show Pen',
                                     visualDensity: VisualDensity.compact,
                                     onPressed: () {
                                       setState(() {
-                                        final next = !_drawingExpanded;
-                                        _drawingExpanded = next;
-
-                                        if (next) {
-                                          _timingExpanded = false;
-                                        }
+                                        _drawingExpanded = !_drawingExpanded;
                                       });
                                     },
                                     icon: Icon(
-                                      Icons.brush,
+                                      Icons.edit,
                                       color: _drawingExpanded
                                           ? Colors.deepPurpleAccent
                                           : Colors.white70,
@@ -3400,24 +3438,28 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                           ),
                           if (_timingExpanded || _drawingExpanded) ...[
                             const SizedBox(width: 8),
-                            Material(
-                              elevation: 8,
-                              color: const Color(0xE61A1720),
-                              borderRadius: BorderRadius.circular(16),
-                              clipBehavior: Clip.antiAlias,
-                              child: SizedBox(
-                                width: constraints.maxWidth < 420
-                                    ? constraints.maxWidth - 96
-                                    : 300,
-                                child: Padding(
-                                  padding: const EdgeInsets.fromLTRB(
-                                    14,
-                                    10,
-                                    14,
-                                    12,
-                                  ),
-                                  child: _timingExpanded
-                                      ? Column(
+                            Column(
+                              mainAxisSize: MainAxisSize.min,
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                if (_timingExpanded)
+                                  Material(
+                                    elevation: 8,
+                                    color: const Color(0xE61A1720),
+                                    borderRadius: BorderRadius.circular(16),
+                                    clipBehavior: Clip.antiAlias,
+                                    child: SizedBox(
+                                      width: constraints.maxWidth < 420
+                                          ? constraints.maxWidth - 96
+                                          : 300,
+                                      child: Padding(
+                                        padding: const EdgeInsets.fromLTRB(
+                                          14,
+                                          10,
+                                          14,
+                                          12,
+                                        ),
+                                        child: Column(
                                           mainAxisSize: MainAxisSize.min,
                                           children: [
                                             Row(
@@ -3491,15 +3533,37 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                                               ],
                                             ),
                                           ],
-                                        )
-                                      : Column(
+                                        ),
+                                      ),
+                                    ),
+                                  ),
+                                if (_timingExpanded && _drawingExpanded)
+                                  const SizedBox(height: 8),
+                                if (_drawingExpanded)
+                                  Material(
+                                    elevation: 8,
+                                    color: const Color(0xE61A1720),
+                                    borderRadius: BorderRadius.circular(16),
+                                    clipBehavior: Clip.antiAlias,
+                                    child: SizedBox(
+                                      width: constraints.maxWidth < 420
+                                          ? constraints.maxWidth - 96
+                                          : 300,
+                                      child: Padding(
+                                        padding: const EdgeInsets.fromLTRB(
+                                          14,
+                                          10,
+                                          14,
+                                          12,
+                                        ),
+                                        child: Column(
                                           mainAxisSize: MainAxisSize.min,
                                           children: [
                                             Row(
                                               children: [
                                                 const SizedBox(
                                                   width: 70,
-                                                  child: Text('Pen'),
+                                                  child: Text('Type'),
                                                 ),
                                                 Expanded(
                                                   child:
@@ -3549,7 +3613,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                                               children: [
                                                 const SizedBox(
                                                   width: 70,
-                                                  child: Text('Brush'),
+                                                  child: Text('Size'),
                                                 ),
                                                 Expanded(
                                                   child: Slider(
@@ -3572,6 +3636,71 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                                                     _brushSize.toStringAsFixed(
                                                       0,
                                                     ),
+                                                  ),
+                                                ),
+                                              ],
+                                            ),
+                                            const SizedBox(height: 6),
+                                            Row(
+                                              children: [
+                                                const SizedBox(
+                                                  width: 70,
+                                                  child: Text('Stabiliser'),
+                                                ),
+                                                Expanded(
+                                                  child: Slider(
+                                                    value: _stabilizerStrength,
+                                                    min: 0,
+                                                    max: 0.9,
+                                                    divisions: 9,
+                                                    label:
+                                                        '${(_stabilizerStrength * 100).round()}%',
+                                                    onChanged: (value) {
+                                                      setState(() {
+                                                        _stabilizerStrength =
+                                                            value;
+                                                      });
+                                                    },
+                                                  ),
+                                                ),
+                                                SizedBox(
+                                                  width: 40,
+                                                  child: Text(
+                                                    '${(_stabilizerStrength * 100).round()}%',
+                                                    textAlign: TextAlign.right,
+                                                  ),
+                                                ),
+                                              ],
+                                            ),
+                                            const SizedBox(height: 4),
+                                            Row(
+                                              children: [
+                                                const SizedBox(
+                                                  width: 70,
+                                                  child: Text('Pull'),
+                                                ),
+                                                Expanded(
+                                                  child: Slider(
+                                                    value:
+                                                        _stabilizerPullDistance,
+                                                    min: 0,
+                                                    max: 40,
+                                                    divisions: 20,
+                                                    label:
+                                                        '${_stabilizerPullDistance.round()} px',
+                                                    onChanged: (value) {
+                                                      setState(() {
+                                                        _stabilizerPullDistance =
+                                                            value;
+                                                      });
+                                                    },
+                                                  ),
+                                                ),
+                                                SizedBox(
+                                                  width: 40,
+                                                  child: Text(
+                                                    '${_stabilizerPullDistance.round()}',
+                                                    textAlign: TextAlign.right,
                                                   ),
                                                 ),
                                               ],
@@ -3871,8 +4000,10 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                                             ),
                                           ],
                                         ),
-                                ),
-                              ),
+                                      ),
+                                    ),
+                                  ),
+                              ],
                             ),
                           ],
                         ],
