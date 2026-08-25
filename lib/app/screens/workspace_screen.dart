@@ -101,6 +101,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
   double _fps = 8;
   double _brushSize = 4.0;
   StrokeBrushType _brushType = StrokeBrushType.solid;
+  double _brushOpacity = 1.0;
   double _stabilizerStrength = 0.55;
   double _stabilizerPullDistance = 14.0;
   Offset? _stabilizerTrailingPosition;
@@ -1785,7 +1786,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     final fillStroke = VectorStroke(
       points: List<VectorPoint>.from(_fillLassoPoints),
       strokeWidth: 0,
-      color: _brushColor,
+      color: _brushColor.withValues(alpha: _brushOpacity),
       filled: true,
       brushType: StrokeBrushType.solid,
     );
@@ -1810,7 +1811,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
       return VectorStroke(
         points: points.map(point).toList(),
         strokeWidth: _brushSize,
-        color: _brushColor,
+        color: _brushColor.withValues(alpha: _brushOpacity),
       );
     }
 
@@ -2569,7 +2570,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     final stroke = VectorStroke(
       points: List<VectorPoint>.from(_draftStroke),
       strokeWidth: _brushSize,
-      color: _brushColor,
+      color: _brushColor.withValues(alpha: _brushOpacity),
       brushType: _brushType,
     );
 
@@ -2704,6 +2705,119 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     if (value == null) return null;
 
     return Color(value);
+  }
+
+  Future<Color?> _showRadialColourPicker(Color initialColor) async {
+    var hsv = HSVColor.fromColor(initialColor);
+
+    return showDialog<Color>(
+      context: context,
+      builder: (dialogContext) {
+        return StatefulBuilder(
+          builder: (dialogContext, setDialogState) {
+            final selectedColor = hsv.toColor();
+
+            void updateFromPosition(Offset position) {
+              const center = Offset(130, 130);
+              final delta = position - center;
+              final radius = delta.distance;
+
+              final angle = math.atan2(delta.dy, delta.dx);
+              final hue = ((angle * 180 / math.pi) + 360) % 360;
+
+              if (radius >= 92) {
+                setDialogState(() {
+                  hsv = hsv.withHue(hue);
+                });
+                return;
+              }
+
+              final saturation = (radius / 92).clamp(0.0, 1.0);
+
+              setDialogState(() {
+                hsv = hsv.withSaturation(saturation);
+              });
+            }
+
+            return AlertDialog(
+              title: const Text('Visual Colour Picker'),
+              content: SizedBox(
+                width: 320,
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    SizedBox(
+                      width: 260,
+                      height: 260,
+                      child: GestureDetector(
+                        behavior: HitTestBehavior.opaque,
+                        onTapDown: (details) {
+                          updateFromPosition(details.localPosition);
+                        },
+                        onPanDown: (details) {
+                          updateFromPosition(details.localPosition);
+                        },
+                        onPanUpdate: (details) {
+                          updateFromPosition(details.localPosition);
+                        },
+                        child: CustomPaint(
+                          painter: _RadialColourPickerPainter(hsv: hsv),
+                          child: const SizedBox.expand(),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 14),
+                    Row(
+                      children: [
+                        const SizedBox(width: 82, child: Text('Brightness')),
+                        Expanded(
+                          child: Slider(
+                            value: hsv.value,
+                            min: 0,
+                            max: 1,
+                            onChanged: (value) {
+                              setDialogState(() {
+                                hsv = hsv.withValue(value);
+                              });
+                            },
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 8),
+                    Container(
+                      height: 46,
+                      decoration: BoxDecoration(
+                        color: selectedColor,
+                        borderRadius: BorderRadius.circular(12),
+                        border: Border.all(color: Colors.white24),
+                      ),
+                    ),
+                    const SizedBox(height: 6),
+                    Text(
+                      '#${_colorHex(selectedColor)}',
+                      style: Theme.of(dialogContext).textTheme.bodySmall,
+                    ),
+                  ],
+                ),
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.pop(dialogContext),
+                  child: const Text('Cancel'),
+                ),
+                FilledButton(
+                  onPressed: () {
+                    Navigator.pop(dialogContext, hsv.toColor());
+                  },
+                  child: const Text('Use Colour'),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
   }
 
   Future<Color?> _showColourPicker(
@@ -3303,7 +3417,9 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                                             nextOnionSkinStrokes: _showOnionSkin
                                                 ? nextFrameStrokes
                                                 : const <VectorStroke>[],
-                                            strokeColor: _brushColor,
+                                            strokeColor: _brushColor.withValues(
+                                              alpha: _brushOpacity,
+                                            ),
                                             strokeWidth: _brushSize,
                                             brushType: _brushType,
                                             backgroundColor:
@@ -3706,128 +3822,155 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                                               ],
                                             ),
                                             const SizedBox(height: 6),
+
+                                            // Brush opacity.
                                             Row(
-                                              crossAxisAlignment:
-                                                  CrossAxisAlignment.center,
+                                              children: [
+                                                const SizedBox(
+                                                  width: 70,
+                                                  child: Text('Opacity'),
+                                                ),
+                                                Expanded(
+                                                  child: Slider(
+                                                    value: _brushOpacity,
+                                                    min: 0.05,
+                                                    max: 1.0,
+                                                    divisions: 19,
+                                                    label:
+                                                        '${(_brushOpacity * 100).round()}%',
+                                                    onChanged: (value) {
+                                                      setState(() {
+                                                        _brushOpacity = value;
+                                                      });
+                                                    },
+                                                  ),
+                                                ),
+                                                SizedBox(
+                                                  width: 40,
+                                                  child: Text(
+                                                    '${(_brushOpacity * 100).round()}%',
+                                                    textAlign: TextAlign.right,
+                                                  ),
+                                                ),
+                                              ],
+                                            ),
+
+                                            const SizedBox(height: 8),
+
+                                            // Current brush colour.
+                                            Row(
                                               children: [
                                                 const SizedBox(
                                                   width: 70,
                                                   child: Text('Colour'),
                                                 ),
                                                 Expanded(
-                                                  child: Wrap(
-                                                    spacing: 7,
-                                                    runSpacing: 7,
-                                                    children: [
-                                                      for (final color
-                                                          in const [
-                                                            Color(0xFFFFFFFF),
-                                                            Color(0xFFBDBDBD),
-                                                            Color(0xFF616161),
-                                                            Color(0xFF000000),
-                                                            Color(0xFFF44336),
-                                                            Color(0xFFFF7043),
-                                                            Color(0xFFFF9800),
-                                                            Color(0xFFFFC107),
-                                                            Color(0xFFFFEB3B),
-                                                            Color(0xFF8BC34A),
-                                                            Color(0xFF4CAF50),
-                                                            Color(0xFF009688),
-                                                            Color(0xFF00BCD4),
-                                                            Color(0xFF03A9F4),
-                                                            Color(0xFF2196F3),
-                                                            Color(0xFF3F51B5),
-                                                            Color(0xFF673AB7),
-                                                            Color(0xFF9C27B0),
-                                                            Color(0xFFE91E63),
-                                                            Color(0xFF795548),
-                                                          ])
-                                                        GestureDetector(
-                                                          onTap: () {
-                                                            setState(() {
-                                                              _brushColor =
-                                                                  color;
-                                                              _rememberRecentColor(
-                                                                color,
+                                                  child: Align(
+                                                    alignment:
+                                                        Alignment.centerLeft,
+                                                    child: Tooltip(
+                                                      message:
+                                                          'Choose Brush Colour',
+                                                      child: InkWell(
+                                                        borderRadius:
+                                                            BorderRadius.circular(
+                                                              12,
+                                                            ),
+                                                        onTap: () async {
+                                                          final color =
+                                                              await _showColourPicker(
+                                                                _brushColor,
+                                                                title:
+                                                                    'Brush Colour',
                                                               );
-                                                            });
-                                                          },
-                                                          child: Container(
-                                                            width: 24,
-                                                            height: 24,
-                                                            decoration: BoxDecoration(
-                                                              color: color,
-                                                              shape: BoxShape
-                                                                  .circle,
-                                                              border: Border.all(
-                                                                color:
-                                                                    _brushColor ==
-                                                                        color
-                                                                    ? Colors
-                                                                          .deepPurpleAccent
-                                                                    : Colors
-                                                                          .white38,
-                                                                width:
-                                                                    _brushColor ==
-                                                                        color
-                                                                    ? 3
-                                                                    : 2,
-                                                              ),
+
+                                                          if (color == null ||
+                                                              !mounted) {
+                                                            return;
+                                                          }
+
+                                                          setState(() {
+                                                            _brushColor = color;
+                                                            _rememberRecentColor(
+                                                              color,
+                                                            );
+                                                          });
+                                                        },
+                                                        child: Container(
+                                                          width: 72,
+                                                          height: 38,
+                                                          decoration: BoxDecoration(
+                                                            color: _brushColor,
+                                                            borderRadius:
+                                                                BorderRadius.circular(
+                                                                  12,
+                                                                ),
+                                                            border: Border.all(
+                                                              color: Colors
+                                                                  .deepPurpleAccent,
+                                                              width: 2,
                                                             ),
                                                           ),
-                                                        ),
-                                                      Tooltip(
-                                                        message:
-                                                            'Custom Colour',
-                                                        child: GestureDetector(
-                                                          onTap: () async {
-                                                            final color =
-                                                                await _showColourPicker(
-                                                                  _brushColor,
-                                                                  title:
-                                                                      'Brush Colour',
-                                                                );
-
-                                                            if (color == null ||
-                                                                !mounted) {
-                                                              return;
-                                                            }
-
-                                                            setState(() {
-                                                              _brushColor =
-                                                                  color;
-                                                              _rememberRecentColor(
-                                                                color,
-                                                              );
-                                                            });
-                                                          },
-                                                          child: Container(
-                                                            width: 24,
-                                                            height: 24,
-                                                            decoration: BoxDecoration(
-                                                              shape: BoxShape
-                                                                  .circle,
-                                                              border: Border.all(
-                                                                color: Colors
-                                                                    .cyanAccent,
-                                                                width: 2,
-                                                              ),
-                                                            ),
-                                                            child: const Icon(
-                                                              Icons.colorize,
-                                                              size: 15,
-                                                            ),
+                                                          child: Icon(
+                                                            Icons
+                                                                .palette_outlined,
+                                                            color:
+                                                                _brushColor
+                                                                        .computeLuminance() >
+                                                                    0.55
+                                                                ? Colors.black87
+                                                                : Colors.white,
+                                                            size: 19,
                                                           ),
                                                         ),
                                                       ),
-                                                    ],
+                                                    ),
+                                                  ),
+                                                ),
+                                                Tooltip(
+                                                  message:
+                                                      'Visual Colour Picker',
+                                                  child: IconButton(
+                                                    tooltip:
+                                                        'Visual Colour Picker',
+                                                    visualDensity:
+                                                        VisualDensity.compact,
+                                                    onPressed: () async {
+                                                      final color =
+                                                          await _showRadialColourPicker(
+                                                            _brushColor,
+                                                          );
+
+                                                      if (color == null ||
+                                                          !mounted) {
+                                                        return;
+                                                      }
+
+                                                      setState(() {
+                                                        _brushColor = color;
+                                                        _rememberRecentColor(
+                                                          color,
+                                                        );
+                                                      });
+                                                    },
+                                                    icon: const Icon(
+                                                      Icons.color_lens_outlined,
+                                                    ),
+                                                  ),
+                                                ),
+                                                const SizedBox(width: 4),
+                                                Text(
+                                                  '#${_colorHex(_brushColor)}',
+                                                  style: const TextStyle(
+                                                    fontSize: 10,
+                                                    color: Colors.white60,
                                                   ),
                                                 ),
                                               ],
                                             ),
 
                                             if (_recentColors.isNotEmpty) ...[
-                                              const SizedBox(height: 10),
+                                              const SizedBox(height: 8),
                                               Row(
                                                 crossAxisAlignment:
                                                     CrossAxisAlignment.center,
@@ -3885,115 +4028,80 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                                             ],
 
                                             const SizedBox(height: 10),
+                                            const Divider(height: 1),
+                                            const SizedBox(height: 8),
+
+                                            // Canvas colour remains available,
+                                            // but no longer occupies a huge grid.
                                             Row(
-                                              crossAxisAlignment:
-                                                  CrossAxisAlignment.center,
                                               children: [
                                                 const SizedBox(
                                                   width: 70,
-                                                  child: Text('Background'),
+                                                  child: Text('Canvas'),
                                                 ),
                                                 Expanded(
-                                                  child: Wrap(
-                                                    spacing: 7,
-                                                    runSpacing: 7,
-                                                    children: [
-                                                      for (final color
-                                                          in const [
-                                                            Color(0xFF1F1B24),
-                                                            Color(0xFFF4EFD8),
-                                                            Color(0xFFFFFFFF),
-                                                            Color(0xFFF5F5F5),
-                                                            Color(0xFFBDBDBD),
-                                                            Color(0xFF616161),
-                                                            Color(0xFF000000),
-                                                            Color(0xFFFFCDD2),
-                                                            Color(0xFFFFE0B2),
-                                                            Color(0xFFFFF9C4),
-                                                            Color(0xFFC8E6C9),
-                                                            Color(0xFFB2EBF2),
-                                                            Color(0xFFBBDEFB),
-                                                            Color(0xFFD1C4E9),
-                                                            Color(0xFFF8BBD0),
-                                                          ])
-                                                        GestureDetector(
-                                                          onTap: () {
-                                                            setState(() {
-                                                              _canvasBackgroundColor =
-                                                                  color;
-                                                            });
+                                                  child: Align(
+                                                    alignment:
+                                                        Alignment.centerLeft,
+                                                    child: Tooltip(
+                                                      message:
+                                                          'Choose Canvas Colour',
+                                                      child: InkWell(
+                                                        borderRadius:
+                                                            BorderRadius.circular(
+                                                              12,
+                                                            ),
+                                                        onTap: () async {
+                                                          final color =
+                                                              await _showColourPicker(
+                                                                _canvasBackgroundColor,
+                                                                title:
+                                                                    'Canvas Background',
+                                                              );
 
-                                                            _scheduleAutosave();
-                                                          },
-                                                          child: Container(
-                                                            width: 24,
-                                                            height: 24,
-                                                            decoration: BoxDecoration(
-                                                              color: color,
-                                                              shape: BoxShape
-                                                                  .circle,
-                                                              border: Border.all(
-                                                                color:
-                                                                    _canvasBackgroundColor ==
-                                                                        color
-                                                                    ? Colors
-                                                                          .deepPurpleAccent
-                                                                    : Colors
-                                                                          .white38,
-                                                                width:
-                                                                    _canvasBackgroundColor ==
-                                                                        color
-                                                                    ? 3
-                                                                    : 2,
-                                                              ),
+                                                          if (color == null ||
+                                                              !mounted) {
+                                                            return;
+                                                          }
+
+                                                          setState(() {
+                                                            _canvasBackgroundColor =
+                                                                color;
+                                                          });
+
+                                                          _scheduleAutosave();
+                                                        },
+                                                        child: Container(
+                                                          width: 72,
+                                                          height: 38,
+                                                          decoration: BoxDecoration(
+                                                            color:
+                                                                _canvasBackgroundColor,
+                                                            borderRadius:
+                                                                BorderRadius.circular(
+                                                                  12,
+                                                                ),
+                                                            border: Border.all(
+                                                              color: Colors
+                                                                  .white38,
+                                                              width: 2,
                                                             ),
                                                           ),
-                                                        ),
-                                                      Tooltip(
-                                                        message:
-                                                            'Custom Background',
-                                                        child: GestureDetector(
-                                                          onTap: () async {
-                                                            final color =
-                                                                await _showColourPicker(
-                                                                  _canvasBackgroundColor,
-                                                                  title:
-                                                                      'Canvas Background',
-                                                                );
-
-                                                            if (color == null ||
-                                                                !mounted) {
-                                                              return;
-                                                            }
-
-                                                            setState(() {
-                                                              _canvasBackgroundColor =
-                                                                  color;
-                                                            });
-
-                                                            _scheduleAutosave();
-                                                          },
-                                                          child: Container(
-                                                            width: 24,
-                                                            height: 24,
-                                                            decoration: BoxDecoration(
-                                                              shape: BoxShape
-                                                                  .circle,
-                                                              border: Border.all(
-                                                                color: Colors
-                                                                    .cyanAccent,
-                                                                width: 2,
-                                                              ),
-                                                            ),
-                                                            child: const Icon(
-                                                              Icons
-                                                                  .palette_outlined,
-                                                              size: 15,
-                                                            ),
+                                                          child: const Icon(
+                                                            Icons
+                                                                .format_color_fill,
+                                                            size: 19,
                                                           ),
                                                         ),
                                                       ),
-                                                    ],
+                                                    ),
+                                                  ),
+                                                ),
+                                                Text(
+                                                  '#${_colorHex(_canvasBackgroundColor)}',
+                                                  style: const TextStyle(
+                                                    fontSize: 10,
+                                                    color: Colors.white60,
                                                   ),
                                                 ),
                                               ],
@@ -5008,5 +5116,79 @@ class _FillLassoPainter extends CustomPainter {
   @override
   bool shouldRepaint(covariant _FillLassoPainter oldDelegate) {
     return true;
+  }
+}
+
+class _RadialColourPickerPainter extends CustomPainter {
+  const _RadialColourPickerPainter({required this.hsv});
+
+  final HSVColor hsv;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final center = Offset(size.width / 2, size.height / 2);
+
+    final outerRadius = math.min(size.width, size.height) / 2 - 4;
+
+    const ringWidth = 24.0;
+    final innerRadius = outerRadius - ringWidth;
+
+    final ringRect = Rect.fromCircle(
+      center: center,
+      radius: outerRadius - (ringWidth / 2),
+    );
+
+    final ringPaint = Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = ringWidth
+      ..shader = SweepGradient(
+        colors: [
+          for (var hue = 0; hue <= 360; hue += 30)
+            HSVColor.fromAHSV(1, hue.toDouble(), 1, 1).toColor(),
+        ],
+      ).createShader(ringRect)
+      ..isAntiAlias = true;
+
+    canvas.drawCircle(center, outerRadius - (ringWidth / 2), ringPaint);
+
+    final innerPaint = Paint()
+      ..shader = RadialGradient(
+        colors: [
+          HSVColor.fromAHSV(1, hsv.hue, 0, hsv.value).toColor(),
+          HSVColor.fromAHSV(1, hsv.hue, 1, hsv.value).toColor(),
+        ],
+      ).createShader(Rect.fromCircle(center: center, radius: innerRadius))
+      ..isAntiAlias = true;
+
+    canvas.drawCircle(center, innerRadius, innerPaint);
+
+    final hueAngle = hsv.hue * math.pi / 180;
+
+    final hueHandleRadius = outerRadius - (ringWidth / 2);
+
+    final hueHandle = Offset(
+      center.dx + math.cos(hueAngle) * hueHandleRadius,
+      center.dy + math.sin(hueAngle) * hueHandleRadius,
+    );
+
+    final handlePaint = Paint()
+      ..color = Colors.white
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 3
+      ..isAntiAlias = true;
+
+    canvas.drawCircle(hueHandle, 8, handlePaint);
+
+    final saturationHandle = Offset(
+      center.dx + math.cos(hueAngle) * innerRadius * hsv.saturation,
+      center.dy + math.sin(hueAngle) * innerRadius * hsv.saturation,
+    );
+
+    canvas.drawCircle(saturationHandle, 7, handlePaint);
+  }
+
+  @override
+  bool shouldRepaint(covariant _RadialColourPickerPainter oldDelegate) {
+    return oldDelegate.hsv != hsv;
   }
 }
