@@ -1,5 +1,8 @@
-import 'vector_point.dart';
 import 'package:flutter/material.dart';
+
+import 'vector_point.dart';
+
+enum StrokeBrushType { solid, pressure }
 
 class VectorStroke {
   VectorStroke({
@@ -7,9 +10,17 @@ class VectorStroke {
     this.strokeWidth = 4.0,
     this.color = Colors.white,
     this.filled = false,
+    this.brushType = StrokeBrushType.solid,
   }) : points = List<VectorPoint>.from(points);
 
   factory VectorStroke.fromJson(Map<String, dynamic> json) {
+    final brushTypeName = json['brushType'] as String?;
+
+    final brushType = StrokeBrushType.values.firstWhere(
+      (type) => type.name == brushTypeName,
+      orElse: () => StrokeBrushType.solid,
+    );
+
     return VectorStroke(
       points: (json['points'] as List)
           .map(
@@ -20,6 +31,7 @@ class VectorStroke {
       strokeWidth: (json['strokeWidth'] as num).toDouble(),
       color: Color(json['color'] as int),
       filled: json['filled'] as bool? ?? false,
+      brushType: brushType,
     );
   }
 
@@ -27,6 +39,7 @@ class VectorStroke {
   final double strokeWidth;
   final Color color;
   final bool filled;
+  final StrokeBrushType brushType;
 
   Map<String, dynamic> toJson() {
     return {
@@ -34,6 +47,7 @@ class VectorStroke {
       'strokeWidth': strokeWidth,
       'color': color.toARGB32(),
       'filled': filled,
+      'brushType': brushType.name,
     };
   }
 
@@ -43,6 +57,7 @@ class VectorStroke {
       strokeWidth: strokeWidth,
       color: color,
       filled: filled,
+      brushType: brushType,
     );
   }
 }

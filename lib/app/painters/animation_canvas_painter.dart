@@ -1,3 +1,4 @@
+import 'dart:math' as math;
 import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
@@ -15,6 +16,7 @@ class AnimationCanvasPainter extends CustomPainter {
     required this.previousOnionSkinColor,
     required this.nextOnionSkinColor,
     required this.strokeWidth,
+    required this.brushType,
     required this.backgroundColor,
     this.paintBackground = true,
   });
@@ -29,6 +31,7 @@ class AnimationCanvasPainter extends CustomPainter {
   final Color previousOnionSkinColor;
   final Color nextOnionSkinColor;
   final double strokeWidth;
+  final StrokeBrushType brushType;
   final Color backgroundColor;
   final bool paintBackground;
 
@@ -51,7 +54,11 @@ class AnimationCanvasPainter extends CustomPainter {
     if (currentStroke != null && currentStroke!.isNotEmpty) {
       _paintStroke(
         canvas,
-        VectorStroke(points: currentStroke!, strokeWidth: strokeWidth),
+        VectorStroke(
+          points: currentStroke!,
+          strokeWidth: strokeWidth,
+          brushType: brushType,
+        ),
         strokeColor,
       );
     }
@@ -95,10 +102,123 @@ class AnimationCanvasPainter extends CustomPainter {
     return smoothed;
   }
 
+  double _pressureWidth(VectorPoint point, double maximumWidth) {
+    final pressure = point.pressure.clamp(0.0, 1.0);
+
+    // Gentle curve:
+    // light pressure remains usable while heavy pressure still has range.
+    final response = math.sqrt(pressure);
+
+    // Never collapse completely to zero width.
+    final factor = 0.08 + (response * 0.92);
+
+    return maximumWidth * factor;
+  }
+
+  void _paintPressureStroke(
+    Canvas canvas,
+    List<VectorPoint> points,
+    double maximumWidth,
+    Color color,
+  ) {
+    if (points.isEmpty) return;
+
+    final paint = Paint()
+      ..color = color
+      ..style = PaintingStyle.fill
+      ..isAntiAlias = true;
+
+    if (points.length == 1) {
+      final point = points.first;
+      final radius = _pressureWidth(point, maximumWidth) / 2;
+
+      canvas.drawCircle(Offset(point.dx, point.dy), radius, paint);
+
+      return;
+    }
+
+    final left = <Offset>[];
+    final right = <Offset>[];
+
+    for (var i = 0; i < points.length; i++) {
+      final point = points[i];
+
+      final previous = i == 0 ? points[i] : points[i - 1];
+      final next = i == points.length - 1 ? points[i] : points[i + 1];
+
+      var dx = next.dx - previous.dx;
+      var dy = next.dy - previous.dy;
+
+      final length = math.sqrt((dx * dx) + (dy * dy));
+
+      if (length > 0.0001) {
+        dx /= length;
+        dy /= length;
+      } else {
+        dx = 1;
+        dy = 0;
+      }
+
+      final normalX = -dy;
+      final normalY = dx;
+
+      final halfWidth = _pressureWidth(point, maximumWidth) / 2;
+
+      left.add(
+        Offset(
+          point.dx + (normalX * halfWidth),
+          point.dy + (normalY * halfWidth),
+        ),
+      );
+
+      right.add(
+        Offset(
+          point.dx - (normalX * halfWidth),
+          point.dy - (normalY * halfWidth),
+        ),
+      );
+    }
+
+    final path = Path()..moveTo(left.first.dx, left.first.dy);
+
+    for (var i = 1; i < left.length; i++) {
+      path.lineTo(left[i].dx, left[i].dy);
+    }
+
+    for (var i = right.length - 1; i >= 0; i--) {
+      path.lineTo(right[i].dx, right[i].dy);
+    }
+
+    path.close();
+
+    canvas.drawPath(path, paint);
+
+    // Rounded pressure-sensitive caps.
+    final first = points.first;
+    final last = points.last;
+
+    canvas.drawCircle(
+      Offset(first.dx, first.dy),
+      _pressureWidth(first, maximumWidth) / 2,
+      paint,
+    );
+
+    canvas.drawCircle(
+      Offset(last.dx, last.dy),
+      _pressureWidth(last, maximumWidth) / 2,
+      paint,
+    );
+  }
+
   void _paintStroke(Canvas canvas, VectorStroke stroke, Color color) {
     final points = _smoothPoints(stroke.points);
 
     if (points.isEmpty) {
+      return;
+    }
+
+    if (!stroke.filled && stroke.brushType == StrokeBrushType.pressure) {
+      _paintPressureStroke(canvas, points, stroke.strokeWidth, color);
       return;
     }
 
@@ -154,10 +274,6 @@ class AnimationCanvasPainter extends CustomPainter {
         p2.dx,
         p2.dy,
       );
-    }
-
-    if (stroke.filled) {
-      path.close();
     }
 
     if (stroke.filled) {

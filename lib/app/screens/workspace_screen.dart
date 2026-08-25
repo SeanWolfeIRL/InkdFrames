@@ -100,6 +100,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
   bool _isExporting = false;
   double _fps = 8;
   double _brushSize = 4.0;
+  StrokeBrushType _brushType = StrokeBrushType.solid;
   double _canvasWidth = 1920;
   double _canvasHeight = 1080;
   Color _brushColor = Colors.white;
@@ -254,6 +255,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
       points: List<VectorPoint>.from(stroke.points),
       strokeWidth: stroke.strokeWidth,
       filled: stroke.filled,
+      brushType: stroke.brushType,
       color: stroke.color.withValues(
         alpha: (sourceAlpha * opacity).clamp(0.0, 1.0),
       ),
@@ -1429,6 +1431,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
           strokeWidth: stroke.strokeWidth,
           color: stroke.color,
           filled: stroke.filled,
+          brushType: stroke.brushType,
         );
       }
 
@@ -1503,6 +1506,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
           strokeWidth: source.strokeWidth,
           color: source.color,
           filled: source.filled,
+          brushType: source.brushType,
         );
       }
 
@@ -1641,6 +1645,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
             strokeWidth: source.strokeWidth,
             color: source.color,
             filled: source.filled,
+            brushType: source.brushType,
           ),
         );
       }
@@ -1748,6 +1753,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
               : (source.strokeWidth * safeScale).clamp(0.25, 500.0),
           color: source.color,
           filled: source.filled,
+          brushType: source.brushType,
         );
       }
 
@@ -1777,6 +1783,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
       strokeWidth: 0,
       color: _brushColor,
       filled: true,
+      brushType: StrokeBrushType.solid,
     );
 
     frames[_selectedFrameIndex] = <VectorStroke>[
@@ -1954,6 +1961,8 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
             points: currentChunk,
             strokeWidth: stroke.strokeWidth,
             color: stroke.color,
+            filled: stroke.filled,
+            brushType: stroke.brushType,
           ),
         );
 
@@ -2513,6 +2522,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
       points: List<VectorPoint>.from(_draftStroke),
       strokeWidth: _brushSize,
       color: _brushColor,
+      brushType: _brushType,
     );
 
     setState(() {
@@ -3247,6 +3257,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                                                 : const <VectorStroke>[],
                                             strokeColor: _brushColor,
                                             strokeWidth: _brushSize,
+                                            brushType: _brushType,
                                             backgroundColor:
                                                 _canvasBackgroundColor,
                                             paintBackground:
@@ -3290,6 +3301,8 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                                                 nextOnionSkinColor:
                                                     Colors.transparent,
                                                 strokeWidth: _brushSize,
+                                                brushType:
+                                                    StrokeBrushType.solid,
                                                 backgroundColor:
                                                     _canvasBackgroundColor,
                                                 paintBackground: false,
@@ -3482,6 +3495,56 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                                       : Column(
                                           mainAxisSize: MainAxisSize.min,
                                           children: [
+                                            Row(
+                                              children: [
+                                                const SizedBox(
+                                                  width: 70,
+                                                  child: Text('Pen'),
+                                                ),
+                                                Expanded(
+                                                  child:
+                                                      SegmentedButton<
+                                                        StrokeBrushType
+                                                      >(
+                                                        segments: const [
+                                                          ButtonSegment<
+                                                            StrokeBrushType
+                                                          >(
+                                                            value:
+                                                                StrokeBrushType
+                                                                    .solid,
+                                                            label: Text(
+                                                              'Solid',
+                                                            ),
+                                                          ),
+                                                          ButtonSegment<
+                                                            StrokeBrushType
+                                                          >(
+                                                            value:
+                                                                StrokeBrushType
+                                                                    .pressure,
+                                                            label: Text(
+                                                              'Pressure',
+                                                            ),
+                                                          ),
+                                                        ],
+                                                        selected:
+                                                            <StrokeBrushType>{
+                                                              _brushType,
+                                                            },
+                                                        onSelectionChanged:
+                                                            (selection) {
+                                                              setState(() {
+                                                                _brushType =
+                                                                    selection
+                                                                        .first;
+                                                              });
+                                                            },
+                                                      ),
+                                                ),
+                                              ],
+                                            ),
+                                            const SizedBox(height: 6),
                                             Row(
                                               children: [
                                                 const SizedBox(
