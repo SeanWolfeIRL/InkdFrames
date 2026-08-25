@@ -2,7 +2,9 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:math' as math;
+import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart';
 import 'package:video_player/video_player.dart';
 import '../models/drawing_layer.dart';
 import '../models/inkdframes_project.dart';
@@ -98,6 +100,12 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
   bool _timelineExpanded = false;
   bool? _editToolbarExpanded = false;
   bool _drawingMode = false;
+  bool _blendExpanded = false;
+  bool _blendSamplingArmed = false;
+  Color _blendBaseColor = Colors.white;
+  Color _blendSampleColor = Colors.black;
+  double _blendAmount = 0.5;
+  final GlobalKey _canvasSampleKey = GlobalKey();
   bool _isExporting = false;
   double _fps = 8;
   double _brushSize = 4.0;
@@ -2058,6 +2066,69 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     return stabilized;
   }
 
+  Color _currentBlendColor() {
+    return Color.lerp(_blendBaseColor, _blendSampleColor, _blendAmount) ??
+        _blendBaseColor;
+  }
+
+  void _applyCurrentBlend() {
+    final mixedColor = _currentBlendColor();
+
+    _brushColor = mixedColor;
+    _rememberRecentColor(mixedColor);
+  }
+
+  Future<void> _sampleBlendColour(Offset canvasPosition) async {
+    final boundary =
+        _canvasSampleKey.currentContext?.findRenderObject()
+            as RenderRepaintBoundary?;
+
+    if (boundary == null) {
+      return;
+    }
+
+    try {
+      final image = await boundary.toImage(pixelRatio: 1.0);
+
+      try {
+        final x = canvasPosition.dx.round().clamp(0, image.width - 1);
+
+        final y = canvasPosition.dy.round().clamp(0, image.height - 1);
+
+        final byteData = await image.toByteData(
+          format: ui.ImageByteFormat.rawRgba,
+        );
+
+        if (byteData == null || !mounted) {
+          return;
+        }
+
+        final offset = ((y * image.width) + x) * 4;
+
+        final r = byteData.getUint8(offset);
+        final g = byteData.getUint8(offset + 1);
+        final b = byteData.getUint8(offset + 2);
+        final a = byteData.getUint8(offset + 3);
+
+        final sampled = Color.fromARGB(a, r, g, b);
+
+        setState(() {
+          _blendSampleColor = sampled;
+          _blendSamplingArmed = false;
+          _applyCurrentBlend();
+        });
+      } finally {
+        image.dispose();
+      }
+    } catch (_) {
+      if (!mounted) return;
+
+      setState(() {
+        _blendSamplingArmed = false;
+      });
+    }
+  }
+
   void _handlePointerDown(PointerDownEvent event, BuildContext canvasContext) {
     _activePointerCount += 1;
     if (_activePointerCount > 1) {
@@ -2072,6 +2143,14 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
 
     final renderBox = canvasContext.findRenderObject() as RenderBox;
     final canvasPosition = renderBox.globalToLocal(event.position);
+
+    if (_drawingMode && _blendSamplingArmed) {
+      _blendBaseColor = _brushColor;
+
+      unawaited(_sampleBlendColour(canvasPosition));
+
+      return;
+    }
 
     if (_isTransformActive) {
       final bounds = _selectedStrokeBounds();
@@ -3340,154 +3419,164 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                                       : _handlePointerCancel,
                                   child: ClipRRect(
                                     borderRadius: BorderRadius.circular(24),
-                                    child: Stack(
-                                      fit: StackFit.expand,
-                                      children: [
-                                        ColoredBox(
-                                          color: _canvasBackgroundColor,
-                                        ),
-                                        if (_referenceVisible &&
-                                            _referenceMediaType == 'video' &&
-                                            _videoReady &&
-                                            _videoController != null)
-                                          Opacity(
-                                            opacity: _referenceOpacity,
-                                            child: FittedBox(
-                                              fit: BoxFit.contain,
-                                              child: SizedBox(
-                                                width: _videoController!
-                                                    .value
-                                                    .size
-                                                    .width,
-                                                height: _videoController!
-                                                    .value
-                                                    .size
-                                                    .height,
-                                                child: VideoPlayer(
-                                                  _videoController!,
+                                    child: RepaintBoundary(
+                                      key: _canvasSampleKey,
+                                      child: Stack(
+                                        fit: StackFit.expand,
+                                        children: [
+                                          ColoredBox(
+                                            color: _canvasBackgroundColor,
+                                          ),
+                                          if (_referenceVisible &&
+                                              _referenceMediaType == 'video' &&
+                                              _videoReady &&
+                                              _videoController != null)
+                                            Opacity(
+                                              opacity: _referenceOpacity,
+                                              child: FittedBox(
+                                                fit: BoxFit.contain,
+                                                child: SizedBox(
+                                                  width: _videoController!
+                                                      .value
+                                                      .size
+                                                      .width,
+                                                  height: _videoController!
+                                                      .value
+                                                      .size
+                                                      .height,
+                                                  child: VideoPlayer(
+                                                    _videoController!,
+                                                  ),
                                                 ),
                                               ),
                                             ),
-                                          ),
-                                        if (_referenceVisible &&
-                                            _referenceMediaType == 'image' &&
-                                            _referenceMediaPath != null)
-                                          Opacity(
-                                            opacity: _referenceOpacity,
-                                            child: Image.file(
-                                              File(_referenceMediaPath!),
-                                              fit: BoxFit.contain,
-                                              errorBuilder:
-                                                  (context, error, stackTrace) {
-                                                    return const Center(
-                                                      child: Column(
-                                                        mainAxisSize:
-                                                            MainAxisSize.min,
-                                                        children: [
-                                                          Icon(
-                                                            Icons
-                                                                .broken_image_outlined,
-                                                            size: 48,
-                                                            color:
-                                                                Colors.white54,
-                                                          ),
-                                                          SizedBox(height: 8),
-                                                          Text(
-                                                            'Reference image unavailable',
-                                                            style: TextStyle(
+                                          if (_referenceVisible &&
+                                              _referenceMediaType == 'image' &&
+                                              _referenceMediaPath != null)
+                                            Opacity(
+                                              opacity: _referenceOpacity,
+                                              child: Image.file(
+                                                File(_referenceMediaPath!),
+                                                fit: BoxFit.contain,
+                                                errorBuilder:
+                                                    (
+                                                      context,
+                                                      error,
+                                                      stackTrace,
+                                                    ) {
+                                                      return const Center(
+                                                        child: Column(
+                                                          mainAxisSize:
+                                                              MainAxisSize.min,
+                                                          children: [
+                                                            Icon(
+                                                              Icons
+                                                                  .broken_image_outlined,
+                                                              size: 48,
                                                               color: Colors
                                                                   .white54,
                                                             ),
-                                                          ),
-                                                        ],
-                                                      ),
-                                                    );
-                                                  },
-                                            ),
-                                          ),
-                                        CustomPaint(
-                                          painter: AnimationCanvasPainter(
-                                            strokes:
-                                                _frames[_selectedFrameIndex],
-                                            currentStroke: _draftStroke.isEmpty
-                                                ? null
-                                                : _draftStroke,
-                                            previousOnionSkinStrokes:
-                                                _showOnionSkin
-                                                ? previousFrameStrokes
-                                                : const <VectorStroke>[],
-                                            nextOnionSkinStrokes: _showOnionSkin
-                                                ? nextFrameStrokes
-                                                : const <VectorStroke>[],
-                                            strokeColor: _brushColor.withValues(
-                                              alpha: _brushOpacity,
-                                            ),
-                                            strokeWidth: _brushSize,
-                                            brushType: _brushType,
-                                            backgroundColor:
-                                                _canvasBackgroundColor,
-                                            paintBackground:
-                                                _referenceMediaPath == null ||
-                                                (_referenceMediaType !=
-                                                        'image' &&
-                                                    _referenceMediaType !=
-                                                        'video'),
-                                            previousOnionSkinColor: Colors
-                                                .redAccent
-                                                .withValues(alpha: 0.40),
-                                            nextOnionSkinColor: Colors
-                                                .greenAccent
-                                                .withValues(alpha: 0.40),
-                                          ),
-                                          child: const SizedBox.expand(),
-                                        ),
-                                        if (_fillLassoPoints.length > 1)
-                                          IgnorePointer(
-                                            child: CustomPaint(
-                                              painter: _FillLassoPainter(
-                                                points: _fillLassoPoints,
-                                                color: _brushColor,
+                                                            SizedBox(height: 8),
+                                                            Text(
+                                                              'Reference image unavailable',
+                                                              style: TextStyle(
+                                                                color: Colors
+                                                                    .white54,
+                                                              ),
+                                                            ),
+                                                          ],
+                                                        ),
+                                                      );
+                                                    },
                                               ),
-                                              child: const SizedBox.expand(),
                                             ),
+                                          CustomPaint(
+                                            painter: AnimationCanvasPainter(
+                                              strokes:
+                                                  _frames[_selectedFrameIndex],
+                                              currentStroke:
+                                                  _draftStroke.isEmpty
+                                                  ? null
+                                                  : _draftStroke,
+                                              previousOnionSkinStrokes:
+                                                  _showOnionSkin
+                                                  ? previousFrameStrokes
+                                                  : const <VectorStroke>[],
+                                              nextOnionSkinStrokes:
+                                                  _showOnionSkin
+                                                  ? nextFrameStrokes
+                                                  : const <VectorStroke>[],
+                                              strokeColor: _brushColor
+                                                  .withValues(
+                                                    alpha: _brushOpacity,
+                                                  ),
+                                              strokeWidth: _brushSize,
+                                              brushType: _brushType,
+                                              backgroundColor:
+                                                  _canvasBackgroundColor,
+                                              paintBackground:
+                                                  _referenceMediaPath == null ||
+                                                  (_referenceMediaType !=
+                                                          'image' &&
+                                                      _referenceMediaType !=
+                                                          'video'),
+                                              previousOnionSkinColor: Colors
+                                                  .redAccent
+                                                  .withValues(alpha: 0.40),
+                                              nextOnionSkinColor: Colors
+                                                  .greenAccent
+                                                  .withValues(alpha: 0.40),
+                                            ),
+                                            child: const SizedBox.expand(),
                                           ),
-                                        if (_draftShapeStrokes.isNotEmpty)
-                                          IgnorePointer(
-                                            child: CustomPaint(
-                                              painter: AnimationCanvasPainter(
-                                                strokes: _draftShapeStrokes,
-                                                currentStroke: null,
-                                                previousOnionSkinStrokes:
-                                                    const <VectorStroke>[],
-                                                nextOnionSkinStrokes:
-                                                    const <VectorStroke>[],
-                                                strokeColor: _brushColor,
-                                                previousOnionSkinColor:
-                                                    Colors.transparent,
-                                                nextOnionSkinColor:
-                                                    Colors.transparent,
-                                                strokeWidth: _brushSize,
-                                                brushType:
-                                                    StrokeBrushType.solid,
-                                                backgroundColor:
-                                                    _canvasBackgroundColor,
-                                                paintBackground: false,
+                                          if (_fillLassoPoints.length > 1)
+                                            IgnorePointer(
+                                              child: CustomPaint(
+                                                painter: _FillLassoPainter(
+                                                  points: _fillLassoPoints,
+                                                  color: _brushColor,
+                                                ),
+                                                child: const SizedBox.expand(),
                                               ),
-                                              child: const SizedBox.expand(),
                                             ),
-                                          ),
-                                        if (_isTransformActive)
-                                          IgnorePointer(
-                                            child: CustomPaint(
-                                              painter: _TransformOverlayPainter(
-                                                lassoPoints: _lassoPoints,
-                                                selectionBounds:
-                                                    _selectedStrokeBounds(),
+                                          if (_draftShapeStrokes.isNotEmpty)
+                                            IgnorePointer(
+                                              child: CustomPaint(
+                                                painter: AnimationCanvasPainter(
+                                                  strokes: _draftShapeStrokes,
+                                                  currentStroke: null,
+                                                  previousOnionSkinStrokes:
+                                                      const <VectorStroke>[],
+                                                  nextOnionSkinStrokes:
+                                                      const <VectorStroke>[],
+                                                  strokeColor: _brushColor,
+                                                  previousOnionSkinColor:
+                                                      Colors.transparent,
+                                                  nextOnionSkinColor:
+                                                      Colors.transparent,
+                                                  strokeWidth: _brushSize,
+                                                  brushType:
+                                                      StrokeBrushType.solid,
+                                                  backgroundColor:
+                                                      _canvasBackgroundColor,
+                                                  paintBackground: false,
+                                                ),
+                                                child: const SizedBox.expand(),
                                               ),
-                                              child: const SizedBox.expand(),
                                             ),
-                                          ),
-                                      ],
+                                          if (_isTransformActive)
+                                            IgnorePointer(
+                                              child: CustomPaint(
+                                                painter: _TransformOverlayPainter(
+                                                  lassoPoints: _lassoPoints,
+                                                  selectionBounds:
+                                                      _selectedStrokeBounds(),
+                                                ),
+                                                child: const SizedBox.expand(),
+                                              ),
+                                            ),
+                                        ],
+                                      ),
                                     ),
                                   ),
                                 ),
@@ -3547,6 +3636,9 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                                           _timingExpanded = false;
                                           _timelineExpanded = false;
                                           _transformToolbarExpanded = false;
+                                        } else {
+                                          _blendExpanded = false;
+                                          _blendSamplingArmed = false;
                                         }
                                       });
                                     },
@@ -3559,16 +3651,279 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                                           : Colors.white70,
                                     ),
                                   ),
+
+                                  if (_drawingMode) ...[
+                                    const SizedBox(height: 2),
+                                    IconButton(
+                                      tooltip: _blendExpanded
+                                          ? 'Hide Blend'
+                                          : 'Show Blend',
+                                      visualDensity: VisualDensity.compact,
+                                      onPressed: () {
+                                        setState(() {
+                                          if (!_blendExpanded) {
+                                            _blendExpanded = true;
+                                            _blendSamplingArmed = true;
+                                            _blendBaseColor = _brushColor;
+                                          } else if (!_blendSamplingArmed) {
+                                            _blendSamplingArmed = true;
+                                            _blendBaseColor = _brushColor;
+                                          } else {
+                                            _blendExpanded = false;
+                                            _blendSamplingArmed = false;
+                                          }
+                                        });
+                                      },
+                                      icon: Icon(
+                                        Icons.blur_on,
+                                        color: _blendExpanded
+                                            ? Colors.deepPurpleAccent
+                                            : Colors.white70,
+                                      ),
+                                    ),
+                                  ],
                                 ],
                               ),
                             ),
                           ),
-                          if (_drawingExpanded) ...[
+                          if (_drawingExpanded ||
+                              (_drawingMode && _blendExpanded)) ...[
                             const SizedBox(width: 8),
                             Column(
                               mainAxisSize: MainAxisSize.min,
                               crossAxisAlignment: CrossAxisAlignment.start,
                               children: [
+                                if (_drawingMode && _blendExpanded)
+                                  Material(
+                                    elevation: 8,
+                                    color: const Color(0xE61A1720),
+                                    borderRadius: BorderRadius.circular(16),
+                                    clipBehavior: Clip.antiAlias,
+                                    child: SizedBox(
+                                      width: constraints.maxWidth < 420
+                                          ? constraints.maxWidth - 96
+                                          : 300,
+                                      child: Padding(
+                                        padding: const EdgeInsets.fromLTRB(
+                                          14,
+                                          12,
+                                          14,
+                                          12,
+                                        ),
+                                        child: Column(
+                                          mainAxisSize: MainAxisSize.min,
+                                          children: [
+                                            Row(
+                                              children: [
+                                                const Expanded(
+                                                  child: Text(
+                                                    'Blend',
+                                                    style: TextStyle(
+                                                      fontWeight:
+                                                          FontWeight.w600,
+                                                    ),
+                                                  ),
+                                                ),
+                                                if (_blendSamplingArmed)
+                                                  const Row(
+                                                    mainAxisSize:
+                                                        MainAxisSize.min,
+                                                    children: [
+                                                      Icon(
+                                                        Icons.colorize,
+                                                        size: 16,
+                                                        color:
+                                                            Colors.cyanAccent,
+                                                      ),
+                                                      SizedBox(width: 4),
+                                                      Text(
+                                                        'Tap canvas',
+                                                        style: TextStyle(
+                                                          fontSize: 11,
+                                                          color:
+                                                              Colors.cyanAccent,
+                                                        ),
+                                                      ),
+                                                    ],
+                                                  ),
+                                              ],
+                                            ),
+                                            const SizedBox(height: 12),
+
+                                            Row(
+                                              children: [
+                                                const SizedBox(
+                                                  width: 70,
+                                                  child: Text('Base'),
+                                                ),
+                                                Container(
+                                                  width: 50,
+                                                  height: 30,
+                                                  decoration: BoxDecoration(
+                                                    color: _blendBaseColor,
+                                                    borderRadius:
+                                                        BorderRadius.circular(
+                                                          9,
+                                                        ),
+                                                    border: Border.all(
+                                                      color: Colors.white38,
+                                                    ),
+                                                  ),
+                                                ),
+                                                const SizedBox(width: 8),
+                                                Expanded(
+                                                  child: Text(
+                                                    '#${_colorHex(_blendBaseColor)}',
+                                                    style: const TextStyle(
+                                                      fontSize: 10,
+                                                      color: Colors.white60,
+                                                    ),
+                                                  ),
+                                                ),
+                                              ],
+                                            ),
+
+                                            const SizedBox(height: 8),
+
+                                            Row(
+                                              children: [
+                                                const SizedBox(
+                                                  width: 70,
+                                                  child: Text('Sample'),
+                                                ),
+                                                Container(
+                                                  width: 50,
+                                                  height: 30,
+                                                  decoration: BoxDecoration(
+                                                    color: _blendSampleColor,
+                                                    borderRadius:
+                                                        BorderRadius.circular(
+                                                          9,
+                                                        ),
+                                                    border: Border.all(
+                                                      color: Colors.white38,
+                                                    ),
+                                                  ),
+                                                ),
+                                                const SizedBox(width: 8),
+                                                Expanded(
+                                                  child: Text(
+                                                    '#${_colorHex(_blendSampleColor)}',
+                                                    style: const TextStyle(
+                                                      fontSize: 10,
+                                                      color: Colors.white60,
+                                                    ),
+                                                  ),
+                                                ),
+                                                IconButton(
+                                                  tooltip: 'Sample Again',
+                                                  visualDensity:
+                                                      VisualDensity.compact,
+                                                  onPressed: () {
+                                                    setState(() {
+                                                      _blendBaseColor =
+                                                          _brushColor;
+                                                      _blendSamplingArmed =
+                                                          true;
+                                                    });
+                                                  },
+                                                  icon: Icon(
+                                                    Icons.colorize,
+                                                    size: 18,
+                                                    color: _blendSamplingArmed
+                                                        ? Colors.cyanAccent
+                                                        : Colors.white70,
+                                                  ),
+                                                ),
+                                              ],
+                                            ),
+
+                                            const SizedBox(height: 10),
+
+                                            Row(
+                                              children: [
+                                                const SizedBox(
+                                                  width: 70,
+                                                  child: Text('Strength'),
+                                                ),
+                                                Expanded(
+                                                  child: Slider(
+                                                    value: _blendAmount,
+                                                    min: 0,
+                                                    max: 1,
+                                                    divisions: 20,
+                                                    label:
+                                                        '${(_blendAmount * 100).round()}%',
+                                                    onChanged: (value) {
+                                                      setState(() {
+                                                        _blendAmount = value;
+                                                        _applyCurrentBlend();
+                                                      });
+                                                    },
+                                                  ),
+                                                ),
+                                                SizedBox(
+                                                  width: 40,
+                                                  child: Text(
+                                                    '${(_blendAmount * 100).round()}%',
+                                                    textAlign: TextAlign.right,
+                                                  ),
+                                                ),
+                                              ],
+                                            ),
+
+                                            const SizedBox(height: 8),
+
+                                            Builder(
+                                              builder: (context) {
+                                                final mixedColor =
+                                                    _currentBlendColor();
+
+                                                return Row(
+                                                  children: [
+                                                    const SizedBox(
+                                                      width: 70,
+                                                      child: Text('Result'),
+                                                    ),
+                                                    Expanded(
+                                                      child: Container(
+                                                        height: 34,
+                                                        decoration: BoxDecoration(
+                                                          color: mixedColor,
+                                                          borderRadius:
+                                                              BorderRadius.circular(
+                                                                10,
+                                                              ),
+                                                          border: Border.all(
+                                                            color:
+                                                                Colors.white24,
+                                                          ),
+                                                        ),
+                                                      ),
+                                                    ),
+                                                    const SizedBox(width: 8),
+                                                    Text(
+                                                      '#${_colorHex(mixedColor)}',
+                                                      style: const TextStyle(
+                                                        fontSize: 10,
+                                                        color: Colors.white60,
+                                                      ),
+                                                    ),
+                                                  ],
+                                                );
+                                              },
+                                            ),
+                                          ],
+                                        ),
+                                      ),
+                                    ),
+                                  ),
+
+                                if (_drawingMode &&
+                                    _blendExpanded &&
+                                    _drawingExpanded)
+                                  const SizedBox(height: 8),
+
                                 if (_drawingExpanded)
                                   Material(
                                     elevation: 8,
