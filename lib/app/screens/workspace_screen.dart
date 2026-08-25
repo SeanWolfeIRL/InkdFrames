@@ -102,6 +102,16 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
   bool _drawingMode = false;
   bool _blendExpanded = false;
   bool _blendSamplingArmed = false;
+
+  bool _textureExpanded = false;
+  bool _textureActive = false;
+  String _texturePattern = 'stipple';
+  double _textureScale = 8.0;
+  double _textureDensity = 0.5;
+  double _textureScatter = 18.0;
+  List<VectorStroke> _draftTextureStrokes = <VectorStroke>[];
+  final math.Random _textureRandom = math.Random();
+
   Color _blendBaseColor = Colors.white;
   Color _blendSampleColor = Colors.black;
   double _blendAmount = 0.5;
@@ -2129,6 +2139,123 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     }
   }
 
+  void _addTextureStamp(Offset position, double pressure) {
+    final count = (1 + (_textureDensity * 7)).round().clamp(1, 8);
+
+    final generated = <VectorStroke>[];
+
+    for (var i = 0; i < count; i++) {
+      final angle = _textureRandom.nextDouble() * math.pi * 2;
+
+      final radius = _textureRandom.nextDouble() * _textureScatter;
+
+      final center = Offset(
+        position.dx + math.cos(angle) * radius,
+        position.dy + math.sin(angle) * radius,
+      );
+
+      final size = _textureScale * (0.65 + (_textureRandom.nextDouble() * 0.7));
+
+      switch (_texturePattern) {
+        case 'hatch':
+          final hatchAngle =
+              (-math.pi / 4) + ((_textureRandom.nextDouble() - 0.5) * 0.25);
+
+          final delta = Offset(
+            math.cos(hatchAngle) * size,
+            math.sin(hatchAngle) * size,
+          );
+
+          generated.add(
+            VectorStroke(
+              points: [
+                VectorPoint(
+                  dx: center.dx - delta.dx / 2,
+                  dy: center.dy - delta.dy / 2,
+                  pressure: pressure,
+                ),
+                VectorPoint(
+                  dx: center.dx + delta.dx / 2,
+                  dy: center.dy + delta.dy / 2,
+                  pressure: pressure,
+                ),
+              ],
+              strokeWidth: math.max(0.8, _brushSize * 0.35),
+              color: _brushColor.withValues(alpha: _brushOpacity),
+              brushType: StrokeBrushType.solid,
+            ),
+          );
+          break;
+
+        case 'grain':
+          final grainAngle = _textureRandom.nextDouble() * math.pi * 2;
+
+          final grainLength =
+              size * (0.15 + _textureRandom.nextDouble() * 0.35);
+
+          final delta = Offset(
+            math.cos(grainAngle) * grainLength,
+            math.sin(grainAngle) * grainLength,
+          );
+
+          generated.add(
+            VectorStroke(
+              points: [
+                VectorPoint(dx: center.dx, dy: center.dy, pressure: pressure),
+                VectorPoint(
+                  dx: center.dx + delta.dx,
+                  dy: center.dy + delta.dy,
+                  pressure: pressure,
+                ),
+              ],
+              strokeWidth: math.max(0.5, _brushSize * 0.18),
+              color: _brushColor.withValues(alpha: _brushOpacity * 0.75),
+              brushType: StrokeBrushType.solid,
+            ),
+          );
+          break;
+
+        case 'stipple':
+        default:
+          generated.add(
+            VectorStroke(
+              points: [
+                VectorPoint(dx: center.dx, dy: center.dy, pressure: pressure),
+              ],
+              strokeWidth: math.max(1.0, size * 0.45),
+              color: _brushColor.withValues(alpha: _brushOpacity),
+              brushType: StrokeBrushType.solid,
+            ),
+          );
+          break;
+      }
+    }
+
+    _draftTextureStrokes.addAll(generated);
+  }
+
+  void _commitTextureStroke() {
+    if (_draftTextureStrokes.isEmpty) {
+      return;
+    }
+
+    _saveUndoState();
+
+    final layer = _activeLayer;
+    final frames = _copyLayerFrames(layer.frames);
+
+    frames[_selectedFrameIndex] = <VectorStroke>[
+      ...frames[_selectedFrameIndex],
+      ..._draftTextureStrokes,
+    ];
+
+    _layers[_activeLayerIndex] = layer.copyWith(frames: frames);
+
+    _draftTextureStrokes = <VectorStroke>[];
+    _rebuildCompositeFrames();
+    _scheduleAutosave();
+  }
+
   void _handlePointerDown(PointerDownEvent event, BuildContext canvasContext) {
     _activePointerCount += 1;
     if (_activePointerCount > 1) {
@@ -2148,6 +2275,16 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
       _blendBaseColor = _brushColor;
 
       unawaited(_sampleBlendColour(canvasPosition));
+
+      return;
+    }
+
+    if (_drawingMode && _textureActive) {
+      _draftTextureStrokes = <VectorStroke>[];
+
+      setState(() {
+        _addTextureStamp(canvasPosition, event.pressure);
+      });
 
       return;
     }
@@ -2292,6 +2429,14 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
 
     final renderBox = canvasContext.findRenderObject() as RenderBox;
     final canvasPosition = renderBox.globalToLocal(event.position);
+
+    if (_drawingMode && _textureActive) {
+      setState(() {
+        _addTextureStamp(canvasPosition, event.pressure);
+      });
+
+      return;
+    }
 
     if (_isTransformActive) {
       if (_isTransformRotating &&
@@ -2598,6 +2743,14 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
   void _handlePointerUp(PointerUpEvent event) {
     if (_activePointerCount > 0) {
       _activePointerCount -= 1;
+    }
+
+    if (_drawingMode && _textureActive && _draftTextureStrokes.isNotEmpty) {
+      setState(() {
+        _commitTextureStroke();
+      });
+
+      return;
     }
 
     if (_isFillToolActive && _fillLassoPoints.isNotEmpty) {
@@ -3492,8 +3645,10 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                                             ),
                                           CustomPaint(
                                             painter: AnimationCanvasPainter(
-                                              strokes:
-                                                  _frames[_selectedFrameIndex],
+                                              strokes: <VectorStroke>[
+                                                ..._frames[_selectedFrameIndex],
+                                                ..._draftTextureStrokes,
+                                              ],
                                               currentStroke:
                                                   _draftStroke.isEmpty
                                                   ? null
@@ -3681,6 +3836,33 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                                             : Colors.white70,
                                       ),
                                     ),
+
+                                    const SizedBox(height: 2),
+                                    IconButton(
+                                      tooltip: _textureExpanded
+                                          ? 'Hide Texture'
+                                          : 'Show Texture',
+                                      visualDensity: VisualDensity.compact,
+                                      onPressed: () {
+                                        setState(() {
+                                          _textureExpanded = !_textureExpanded;
+                                          _textureActive = _textureExpanded;
+
+                                          if (_textureExpanded) {
+                                            _blendSamplingArmed = false;
+                                          } else {
+                                            _draftTextureStrokes =
+                                                <VectorStroke>[];
+                                          }
+                                        });
+                                      },
+                                      icon: Icon(
+                                        Icons.grid_on_outlined,
+                                        color: _textureExpanded
+                                            ? Colors.deepPurpleAccent
+                                            : Colors.white70,
+                                      ),
+                                    ),
                                   ],
                                 ],
                               ),
@@ -3693,6 +3875,174 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                               mainAxisSize: MainAxisSize.min,
                               crossAxisAlignment: CrossAxisAlignment.start,
                               children: [
+                                if (_drawingMode && _textureExpanded)
+                                  Material(
+                                    elevation: 8,
+                                    color: const Color(0xE61A1720),
+                                    borderRadius: BorderRadius.circular(16),
+                                    clipBehavior: Clip.antiAlias,
+                                    child: SizedBox(
+                                      width: constraints.maxWidth < 420
+                                          ? constraints.maxWidth - 96
+                                          : 300,
+                                      child: Padding(
+                                        padding: const EdgeInsets.fromLTRB(
+                                          14,
+                                          12,
+                                          14,
+                                          12,
+                                        ),
+                                        child: Column(
+                                          mainAxisSize: MainAxisSize.min,
+                                          children: [
+                                            const Align(
+                                              alignment: Alignment.centerLeft,
+                                              child: Text(
+                                                'Texture',
+                                                style: TextStyle(
+                                                  fontWeight: FontWeight.w600,
+                                                ),
+                                              ),
+                                            ),
+                                            const SizedBox(height: 10),
+
+                                            SegmentedButton<String>(
+                                              segments: const [
+                                                ButtonSegment<String>(
+                                                  value: 'stipple',
+                                                  label: Text('Stipple'),
+                                                ),
+                                                ButtonSegment<String>(
+                                                  value: 'hatch',
+                                                  label: Text('Hatch'),
+                                                ),
+                                                ButtonSegment<String>(
+                                                  value: 'grain',
+                                                  label: Text('Grain'),
+                                                ),
+                                              ],
+                                              selected: <String>{
+                                                _texturePattern,
+                                              },
+                                              onSelectionChanged: (selection) {
+                                                setState(() {
+                                                  _texturePattern =
+                                                      selection.first;
+                                                });
+                                              },
+                                            ),
+
+                                            const SizedBox(height: 10),
+
+                                            Row(
+                                              children: [
+                                                const SizedBox(
+                                                  width: 70,
+                                                  child: Text('Scale'),
+                                                ),
+                                                Expanded(
+                                                  child: Slider(
+                                                    value: _textureScale,
+                                                    min: 2,
+                                                    max: 30,
+                                                    divisions: 28,
+                                                    label: _textureScale
+                                                        .round()
+                                                        .toString(),
+                                                    onChanged: (value) {
+                                                      setState(() {
+                                                        _textureScale = value;
+                                                      });
+                                                    },
+                                                  ),
+                                                ),
+                                                SizedBox(
+                                                  width: 38,
+                                                  child: Text(
+                                                    _textureScale
+                                                        .round()
+                                                        .toString(),
+                                                    textAlign: TextAlign.right,
+                                                  ),
+                                                ),
+                                              ],
+                                            ),
+
+                                            Row(
+                                              children: [
+                                                const SizedBox(
+                                                  width: 70,
+                                                  child: Text('Density'),
+                                                ),
+                                                Expanded(
+                                                  child: Slider(
+                                                    value: _textureDensity,
+                                                    min: 0.1,
+                                                    max: 1.0,
+                                                    divisions: 9,
+                                                    label:
+                                                        '${(_textureDensity * 100).round()}%',
+                                                    onChanged: (value) {
+                                                      setState(() {
+                                                        _textureDensity = value;
+                                                      });
+                                                    },
+                                                  ),
+                                                ),
+                                                SizedBox(
+                                                  width: 40,
+                                                  child: Text(
+                                                    '${(_textureDensity * 100).round()}%',
+                                                    textAlign: TextAlign.right,
+                                                  ),
+                                                ),
+                                              ],
+                                            ),
+
+                                            Row(
+                                              children: [
+                                                const SizedBox(
+                                                  width: 70,
+                                                  child: Text('Scatter'),
+                                                ),
+                                                Expanded(
+                                                  child: Slider(
+                                                    value: _textureScatter,
+                                                    min: 0,
+                                                    max: 50,
+                                                    divisions: 25,
+                                                    label: _textureScatter
+                                                        .round()
+                                                        .toString(),
+                                                    onChanged: (value) {
+                                                      setState(() {
+                                                        _textureScatter = value;
+                                                      });
+                                                    },
+                                                  ),
+                                                ),
+                                                SizedBox(
+                                                  width: 40,
+                                                  child: Text(
+                                                    _textureScatter
+                                                        .round()
+                                                        .toString(),
+                                                    textAlign: TextAlign.right,
+                                                  ),
+                                                ),
+                                              ],
+                                            ),
+                                          ],
+                                        ),
+                                      ),
+                                    ),
+                                  ),
+
+                                if (_drawingMode &&
+                                    _textureExpanded &&
+                                    _blendExpanded)
+                                  const SizedBox(height: 8),
+
                                 if (_drawingMode && _blendExpanded)
                                   Material(
                                     elevation: 8,
