@@ -6,6 +6,7 @@ import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:video_player/video_player.dart';
+import '../models/bag_item.dart';
 import '../models/drawing_layer.dart';
 import '../models/inkdframes_project.dart';
 import '../models/layer_group.dart';
@@ -14,6 +15,7 @@ import '../models/vector_stroke.dart';
 import '../painters/animation_canvas_painter.dart';
 import '../painters/frame_thumbnail_painter.dart';
 import '../services/animation_export_service.dart';
+import '../services/bag_service.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 enum _ShapeToolType { line, rectangle, square, circle }
@@ -398,6 +400,337 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
       _draftStroke = const <VectorPoint>[];
       _clearTransformSelection();
     });
+  }
+
+  void _insertBagItem(BagItem item) {
+    if (item.layers.isEmpty) {
+      return;
+    }
+
+    final frameCount = _frameDurations.length;
+    final stamp = DateTime.now().microsecondsSinceEpoch;
+
+    final newLayers = <DrawingLayer>[];
+    final newLayerIds = <String>[];
+
+    for (var index = 0; index < item.layers.length; index++) {
+      final bagLayer = item.layers[index];
+
+      final layerId = 'bag_layer_${stamp}_$index';
+
+      final frames = List.generate(frameCount, (_) => <VectorStroke>[]);
+
+      if (_selectedFrameIndex >= 0 && _selectedFrameIndex < frames.length) {
+        frames[_selectedFrameIndex] = bagLayer.strokes
+            .map((stroke) => stroke.copy())
+            .toList();
+      }
+
+      newLayerIds.add(layerId);
+
+      newLayers.add(
+        DrawingLayer(
+          id: layerId,
+          name: bagLayer.name,
+          visible: bagLayer.visible,
+          opacity: bagLayer.opacity,
+          frames: frames,
+        ),
+      );
+    }
+
+    if (newLayers.isEmpty) {
+      return;
+    }
+
+    final newGroup = LayerGroup(
+      id: 'bag_group_$stamp',
+      name: item.name,
+      childLayerIds: newLayerIds,
+      visible: true,
+      expanded: true,
+    );
+
+    setState(() {
+      // Insert the Bag artwork at the top of the layer stack.
+      _layers.insertAll(0, newLayers);
+      _layerGroups.add(newGroup);
+
+      // Select the newly unpacked group.
+      _activeLayerGroupId = newGroup.id;
+      _activeLayerIndex = 0;
+
+      _draftStroke = const <VectorPoint>[];
+      _draftTextureStrokes = <VectorStroke>[];
+
+      _clearFillLasso();
+      _clearShapeDraft();
+      _clearTransformSelection();
+
+      _resetUndoRedo();
+      _rebuildCompositeFrames();
+    });
+
+    _scheduleAutosave();
+
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text('${item.name} unpacked from your Bag 🎒')),
+    );
+  }
+
+  Future<void> _openBag() async {
+    final items = await BagService().loadItems();
+
+    if (!mounted) {
+      return;
+    }
+
+    await showDialog<void>(
+      context: context,
+      builder: (dialogContext) {
+        return AlertDialog(
+          title: const Row(
+            children: [
+              Icon(Icons.backpack_outlined),
+              SizedBox(width: 10),
+              Text('Bag'),
+            ],
+          ),
+          content: SizedBox(
+            width: 420,
+            height: 420,
+            child: items.isEmpty
+                ? const Center(
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(
+                          Icons.backpack_outlined,
+                          size: 48,
+                          color: Colors.white38,
+                        ),
+                        SizedBox(height: 12),
+                        Text(
+                          'Your Bag is empty.',
+                          style: TextStyle(color: Colors.white70),
+                        ),
+                        SizedBox(height: 6),
+                        Text(
+                          'Add a layer group to start your inventory.',
+                          textAlign: TextAlign.center,
+                          style: TextStyle(fontSize: 12, color: Colors.white54),
+                        ),
+                      ],
+                    ),
+                  )
+                : ListView.separated(
+                    itemCount: items.length,
+                    separatorBuilder: (_, _) => const Divider(height: 1),
+                    itemBuilder: (context, index) {
+                      final item = items[index];
+
+                      final strokeCount = item.layers.fold<int>(
+                        0,
+                        (total, layer) => total + layer.strokes.length,
+                      );
+
+                      return ListTile(
+                        leading: const Icon(Icons.inventory_2_outlined),
+                        title: Text(item.name),
+                        subtitle: Text(
+                          '${item.layers.length} layers · '
+                          '$strokeCount strokes',
+                        ),
+                        trailing: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            IconButton(
+                              tooltip: 'Delete from Bag',
+                              icon: const Icon(Icons.delete_outline),
+                              onPressed: () async {
+                                final bagNavigator = Navigator.of(
+                                  dialogContext,
+                                );
+                                final messenger = ScaffoldMessenger.of(context);
+
+                                final confirmed = await showDialog<bool>(
+                                  context: dialogContext,
+                                  builder: (confirmContext) {
+                                    return AlertDialog(
+                                      title: const Text('Delete Bag item?'),
+                                      content: Text(
+                                        'Remove "${item.name}" from your Bag?',
+                                      ),
+                                      actions: [
+                                        TextButton(
+                                          onPressed: () => Navigator.pop(
+                                            confirmContext,
+                                            false,
+                                          ),
+                                          child: const Text('Cancel'),
+                                        ),
+                                        FilledButton(
+                                          onPressed: () => Navigator.pop(
+                                            confirmContext,
+                                            true,
+                                          ),
+                                          child: const Text('Delete'),
+                                        ),
+                                      ],
+                                    );
+                                  },
+                                );
+
+                                if (confirmed != true) {
+                                  return;
+                                }
+
+                                bagNavigator.pop();
+
+                                await BagService().deleteItem(item.id);
+
+                                if (!mounted) {
+                                  return;
+                                }
+
+                                messenger.showSnackBar(
+                                  SnackBar(
+                                    content: Text(
+                                      '${item.name} removed from your Bag',
+                                    ),
+                                  ),
+                                );
+
+                                _openBag();
+                              },
+                            ),
+                            const Icon(Icons.add_circle_outline),
+                          ],
+                        ),
+                        onTap: () {
+                          Navigator.pop(dialogContext);
+
+                          _insertBagItem(item);
+                        },
+                      );
+                    },
+                  ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(dialogContext),
+              child: const Text('Close'),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
+  Future<void> _addLayerGroupToBag(String groupId) async {
+    final groupIndex = _layerGroups.indexWhere((group) => group.id == groupId);
+
+    if (groupIndex == -1) {
+      return;
+    }
+
+    final group = _layerGroups[groupIndex];
+
+    final bagLayers = <BagLayer>[];
+
+    for (final layerId in group.childLayerIds) {
+      final layerIndex = _layers.indexWhere((layer) => layer.id == layerId);
+
+      if (layerIndex == -1) {
+        continue;
+      }
+
+      final layer = _layers[layerIndex];
+
+      if (_selectedFrameIndex < 0 ||
+          _selectedFrameIndex >= layer.frames.length) {
+        continue;
+      }
+
+      bagLayers.add(
+        BagLayer(
+          name: layer.name,
+          opacity: layer.opacity,
+          visible: layer.visible,
+          strokes: layer.frames[_selectedFrameIndex]
+              .map((stroke) => stroke.copy())
+              .toList(),
+        ),
+      );
+    }
+
+    if (bagLayers.isEmpty) {
+      if (!mounted) return;
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('This group has nothing to add to the Bag.'),
+        ),
+      );
+
+      return;
+    }
+
+    var itemName = group.name;
+
+    final result = await showDialog<String>(
+      context: context,
+      builder: (dialogContext) {
+        return AlertDialog(
+          title: const Text('Add to Bag'),
+          content: TextFormField(
+            initialValue: itemName,
+            autofocus: true,
+            onChanged: (value) => itemName = value,
+            decoration: const InputDecoration(labelText: 'Item name'),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(dialogContext),
+              child: const Text('Cancel'),
+            ),
+            FilledButton.icon(
+              onPressed: () {
+                final trimmed = itemName.trim();
+
+                if (trimmed.isNotEmpty) {
+                  Navigator.pop(dialogContext, trimmed);
+                }
+              },
+              icon: const Icon(Icons.backpack_outlined),
+              label: const Text('Add to Bag'),
+            ),
+          ],
+        );
+      },
+    );
+
+    if (result == null || !mounted) {
+      return;
+    }
+
+    final item = BagItem(
+      id: 'bag_${DateTime.now().microsecondsSinceEpoch}',
+      name: result,
+      sourceGroupName: group.name,
+      layers: bagLayers,
+      createdAt: DateTime.now(),
+    );
+
+    await BagService().addItem(item);
+
+    if (!mounted) {
+      return;
+    }
+
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text('${item.name} added to your Bag 🎒')),
+    );
   }
 
   void _addLayerGroup() {
@@ -3288,13 +3621,23 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                 PopupMenuButton<String>(
                   tooltip: 'Group Options',
                   onSelected: (value) {
-                    if (value == 'rename') {
+                    if (value == 'bag') {
+                      _addLayerGroupToBag(group.id);
+                    } else if (value == 'rename') {
                       _renameLayerGroup(group.id);
                     } else if (value == 'delete') {
                       _deleteLayerGroup(group.id);
                     }
                   },
                   itemBuilder: (context) => const [
+                    PopupMenuItem(
+                      value: 'bag',
+                      child: ListTile(
+                        leading: Icon(Icons.backpack_outlined),
+                        title: Text('Add to Bag'),
+                      ),
+                    ),
+                    PopupMenuDivider(),
                     PopupMenuItem(value: 'rename', child: Text('Rename')),
                     PopupMenuItem(value: 'delete', child: Text('Delete Group')),
                   ],
@@ -3861,6 +4204,17 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                                         color: _textureExpanded
                                             ? Colors.deepPurpleAccent
                                             : Colors.white70,
+                                      ),
+                                    ),
+
+                                    const SizedBox(height: 2),
+                                    IconButton(
+                                      tooltip: 'Open Bag',
+                                      visualDensity: VisualDensity.compact,
+                                      onPressed: _openBag,
+                                      icon: const Icon(
+                                        Icons.backpack_outlined,
+                                        color: Colors.white70,
                                       ),
                                     ),
                                   ],
