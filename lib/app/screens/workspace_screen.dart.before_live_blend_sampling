@@ -2,12 +2,8 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:math' as math;
-import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
-import 'package:flutter/rendering.dart';
 import 'package:video_player/video_player.dart';
-import '../models/bag_item.dart';
-import '../models/brush_preset.dart';
 import '../models/drawing_layer.dart';
 import '../models/inkdframes_project.dart';
 import '../models/layer_group.dart';
@@ -16,8 +12,6 @@ import '../models/vector_stroke.dart';
 import '../painters/animation_canvas_painter.dart';
 import '../painters/frame_thumbnail_painter.dart';
 import '../services/animation_export_service.dart';
-import '../services/brush_preset_service.dart';
-import '../services/bag_service.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 enum _ShapeToolType { line, rectangle, square, circle }
@@ -105,21 +99,9 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
   bool? _editToolbarExpanded = false;
   bool _drawingMode = false;
   bool _blendExpanded = false;
-  bool _blendSamplingArmed = false;
-
-  bool _textureExpanded = false;
-  bool _textureActive = false;
-  String _texturePattern = 'stipple';
-  double _textureScale = 8.0;
-  double _textureDensity = 0.5;
-  double _textureScatter = 18.0;
-  List<VectorStroke> _draftTextureStrokes = <VectorStroke>[];
-  final math.Random _textureRandom = math.Random();
-
-  Color _blendBaseColor = Colors.white;
-  Color _blendSampleColor = Colors.black;
+  Color _blendColorA = Colors.white;
+  Color _blendColorB = Colors.black;
   double _blendAmount = 0.5;
-  final GlobalKey _canvasSampleKey = GlobalKey();
   bool _isExporting = false;
   double _fps = 8;
   double _brushSize = 4.0;
@@ -191,248 +173,6 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
         });
       }
     }
-  }
-
-  Future<void> _openBrushPresets() async {
-    final presets = await BrushPresetService().loadPresets();
-
-    if (!mounted) {
-      return;
-    }
-
-    await showDialog<void>(
-      context: context,
-      builder: (dialogContext) {
-        return AlertDialog(
-          title: const Row(
-            children: [
-              Icon(Icons.brush_outlined),
-              SizedBox(width: 10),
-              Text('Brush Presets'),
-            ],
-          ),
-          content: SizedBox(
-            width: 380,
-            height: 360,
-            child: presets.isEmpty
-                ? const Center(
-                    child: Column(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Icon(
-                          Icons.brush_outlined,
-                          size: 42,
-                          color: Colors.white38,
-                        ),
-                        SizedBox(height: 10),
-                        Text('No saved brushes yet'),
-                        SizedBox(height: 5),
-                        Text(
-                          'Save your current brush setup to start.',
-                          textAlign: TextAlign.center,
-                          style: TextStyle(fontSize: 12, color: Colors.white54),
-                        ),
-                      ],
-                    ),
-                  )
-                : ListView.separated(
-                    itemCount: presets.length,
-                    separatorBuilder: (_, _) => const Divider(height: 1),
-                    itemBuilder: (context, index) {
-                      final preset = presets[index];
-
-                      return ListTile(
-                        leading: Container(
-                          width: 30,
-                          height: 30,
-                          decoration: BoxDecoration(
-                            color: Color(preset.brushColor),
-                            shape: BoxShape.circle,
-                            border: Border.all(color: Colors.white24),
-                          ),
-                        ),
-                        title: Text(preset.name),
-                        subtitle: Text(
-                          preset.textureEnabled
-                              ? 'Texture · ${preset.texturePattern} · '
-                                    '${preset.brushSize.round()} px'
-                              : '${preset.brushType.name} · '
-                                    '${preset.brushSize.round()} px',
-                        ),
-                        onTap: () {
-                          Navigator.pop(dialogContext);
-                          _applyBrushPreset(preset);
-                        },
-                        trailing: IconButton(
-                          tooltip: 'Delete Preset',
-                          icon: const Icon(Icons.delete_outline),
-                          onPressed: () async {
-                            Navigator.pop(dialogContext);
-
-                            await _deleteBrushPreset(preset);
-
-                            if (mounted) {
-                              _openBrushPresets();
-                            }
-                          },
-                        ),
-                      );
-                    },
-                  ),
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(dialogContext),
-              child: const Text('Close'),
-            ),
-          ],
-        );
-      },
-    );
-  }
-
-  Future<void> _saveCurrentBrushPreset() async {
-    var name = '';
-
-    final result = await showDialog<String>(
-      context: context,
-      builder: (dialogContext) {
-        return AlertDialog(
-          title: const Text('Save Brush Preset'),
-          content: TextField(
-            autofocus: true,
-            textCapitalization: TextCapitalization.words,
-            decoration: const InputDecoration(
-              labelText: 'Preset name',
-              hintText: 'e.g. Dust Cloud',
-            ),
-            onChanged: (value) {
-              name = value;
-            },
-            onSubmitted: (value) {
-              final trimmed = value.trim();
-
-              if (trimmed.isNotEmpty) {
-                Navigator.pop(dialogContext, trimmed);
-              }
-            },
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(dialogContext),
-              child: const Text('Cancel'),
-            ),
-            FilledButton(
-              onPressed: () {
-                final trimmed = name.trim();
-
-                if (trimmed.isNotEmpty) {
-                  Navigator.pop(dialogContext, trimmed);
-                }
-              },
-              child: const Text('Save'),
-            ),
-          ],
-        );
-      },
-    );
-
-    if (result == null || !mounted) {
-      return;
-    }
-
-    final preset = BrushPreset(
-      id: 'brush_${DateTime.now().microsecondsSinceEpoch}',
-      name: result,
-      createdAt: DateTime.now(),
-      brushType: _brushType,
-      brushSize: _brushSize,
-      brushOpacity: _brushOpacity,
-      stabilizerStrength: _stabilizerStrength,
-      stabilizerPullDistance: _stabilizerPullDistance,
-      brushColor: _brushColor.toARGB32(),
-      textureEnabled: _textureActive,
-      texturePattern: _texturePattern,
-      textureScale: _textureScale,
-      textureDensity: _textureDensity,
-      textureScatter: _textureScatter,
-    );
-
-    await BrushPresetService().addPreset(preset);
-
-    if (!mounted) {
-      return;
-    }
-
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text('${preset.name} saved to Brush Presets')),
-    );
-  }
-
-  void _applyBrushPreset(BrushPreset preset) {
-    setState(() {
-      _brushType = preset.brushType;
-      _brushSize = preset.brushSize.clamp(1.0, 20.0);
-      _brushOpacity = preset.brushOpacity.clamp(0.05, 1.0);
-      _stabilizerStrength = preset.stabilizerStrength.clamp(0.0, 0.9);
-      _stabilizerPullDistance = preset.stabilizerPullDistance.clamp(0.0, 40.0);
-
-      _brushColor = Color(preset.brushColor);
-      _rememberRecentColor(_brushColor);
-
-      _textureActive = preset.textureEnabled;
-      _textureExpanded = preset.textureEnabled;
-      _texturePattern = preset.texturePattern;
-      _textureScale = preset.textureScale.clamp(2.0, 30.0);
-      _textureDensity = preset.textureDensity.clamp(0.05, 1.0);
-      _textureScatter = preset.textureScatter.clamp(0.0, 60.0);
-
-      _draftTextureStrokes = <VectorStroke>[];
-
-      if (_textureActive) {
-        _blendSamplingArmed = false;
-      }
-    });
-
-    ScaffoldMessenger.of(
-      context,
-    ).showSnackBar(SnackBar(content: Text('${preset.name} loaded')));
-  }
-
-  Future<void> _deleteBrushPreset(BrushPreset preset) async {
-    final confirmed = await showDialog<bool>(
-      context: context,
-      builder: (dialogContext) {
-        return AlertDialog(
-          title: const Text('Delete Brush Preset?'),
-          content: Text('Remove "${preset.name}" from your Brush Presets?'),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(dialogContext, false),
-              child: const Text('Cancel'),
-            ),
-            FilledButton(
-              onPressed: () => Navigator.pop(dialogContext, true),
-              child: const Text('Delete'),
-            ),
-          ],
-        );
-      },
-    );
-
-    if (confirmed != true) {
-      return;
-    }
-
-    await BrushPresetService().deletePreset(preset.id);
-
-    if (!mounted) {
-      return;
-    }
-
-    ScaffoldMessenger.of(
-      context,
-    ).showSnackBar(SnackBar(content: Text('${preset.name} deleted')));
   }
 
   void _scheduleAutosave() {
@@ -644,337 +384,6 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
       _draftStroke = const <VectorPoint>[];
       _clearTransformSelection();
     });
-  }
-
-  void _insertBagItem(BagItem item) {
-    if (item.layers.isEmpty) {
-      return;
-    }
-
-    final frameCount = _frameDurations.length;
-    final stamp = DateTime.now().microsecondsSinceEpoch;
-
-    final newLayers = <DrawingLayer>[];
-    final newLayerIds = <String>[];
-
-    for (var index = 0; index < item.layers.length; index++) {
-      final bagLayer = item.layers[index];
-
-      final layerId = 'bag_layer_${stamp}_$index';
-
-      final frames = List.generate(frameCount, (_) => <VectorStroke>[]);
-
-      if (_selectedFrameIndex >= 0 && _selectedFrameIndex < frames.length) {
-        frames[_selectedFrameIndex] = bagLayer.strokes
-            .map((stroke) => stroke.copy())
-            .toList();
-      }
-
-      newLayerIds.add(layerId);
-
-      newLayers.add(
-        DrawingLayer(
-          id: layerId,
-          name: bagLayer.name,
-          visible: bagLayer.visible,
-          opacity: bagLayer.opacity,
-          frames: frames,
-        ),
-      );
-    }
-
-    if (newLayers.isEmpty) {
-      return;
-    }
-
-    final newGroup = LayerGroup(
-      id: 'bag_group_$stamp',
-      name: item.name,
-      childLayerIds: newLayerIds,
-      visible: true,
-      expanded: true,
-    );
-
-    setState(() {
-      // Insert the Bag artwork at the top of the layer stack.
-      _layers.insertAll(0, newLayers);
-      _layerGroups.add(newGroup);
-
-      // Select the newly unpacked group.
-      _activeLayerGroupId = newGroup.id;
-      _activeLayerIndex = 0;
-
-      _draftStroke = const <VectorPoint>[];
-      _draftTextureStrokes = <VectorStroke>[];
-
-      _clearFillLasso();
-      _clearShapeDraft();
-      _clearTransformSelection();
-
-      _resetUndoRedo();
-      _rebuildCompositeFrames();
-    });
-
-    _scheduleAutosave();
-
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text('${item.name} unpacked from your Bag 🎒')),
-    );
-  }
-
-  Future<void> _openBag() async {
-    final items = await BagService().loadItems();
-
-    if (!mounted) {
-      return;
-    }
-
-    await showDialog<void>(
-      context: context,
-      builder: (dialogContext) {
-        return AlertDialog(
-          title: const Row(
-            children: [
-              Icon(Icons.backpack_outlined),
-              SizedBox(width: 10),
-              Text('Bag'),
-            ],
-          ),
-          content: SizedBox(
-            width: 420,
-            height: 420,
-            child: items.isEmpty
-                ? const Center(
-                    child: Column(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Icon(
-                          Icons.backpack_outlined,
-                          size: 48,
-                          color: Colors.white38,
-                        ),
-                        SizedBox(height: 12),
-                        Text(
-                          'Your Bag is empty.',
-                          style: TextStyle(color: Colors.white70),
-                        ),
-                        SizedBox(height: 6),
-                        Text(
-                          'Add a layer group to start your inventory.',
-                          textAlign: TextAlign.center,
-                          style: TextStyle(fontSize: 12, color: Colors.white54),
-                        ),
-                      ],
-                    ),
-                  )
-                : ListView.separated(
-                    itemCount: items.length,
-                    separatorBuilder: (_, _) => const Divider(height: 1),
-                    itemBuilder: (context, index) {
-                      final item = items[index];
-
-                      final strokeCount = item.layers.fold<int>(
-                        0,
-                        (total, layer) => total + layer.strokes.length,
-                      );
-
-                      return ListTile(
-                        leading: const Icon(Icons.inventory_2_outlined),
-                        title: Text(item.name),
-                        subtitle: Text(
-                          '${item.layers.length} layers · '
-                          '$strokeCount strokes',
-                        ),
-                        trailing: Row(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            IconButton(
-                              tooltip: 'Delete from Bag',
-                              icon: const Icon(Icons.delete_outline),
-                              onPressed: () async {
-                                final bagNavigator = Navigator.of(
-                                  dialogContext,
-                                );
-                                final messenger = ScaffoldMessenger.of(context);
-
-                                final confirmed = await showDialog<bool>(
-                                  context: dialogContext,
-                                  builder: (confirmContext) {
-                                    return AlertDialog(
-                                      title: const Text('Delete Bag item?'),
-                                      content: Text(
-                                        'Remove "${item.name}" from your Bag?',
-                                      ),
-                                      actions: [
-                                        TextButton(
-                                          onPressed: () => Navigator.pop(
-                                            confirmContext,
-                                            false,
-                                          ),
-                                          child: const Text('Cancel'),
-                                        ),
-                                        FilledButton(
-                                          onPressed: () => Navigator.pop(
-                                            confirmContext,
-                                            true,
-                                          ),
-                                          child: const Text('Delete'),
-                                        ),
-                                      ],
-                                    );
-                                  },
-                                );
-
-                                if (confirmed != true) {
-                                  return;
-                                }
-
-                                bagNavigator.pop();
-
-                                await BagService().deleteItem(item.id);
-
-                                if (!mounted) {
-                                  return;
-                                }
-
-                                messenger.showSnackBar(
-                                  SnackBar(
-                                    content: Text(
-                                      '${item.name} removed from your Bag',
-                                    ),
-                                  ),
-                                );
-
-                                _openBag();
-                              },
-                            ),
-                            const Icon(Icons.add_circle_outline),
-                          ],
-                        ),
-                        onTap: () {
-                          Navigator.pop(dialogContext);
-
-                          _insertBagItem(item);
-                        },
-                      );
-                    },
-                  ),
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(dialogContext),
-              child: const Text('Close'),
-            ),
-          ],
-        );
-      },
-    );
-  }
-
-  Future<void> _addLayerGroupToBag(String groupId) async {
-    final groupIndex = _layerGroups.indexWhere((group) => group.id == groupId);
-
-    if (groupIndex == -1) {
-      return;
-    }
-
-    final group = _layerGroups[groupIndex];
-
-    final bagLayers = <BagLayer>[];
-
-    for (final layerId in group.childLayerIds) {
-      final layerIndex = _layers.indexWhere((layer) => layer.id == layerId);
-
-      if (layerIndex == -1) {
-        continue;
-      }
-
-      final layer = _layers[layerIndex];
-
-      if (_selectedFrameIndex < 0 ||
-          _selectedFrameIndex >= layer.frames.length) {
-        continue;
-      }
-
-      bagLayers.add(
-        BagLayer(
-          name: layer.name,
-          opacity: layer.opacity,
-          visible: layer.visible,
-          strokes: layer.frames[_selectedFrameIndex]
-              .map((stroke) => stroke.copy())
-              .toList(),
-        ),
-      );
-    }
-
-    if (bagLayers.isEmpty) {
-      if (!mounted) return;
-
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('This group has nothing to add to the Bag.'),
-        ),
-      );
-
-      return;
-    }
-
-    var itemName = group.name;
-
-    final result = await showDialog<String>(
-      context: context,
-      builder: (dialogContext) {
-        return AlertDialog(
-          title: const Text('Add to Bag'),
-          content: TextFormField(
-            initialValue: itemName,
-            autofocus: true,
-            onChanged: (value) => itemName = value,
-            decoration: const InputDecoration(labelText: 'Item name'),
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(dialogContext),
-              child: const Text('Cancel'),
-            ),
-            FilledButton.icon(
-              onPressed: () {
-                final trimmed = itemName.trim();
-
-                if (trimmed.isNotEmpty) {
-                  Navigator.pop(dialogContext, trimmed);
-                }
-              },
-              icon: const Icon(Icons.backpack_outlined),
-              label: const Text('Add to Bag'),
-            ),
-          ],
-        );
-      },
-    );
-
-    if (result == null || !mounted) {
-      return;
-    }
-
-    final item = BagItem(
-      id: 'bag_${DateTime.now().microsecondsSinceEpoch}',
-      name: result,
-      sourceGroupName: group.name,
-      layers: bagLayers,
-      createdAt: DateTime.now(),
-    );
-
-    await BagService().addItem(item);
-
-    if (!mounted) {
-      return;
-    }
-
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text('${item.name} added to your Bag 🎒')),
-    );
   }
 
   void _addLayerGroup() {
@@ -2653,186 +2062,6 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     return stabilized;
   }
 
-  Color _currentBlendColor() {
-    return Color.lerp(_blendBaseColor, _blendSampleColor, _blendAmount) ??
-        _blendBaseColor;
-  }
-
-  void _applyCurrentBlend() {
-    final mixedColor = _currentBlendColor();
-
-    _brushColor = mixedColor;
-    _rememberRecentColor(mixedColor);
-  }
-
-  Future<void> _sampleBlendColour(Offset canvasPosition) async {
-    final boundary =
-        _canvasSampleKey.currentContext?.findRenderObject()
-            as RenderRepaintBoundary?;
-
-    if (boundary == null) {
-      return;
-    }
-
-    try {
-      final image = await boundary.toImage(pixelRatio: 1.0);
-
-      try {
-        final x = canvasPosition.dx.round().clamp(0, image.width - 1);
-
-        final y = canvasPosition.dy.round().clamp(0, image.height - 1);
-
-        final byteData = await image.toByteData(
-          format: ui.ImageByteFormat.rawRgba,
-        );
-
-        if (byteData == null || !mounted) {
-          return;
-        }
-
-        final offset = ((y * image.width) + x) * 4;
-
-        final r = byteData.getUint8(offset);
-        final g = byteData.getUint8(offset + 1);
-        final b = byteData.getUint8(offset + 2);
-        final a = byteData.getUint8(offset + 3);
-
-        final sampled = Color.fromARGB(a, r, g, b);
-
-        setState(() {
-          _blendSampleColor = sampled;
-          _blendSamplingArmed = false;
-          _applyCurrentBlend();
-        });
-      } finally {
-        image.dispose();
-      }
-    } catch (_) {
-      if (!mounted) return;
-
-      setState(() {
-        _blendSamplingArmed = false;
-      });
-    }
-  }
-
-  void _addTextureStamp(Offset position, double pressure) {
-    final count = (1 + (_textureDensity * 7)).round().clamp(1, 8);
-
-    final generated = <VectorStroke>[];
-
-    for (var i = 0; i < count; i++) {
-      final angle = _textureRandom.nextDouble() * math.pi * 2;
-
-      final radius = _textureRandom.nextDouble() * _textureScatter;
-
-      final center = Offset(
-        position.dx + math.cos(angle) * radius,
-        position.dy + math.sin(angle) * radius,
-      );
-
-      final size = _textureScale * (0.65 + (_textureRandom.nextDouble() * 0.7));
-
-      switch (_texturePattern) {
-        case 'hatch':
-          final hatchAngle =
-              (-math.pi / 4) + ((_textureRandom.nextDouble() - 0.5) * 0.25);
-
-          final delta = Offset(
-            math.cos(hatchAngle) * size,
-            math.sin(hatchAngle) * size,
-          );
-
-          generated.add(
-            VectorStroke(
-              points: [
-                VectorPoint(
-                  dx: center.dx - delta.dx / 2,
-                  dy: center.dy - delta.dy / 2,
-                  pressure: pressure,
-                ),
-                VectorPoint(
-                  dx: center.dx + delta.dx / 2,
-                  dy: center.dy + delta.dy / 2,
-                  pressure: pressure,
-                ),
-              ],
-              strokeWidth: math.max(0.8, _brushSize * 0.35),
-              color: _brushColor.withValues(alpha: _brushOpacity),
-              brushType: StrokeBrushType.solid,
-            ),
-          );
-          break;
-
-        case 'grain':
-          final grainAngle = _textureRandom.nextDouble() * math.pi * 2;
-
-          final grainLength =
-              size * (0.15 + _textureRandom.nextDouble() * 0.35);
-
-          final delta = Offset(
-            math.cos(grainAngle) * grainLength,
-            math.sin(grainAngle) * grainLength,
-          );
-
-          generated.add(
-            VectorStroke(
-              points: [
-                VectorPoint(dx: center.dx, dy: center.dy, pressure: pressure),
-                VectorPoint(
-                  dx: center.dx + delta.dx,
-                  dy: center.dy + delta.dy,
-                  pressure: pressure,
-                ),
-              ],
-              strokeWidth: math.max(0.5, _brushSize * 0.18),
-              color: _brushColor.withValues(alpha: _brushOpacity * 0.75),
-              brushType: StrokeBrushType.solid,
-            ),
-          );
-          break;
-
-        case 'stipple':
-        default:
-          generated.add(
-            VectorStroke(
-              points: [
-                VectorPoint(dx: center.dx, dy: center.dy, pressure: pressure),
-              ],
-              strokeWidth: math.max(1.0, size * 0.45),
-              color: _brushColor.withValues(alpha: _brushOpacity),
-              brushType: StrokeBrushType.solid,
-            ),
-          );
-          break;
-      }
-    }
-
-    _draftTextureStrokes.addAll(generated);
-  }
-
-  void _commitTextureStroke() {
-    if (_draftTextureStrokes.isEmpty) {
-      return;
-    }
-
-    _saveUndoState();
-
-    final layer = _activeLayer;
-    final frames = _copyLayerFrames(layer.frames);
-
-    frames[_selectedFrameIndex] = <VectorStroke>[
-      ...frames[_selectedFrameIndex],
-      ..._draftTextureStrokes,
-    ];
-
-    _layers[_activeLayerIndex] = layer.copyWith(frames: frames);
-
-    _draftTextureStrokes = <VectorStroke>[];
-    _rebuildCompositeFrames();
-    _scheduleAutosave();
-  }
-
   void _handlePointerDown(PointerDownEvent event, BuildContext canvasContext) {
     _activePointerCount += 1;
     if (_activePointerCount > 1) {
@@ -2847,24 +2076,6 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
 
     final renderBox = canvasContext.findRenderObject() as RenderBox;
     final canvasPosition = renderBox.globalToLocal(event.position);
-
-    if (_drawingMode && _blendSamplingArmed) {
-      _blendBaseColor = _brushColor;
-
-      unawaited(_sampleBlendColour(canvasPosition));
-
-      return;
-    }
-
-    if (_drawingMode && _textureActive) {
-      _draftTextureStrokes = <VectorStroke>[];
-
-      setState(() {
-        _addTextureStamp(canvasPosition, event.pressure);
-      });
-
-      return;
-    }
 
     if (_isTransformActive) {
       final bounds = _selectedStrokeBounds();
@@ -3006,14 +2217,6 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
 
     final renderBox = canvasContext.findRenderObject() as RenderBox;
     final canvasPosition = renderBox.globalToLocal(event.position);
-
-    if (_drawingMode && _textureActive) {
-      setState(() {
-        _addTextureStamp(canvasPosition, event.pressure);
-      });
-
-      return;
-    }
 
     if (_isTransformActive) {
       if (_isTransformRotating &&
@@ -3320,14 +2523,6 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
   void _handlePointerUp(PointerUpEvent event) {
     if (_activePointerCount > 0) {
       _activePointerCount -= 1;
-    }
-
-    if (_drawingMode && _textureActive && _draftTextureStrokes.isNotEmpty) {
-      setState(() {
-        _commitTextureStroke();
-      });
-
-      return;
     }
 
     if (_isFillToolActive && _fillLassoPoints.isNotEmpty) {
@@ -3865,23 +3060,13 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                 PopupMenuButton<String>(
                   tooltip: 'Group Options',
                   onSelected: (value) {
-                    if (value == 'bag') {
-                      _addLayerGroupToBag(group.id);
-                    } else if (value == 'rename') {
+                    if (value == 'rename') {
                       _renameLayerGroup(group.id);
                     } else if (value == 'delete') {
                       _deleteLayerGroup(group.id);
                     }
                   },
                   itemBuilder: (context) => const [
-                    PopupMenuItem(
-                      value: 'bag',
-                      child: ListTile(
-                        leading: Icon(Icons.backpack_outlined),
-                        title: Text('Add to Bag'),
-                      ),
-                    ),
-                    PopupMenuDivider(),
                     PopupMenuItem(value: 'rename', child: Text('Rename')),
                     PopupMenuItem(value: 'delete', child: Text('Delete Group')),
                   ],
@@ -4159,166 +3344,154 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                                       : _handlePointerCancel,
                                   child: ClipRRect(
                                     borderRadius: BorderRadius.circular(24),
-                                    child: RepaintBoundary(
-                                      key: _canvasSampleKey,
-                                      child: Stack(
-                                        fit: StackFit.expand,
-                                        children: [
-                                          ColoredBox(
-                                            color: _canvasBackgroundColor,
-                                          ),
-                                          if (_referenceVisible &&
-                                              _referenceMediaType == 'video' &&
-                                              _videoReady &&
-                                              _videoController != null)
-                                            Opacity(
-                                              opacity: _referenceOpacity,
-                                              child: FittedBox(
-                                                fit: BoxFit.contain,
-                                                child: SizedBox(
-                                                  width: _videoController!
-                                                      .value
-                                                      .size
-                                                      .width,
-                                                  height: _videoController!
-                                                      .value
-                                                      .size
-                                                      .height,
-                                                  child: VideoPlayer(
-                                                    _videoController!,
-                                                  ),
+                                    child: Stack(
+                                      fit: StackFit.expand,
+                                      children: [
+                                        ColoredBox(
+                                          color: _canvasBackgroundColor,
+                                        ),
+                                        if (_referenceVisible &&
+                                            _referenceMediaType == 'video' &&
+                                            _videoReady &&
+                                            _videoController != null)
+                                          Opacity(
+                                            opacity: _referenceOpacity,
+                                            child: FittedBox(
+                                              fit: BoxFit.contain,
+                                              child: SizedBox(
+                                                width: _videoController!
+                                                    .value
+                                                    .size
+                                                    .width,
+                                                height: _videoController!
+                                                    .value
+                                                    .size
+                                                    .height,
+                                                child: VideoPlayer(
+                                                  _videoController!,
                                                 ),
                                               ),
                                             ),
-                                          if (_referenceVisible &&
-                                              _referenceMediaType == 'image' &&
-                                              _referenceMediaPath != null)
-                                            Opacity(
-                                              opacity: _referenceOpacity,
-                                              child: Image.file(
-                                                File(_referenceMediaPath!),
-                                                fit: BoxFit.contain,
-                                                errorBuilder:
-                                                    (
-                                                      context,
-                                                      error,
-                                                      stackTrace,
-                                                    ) {
-                                                      return const Center(
-                                                        child: Column(
-                                                          mainAxisSize:
-                                                              MainAxisSize.min,
-                                                          children: [
-                                                            Icon(
-                                                              Icons
-                                                                  .broken_image_outlined,
-                                                              size: 48,
+                                          ),
+                                        if (_referenceVisible &&
+                                            _referenceMediaType == 'image' &&
+                                            _referenceMediaPath != null)
+                                          Opacity(
+                                            opacity: _referenceOpacity,
+                                            child: Image.file(
+                                              File(_referenceMediaPath!),
+                                              fit: BoxFit.contain,
+                                              errorBuilder:
+                                                  (context, error, stackTrace) {
+                                                    return const Center(
+                                                      child: Column(
+                                                        mainAxisSize:
+                                                            MainAxisSize.min,
+                                                        children: [
+                                                          Icon(
+                                                            Icons
+                                                                .broken_image_outlined,
+                                                            size: 48,
+                                                            color:
+                                                                Colors.white54,
+                                                          ),
+                                                          SizedBox(height: 8),
+                                                          Text(
+                                                            'Reference image unavailable',
+                                                            style: TextStyle(
                                                               color: Colors
                                                                   .white54,
                                                             ),
-                                                            SizedBox(height: 8),
-                                                            Text(
-                                                              'Reference image unavailable',
-                                                              style: TextStyle(
-                                                                color: Colors
-                                                                    .white54,
-                                                              ),
-                                                            ),
-                                                          ],
-                                                        ),
-                                                      );
-                                                    },
-                                              ),
+                                                          ),
+                                                        ],
+                                                      ),
+                                                    );
+                                                  },
                                             ),
-                                          CustomPaint(
-                                            painter: AnimationCanvasPainter(
-                                              strokes: <VectorStroke>[
-                                                ..._frames[_selectedFrameIndex],
-                                                ..._draftTextureStrokes,
-                                              ],
-                                              currentStroke:
-                                                  _draftStroke.isEmpty
-                                                  ? null
-                                                  : _draftStroke,
-                                              previousOnionSkinStrokes:
-                                                  _showOnionSkin
-                                                  ? previousFrameStrokes
-                                                  : const <VectorStroke>[],
-                                              nextOnionSkinStrokes:
-                                                  _showOnionSkin
-                                                  ? nextFrameStrokes
-                                                  : const <VectorStroke>[],
-                                              strokeColor: _brushColor
-                                                  .withValues(
-                                                    alpha: _brushOpacity,
-                                                  ),
-                                              strokeWidth: _brushSize,
-                                              brushType: _brushType,
-                                              backgroundColor:
-                                                  _canvasBackgroundColor,
-                                              paintBackground:
-                                                  _referenceMediaPath == null ||
-                                                  (_referenceMediaType !=
-                                                          'image' &&
-                                                      _referenceMediaType !=
-                                                          'video'),
-                                              previousOnionSkinColor: Colors
-                                                  .redAccent
-                                                  .withValues(alpha: 0.40),
-                                              nextOnionSkinColor: Colors
-                                                  .greenAccent
-                                                  .withValues(alpha: 0.40),
-                                            ),
-                                            child: const SizedBox.expand(),
                                           ),
-                                          if (_fillLassoPoints.length > 1)
-                                            IgnorePointer(
-                                              child: CustomPaint(
-                                                painter: _FillLassoPainter(
-                                                  points: _fillLassoPoints,
-                                                  color: _brushColor,
-                                                ),
-                                                child: const SizedBox.expand(),
-                                              ),
+                                        CustomPaint(
+                                          painter: AnimationCanvasPainter(
+                                            strokes:
+                                                _frames[_selectedFrameIndex],
+                                            currentStroke: _draftStroke.isEmpty
+                                                ? null
+                                                : _draftStroke,
+                                            previousOnionSkinStrokes:
+                                                _showOnionSkin
+                                                ? previousFrameStrokes
+                                                : const <VectorStroke>[],
+                                            nextOnionSkinStrokes: _showOnionSkin
+                                                ? nextFrameStrokes
+                                                : const <VectorStroke>[],
+                                            strokeColor: _brushColor.withValues(
+                                              alpha: _brushOpacity,
                                             ),
-                                          if (_draftShapeStrokes.isNotEmpty)
-                                            IgnorePointer(
-                                              child: CustomPaint(
-                                                painter: AnimationCanvasPainter(
-                                                  strokes: _draftShapeStrokes,
-                                                  currentStroke: null,
-                                                  previousOnionSkinStrokes:
-                                                      const <VectorStroke>[],
-                                                  nextOnionSkinStrokes:
-                                                      const <VectorStroke>[],
-                                                  strokeColor: _brushColor,
-                                                  previousOnionSkinColor:
-                                                      Colors.transparent,
-                                                  nextOnionSkinColor:
-                                                      Colors.transparent,
-                                                  strokeWidth: _brushSize,
-                                                  brushType:
-                                                      StrokeBrushType.solid,
-                                                  backgroundColor:
-                                                      _canvasBackgroundColor,
-                                                  paintBackground: false,
-                                                ),
-                                                child: const SizedBox.expand(),
+                                            strokeWidth: _brushSize,
+                                            brushType: _brushType,
+                                            backgroundColor:
+                                                _canvasBackgroundColor,
+                                            paintBackground:
+                                                _referenceMediaPath == null ||
+                                                (_referenceMediaType !=
+                                                        'image' &&
+                                                    _referenceMediaType !=
+                                                        'video'),
+                                            previousOnionSkinColor: Colors
+                                                .redAccent
+                                                .withValues(alpha: 0.40),
+                                            nextOnionSkinColor: Colors
+                                                .greenAccent
+                                                .withValues(alpha: 0.40),
+                                          ),
+                                          child: const SizedBox.expand(),
+                                        ),
+                                        if (_fillLassoPoints.length > 1)
+                                          IgnorePointer(
+                                            child: CustomPaint(
+                                              painter: _FillLassoPainter(
+                                                points: _fillLassoPoints,
+                                                color: _brushColor,
                                               ),
+                                              child: const SizedBox.expand(),
                                             ),
-                                          if (_isTransformActive)
-                                            IgnorePointer(
-                                              child: CustomPaint(
-                                                painter: _TransformOverlayPainter(
-                                                  lassoPoints: _lassoPoints,
-                                                  selectionBounds:
-                                                      _selectedStrokeBounds(),
-                                                ),
-                                                child: const SizedBox.expand(),
+                                          ),
+                                        if (_draftShapeStrokes.isNotEmpty)
+                                          IgnorePointer(
+                                            child: CustomPaint(
+                                              painter: AnimationCanvasPainter(
+                                                strokes: _draftShapeStrokes,
+                                                currentStroke: null,
+                                                previousOnionSkinStrokes:
+                                                    const <VectorStroke>[],
+                                                nextOnionSkinStrokes:
+                                                    const <VectorStroke>[],
+                                                strokeColor: _brushColor,
+                                                previousOnionSkinColor:
+                                                    Colors.transparent,
+                                                nextOnionSkinColor:
+                                                    Colors.transparent,
+                                                strokeWidth: _brushSize,
+                                                brushType:
+                                                    StrokeBrushType.solid,
+                                                backgroundColor:
+                                                    _canvasBackgroundColor,
+                                                paintBackground: false,
                                               ),
+                                              child: const SizedBox.expand(),
                                             ),
-                                        ],
-                                      ),
+                                          ),
+                                        if (_isTransformActive)
+                                          IgnorePointer(
+                                            child: CustomPaint(
+                                              painter: _TransformOverlayPainter(
+                                                lassoPoints: _lassoPoints,
+                                                selectionBounds:
+                                                    _selectedStrokeBounds(),
+                                              ),
+                                              child: const SizedBox.expand(),
+                                            ),
+                                          ),
+                                      ],
                                     ),
                                   ),
                                 ),
@@ -4380,7 +3553,6 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                                           _transformToolbarExpanded = false;
                                         } else {
                                           _blendExpanded = false;
-                                          _blendSamplingArmed = false;
                                         }
                                       });
                                     },
@@ -4403,17 +3575,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                                       visualDensity: VisualDensity.compact,
                                       onPressed: () {
                                         setState(() {
-                                          if (!_blendExpanded) {
-                                            _blendExpanded = true;
-                                            _blendSamplingArmed = true;
-                                            _blendBaseColor = _brushColor;
-                                          } else if (!_blendSamplingArmed) {
-                                            _blendSamplingArmed = true;
-                                            _blendBaseColor = _brushColor;
-                                          } else {
-                                            _blendExpanded = false;
-                                            _blendSamplingArmed = false;
-                                          }
+                                          _blendExpanded = !_blendExpanded;
                                         });
                                       },
                                       icon: Icon(
@@ -4421,44 +3583,6 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                                         color: _blendExpanded
                                             ? Colors.deepPurpleAccent
                                             : Colors.white70,
-                                      ),
-                                    ),
-
-                                    const SizedBox(height: 2),
-                                    IconButton(
-                                      tooltip: _textureExpanded
-                                          ? 'Hide Texture'
-                                          : 'Show Texture',
-                                      visualDensity: VisualDensity.compact,
-                                      onPressed: () {
-                                        setState(() {
-                                          _textureExpanded = !_textureExpanded;
-                                          _textureActive = _textureExpanded;
-
-                                          if (_textureExpanded) {
-                                            _blendSamplingArmed = false;
-                                          } else {
-                                            _draftTextureStrokes =
-                                                <VectorStroke>[];
-                                          }
-                                        });
-                                      },
-                                      icon: Icon(
-                                        Icons.grid_on_outlined,
-                                        color: _textureExpanded
-                                            ? Colors.deepPurpleAccent
-                                            : Colors.white70,
-                                      ),
-                                    ),
-
-                                    const SizedBox(height: 2),
-                                    IconButton(
-                                      tooltip: 'Open Bag',
-                                      visualDensity: VisualDensity.compact,
-                                      onPressed: _openBag,
-                                      icon: const Icon(
-                                        Icons.backpack_outlined,
-                                        color: Colors.white70,
                                       ),
                                     ),
                                   ],
@@ -4473,174 +3597,6 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                               mainAxisSize: MainAxisSize.min,
                               crossAxisAlignment: CrossAxisAlignment.start,
                               children: [
-                                if (_drawingMode && _textureExpanded)
-                                  Material(
-                                    elevation: 8,
-                                    color: const Color(0xE61A1720),
-                                    borderRadius: BorderRadius.circular(16),
-                                    clipBehavior: Clip.antiAlias,
-                                    child: SizedBox(
-                                      width: constraints.maxWidth < 420
-                                          ? constraints.maxWidth - 96
-                                          : 300,
-                                      child: Padding(
-                                        padding: const EdgeInsets.fromLTRB(
-                                          14,
-                                          12,
-                                          14,
-                                          12,
-                                        ),
-                                        child: Column(
-                                          mainAxisSize: MainAxisSize.min,
-                                          children: [
-                                            const Align(
-                                              alignment: Alignment.centerLeft,
-                                              child: Text(
-                                                'Texture',
-                                                style: TextStyle(
-                                                  fontWeight: FontWeight.w600,
-                                                ),
-                                              ),
-                                            ),
-                                            const SizedBox(height: 10),
-
-                                            SegmentedButton<String>(
-                                              segments: const [
-                                                ButtonSegment<String>(
-                                                  value: 'stipple',
-                                                  label: Text('Stipple'),
-                                                ),
-                                                ButtonSegment<String>(
-                                                  value: 'hatch',
-                                                  label: Text('Hatch'),
-                                                ),
-                                                ButtonSegment<String>(
-                                                  value: 'grain',
-                                                  label: Text('Grain'),
-                                                ),
-                                              ],
-                                              selected: <String>{
-                                                _texturePattern,
-                                              },
-                                              onSelectionChanged: (selection) {
-                                                setState(() {
-                                                  _texturePattern =
-                                                      selection.first;
-                                                });
-                                              },
-                                            ),
-
-                                            const SizedBox(height: 10),
-
-                                            Row(
-                                              children: [
-                                                const SizedBox(
-                                                  width: 70,
-                                                  child: Text('Scale'),
-                                                ),
-                                                Expanded(
-                                                  child: Slider(
-                                                    value: _textureScale,
-                                                    min: 2,
-                                                    max: 30,
-                                                    divisions: 28,
-                                                    label: _textureScale
-                                                        .round()
-                                                        .toString(),
-                                                    onChanged: (value) {
-                                                      setState(() {
-                                                        _textureScale = value;
-                                                      });
-                                                    },
-                                                  ),
-                                                ),
-                                                SizedBox(
-                                                  width: 38,
-                                                  child: Text(
-                                                    _textureScale
-                                                        .round()
-                                                        .toString(),
-                                                    textAlign: TextAlign.right,
-                                                  ),
-                                                ),
-                                              ],
-                                            ),
-
-                                            Row(
-                                              children: [
-                                                const SizedBox(
-                                                  width: 70,
-                                                  child: Text('Density'),
-                                                ),
-                                                Expanded(
-                                                  child: Slider(
-                                                    value: _textureDensity,
-                                                    min: 0.1,
-                                                    max: 1.0,
-                                                    divisions: 9,
-                                                    label:
-                                                        '${(_textureDensity * 100).round()}%',
-                                                    onChanged: (value) {
-                                                      setState(() {
-                                                        _textureDensity = value;
-                                                      });
-                                                    },
-                                                  ),
-                                                ),
-                                                SizedBox(
-                                                  width: 40,
-                                                  child: Text(
-                                                    '${(_textureDensity * 100).round()}%',
-                                                    textAlign: TextAlign.right,
-                                                  ),
-                                                ),
-                                              ],
-                                            ),
-
-                                            Row(
-                                              children: [
-                                                const SizedBox(
-                                                  width: 70,
-                                                  child: Text('Scatter'),
-                                                ),
-                                                Expanded(
-                                                  child: Slider(
-                                                    value: _textureScatter,
-                                                    min: 0,
-                                                    max: 50,
-                                                    divisions: 25,
-                                                    label: _textureScatter
-                                                        .round()
-                                                        .toString(),
-                                                    onChanged: (value) {
-                                                      setState(() {
-                                                        _textureScatter = value;
-                                                      });
-                                                    },
-                                                  ),
-                                                ),
-                                                SizedBox(
-                                                  width: 40,
-                                                  child: Text(
-                                                    _textureScatter
-                                                        .round()
-                                                        .toString(),
-                                                    textAlign: TextAlign.right,
-                                                  ),
-                                                ),
-                                              ],
-                                            ),
-                                          ],
-                                        ),
-                                      ),
-                                    ),
-                                  ),
-
-                                if (_drawingMode &&
-                                    _textureExpanded &&
-                                    _blendExpanded)
-                                  const SizedBox(height: 8),
-
                                 if (_drawingMode && _blendExpanded)
                                   Material(
                                     elevation: 8,
@@ -4660,41 +3616,14 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                                         ),
                                         child: Column(
                                           mainAxisSize: MainAxisSize.min,
+                                          crossAxisAlignment:
+                                              CrossAxisAlignment.stretch,
                                           children: [
-                                            Row(
-                                              children: [
-                                                const Expanded(
-                                                  child: Text(
-                                                    'Blend',
-                                                    style: TextStyle(
-                                                      fontWeight:
-                                                          FontWeight.w600,
-                                                    ),
-                                                  ),
-                                                ),
-                                                if (_blendSamplingArmed)
-                                                  const Row(
-                                                    mainAxisSize:
-                                                        MainAxisSize.min,
-                                                    children: [
-                                                      Icon(
-                                                        Icons.colorize,
-                                                        size: 16,
-                                                        color:
-                                                            Colors.cyanAccent,
-                                                      ),
-                                                      SizedBox(width: 4),
-                                                      Text(
-                                                        'Tap canvas',
-                                                        style: TextStyle(
-                                                          fontSize: 11,
-                                                          color:
-                                                              Colors.cyanAccent,
-                                                        ),
-                                                      ),
-                                                    ],
-                                                  ),
-                                              ],
+                                            const Text(
+                                              'Blend',
+                                              style: TextStyle(
+                                                fontWeight: FontWeight.w600,
+                                              ),
                                             ),
                                             const SizedBox(height: 12),
 
@@ -4702,30 +3631,64 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                                               children: [
                                                 const SizedBox(
                                                   width: 70,
-                                                  child: Text('Base'),
+                                                  child: Text('Colour A'),
                                                 ),
-                                                Container(
-                                                  width: 50,
-                                                  height: 30,
-                                                  decoration: BoxDecoration(
-                                                    color: _blendBaseColor,
-                                                    borderRadius:
-                                                        BorderRadius.circular(
-                                                          9,
-                                                        ),
-                                                    border: Border.all(
-                                                      color: Colors.white38,
+                                                GestureDetector(
+                                                  onTap: () async {
+                                                    final color =
+                                                        await _showRadialColourPicker(
+                                                          _blendColorA,
+                                                        );
+
+                                                    if (color == null ||
+                                                        !mounted) {
+                                                      return;
+                                                    }
+
+                                                    setState(() {
+                                                      _blendColorA = color;
+                                                    });
+                                                  },
+                                                  child: Container(
+                                                    width: 58,
+                                                    height: 34,
+                                                    decoration: BoxDecoration(
+                                                      color: _blendColorA,
+                                                      borderRadius:
+                                                          BorderRadius.circular(
+                                                            10,
+                                                          ),
+                                                      border: Border.all(
+                                                        color: Colors.white38,
+                                                        width: 2,
+                                                      ),
                                                     ),
                                                   ),
                                                 ),
-                                                const SizedBox(width: 8),
+                                                const SizedBox(width: 10),
                                                 Expanded(
                                                   child: Text(
-                                                    '#${_colorHex(_blendBaseColor)}',
+                                                    '#${_colorHex(_blendColorA)}',
                                                     style: const TextStyle(
                                                       fontSize: 10,
                                                       color: Colors.white60,
                                                     ),
+                                                  ),
+                                                ),
+                                                IconButton(
+                                                  tooltip:
+                                                      'Use Current Brush Colour',
+                                                  visualDensity:
+                                                      VisualDensity.compact,
+                                                  onPressed: () {
+                                                    setState(() {
+                                                      _blendColorA =
+                                                          _brushColor;
+                                                    });
+                                                  },
+                                                  icon: const Icon(
+                                                    Icons.colorize,
+                                                    size: 18,
                                                   ),
                                                 ),
                                               ],
@@ -4737,26 +3700,44 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                                               children: [
                                                 const SizedBox(
                                                   width: 70,
-                                                  child: Text('Sample'),
+                                                  child: Text('Colour B'),
                                                 ),
-                                                Container(
-                                                  width: 50,
-                                                  height: 30,
-                                                  decoration: BoxDecoration(
-                                                    color: _blendSampleColor,
-                                                    borderRadius:
-                                                        BorderRadius.circular(
-                                                          9,
-                                                        ),
-                                                    border: Border.all(
-                                                      color: Colors.white38,
+                                                GestureDetector(
+                                                  onTap: () async {
+                                                    final color =
+                                                        await _showRadialColourPicker(
+                                                          _blendColorB,
+                                                        );
+
+                                                    if (color == null ||
+                                                        !mounted) {
+                                                      return;
+                                                    }
+
+                                                    setState(() {
+                                                      _blendColorB = color;
+                                                    });
+                                                  },
+                                                  child: Container(
+                                                    width: 58,
+                                                    height: 34,
+                                                    decoration: BoxDecoration(
+                                                      color: _blendColorB,
+                                                      borderRadius:
+                                                          BorderRadius.circular(
+                                                            10,
+                                                          ),
+                                                      border: Border.all(
+                                                        color: Colors.white38,
+                                                        width: 2,
+                                                      ),
                                                     ),
                                                   ),
                                                 ),
-                                                const SizedBox(width: 8),
+                                                const SizedBox(width: 10),
                                                 Expanded(
                                                   child: Text(
-                                                    '#${_colorHex(_blendSampleColor)}',
+                                                    '#${_colorHex(_blendColorB)}',
                                                     style: const TextStyle(
                                                       fontSize: 10,
                                                       color: Colors.white60,
@@ -4764,23 +3745,19 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                                                   ),
                                                 ),
                                                 IconButton(
-                                                  tooltip: 'Sample Again',
+                                                  tooltip:
+                                                      'Use Current Brush Colour',
                                                   visualDensity:
                                                       VisualDensity.compact,
                                                   onPressed: () {
                                                     setState(() {
-                                                      _blendBaseColor =
+                                                      _blendColorB =
                                                           _brushColor;
-                                                      _blendSamplingArmed =
-                                                          true;
                                                     });
                                                   },
-                                                  icon: Icon(
+                                                  icon: const Icon(
                                                     Icons.colorize,
                                                     size: 18,
-                                                    color: _blendSamplingArmed
-                                                        ? Colors.cyanAccent
-                                                        : Colors.white70,
                                                   ),
                                                 ),
                                               ],
@@ -4792,7 +3769,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                                               children: [
                                                 const SizedBox(
                                                   width: 70,
-                                                  child: Text('Strength'),
+                                                  child: Text('Mix'),
                                                 ),
                                                 Expanded(
                                                   child: Slider(
@@ -4805,7 +3782,6 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                                                     onChanged: (value) {
                                                       setState(() {
                                                         _blendAmount = value;
-                                                        _applyCurrentBlend();
                                                       });
                                                     },
                                                   ),
@@ -4825,36 +3801,58 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                                             Builder(
                                               builder: (context) {
                                                 final mixedColor =
-                                                    _currentBlendColor();
+                                                    Color.lerp(
+                                                      _blendColorA,
+                                                      _blendColorB,
+                                                      _blendAmount,
+                                                    ) ??
+                                                    _blendColorA;
 
-                                                return Row(
+                                                return Column(
+                                                  crossAxisAlignment:
+                                                      CrossAxisAlignment
+                                                          .stretch,
                                                   children: [
-                                                    const SizedBox(
-                                                      width: 70,
-                                                      child: Text('Result'),
-                                                    ),
-                                                    Expanded(
-                                                      child: Container(
-                                                        height: 34,
-                                                        decoration: BoxDecoration(
-                                                          color: mixedColor,
-                                                          borderRadius:
-                                                              BorderRadius.circular(
-                                                                10,
-                                                              ),
-                                                          border: Border.all(
-                                                            color:
-                                                                Colors.white24,
-                                                          ),
+                                                    Container(
+                                                      height: 42,
+                                                      decoration: BoxDecoration(
+                                                        color: mixedColor,
+                                                        borderRadius:
+                                                            BorderRadius.circular(
+                                                              12,
+                                                            ),
+                                                        border: Border.all(
+                                                          color: Colors.white24,
                                                         ),
                                                       ),
                                                     ),
-                                                    const SizedBox(width: 8),
+                                                    const SizedBox(height: 5),
                                                     Text(
                                                       '#${_colorHex(mixedColor)}',
+                                                      textAlign:
+                                                          TextAlign.center,
                                                       style: const TextStyle(
                                                         fontSize: 10,
                                                         color: Colors.white60,
+                                                      ),
+                                                    ),
+                                                    const SizedBox(height: 8),
+                                                    FilledButton.icon(
+                                                      onPressed: () {
+                                                        setState(() {
+                                                          _brushColor =
+                                                              mixedColor;
+                                                          _rememberRecentColor(
+                                                            mixedColor,
+                                                          );
+                                                        });
+                                                      },
+                                                      icon: const Icon(
+                                                        Icons.check,
+                                                        size: 18,
+                                                      ),
+                                                      label: const Text(
+                                                        'Use Mix',
                                                       ),
                                                     ),
                                                   ],
@@ -4892,51 +3890,6 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                                         child: Column(
                                           mainAxisSize: MainAxisSize.min,
                                           children: [
-                                            Row(
-                                              children: [
-                                                const SizedBox(
-                                                  width: 70,
-                                                  child: Text('Presets'),
-                                                ),
-                                                Expanded(
-                                                  child: Row(
-                                                    mainAxisSize:
-                                                        MainAxisSize.min,
-                                                    children: [
-                                                      IconButton(
-                                                        tooltip:
-                                                            'Open Brush Presets',
-                                                        visualDensity:
-                                                            VisualDensity
-                                                                .compact,
-                                                        onPressed:
-                                                            _openBrushPresets,
-                                                        icon: const Icon(
-                                                          Icons
-                                                              .folder_open_outlined,
-                                                        ),
-                                                      ),
-                                                      const SizedBox(width: 4),
-                                                      IconButton(
-                                                        tooltip:
-                                                            'Save Current Brush',
-                                                        visualDensity:
-                                                            VisualDensity
-                                                                .compact,
-                                                        onPressed:
-                                                            _saveCurrentBrushPreset,
-                                                        icon: const Icon(
-                                                          Icons.save_outlined,
-                                                        ),
-                                                      ),
-                                                    ],
-                                                  ),
-                                                ),
-                                              ],
-                                            ),
-
-                                            const SizedBox(height: 8),
-
                                             Row(
                                               children: [
                                                 const SizedBox(
