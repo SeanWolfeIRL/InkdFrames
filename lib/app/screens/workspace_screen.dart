@@ -1607,6 +1607,27 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     _transformationController.value = Matrix4.identity();
   }
 
+  void _captureReferencePose() {
+    final controller = _videoController;
+
+    if (_referenceMediaType != 'video' ||
+        controller == null ||
+        !controller.value.isInitialized) {
+      return;
+    }
+
+    _addFrame();
+
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          'Pose captured at ${_formatVideoTime(controller.value.position)}',
+        ),
+        duration: const Duration(seconds: 2),
+      ),
+    );
+  }
+
   void _addFrame() {
     final controller = _videoController;
 
@@ -7084,6 +7105,22 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                                                         : _addFrame,
                                                     icon: const Icon(Icons.add),
                                                   ),
+                                                  if (_referenceMediaType ==
+                                                          'video' &&
+                                                      _videoReady)
+                                                    IconButton(
+                                                      tooltip:
+                                                          'Capture Reference Pose',
+                                                      visualDensity:
+                                                          VisualDensity.compact,
+                                                      onPressed: _isPlaying
+                                                          ? null
+                                                          : _captureReferencePose,
+                                                      icon: const Icon(
+                                                        Icons
+                                                            .add_a_photo_outlined,
+                                                      ),
+                                                    ),
                                                   IconButton(
                                                     tooltip: 'Duplicate Frame',
                                                     visualDensity:
