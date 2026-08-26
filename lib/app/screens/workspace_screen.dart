@@ -163,6 +163,8 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
   String? _referenceMediaType;
   VideoPlayerController? _videoController;
   bool _videoReady = false;
+  double _videoScrubPositionMs = 0.0;
+  bool _isVideoScrubbing = false;
   bool _referenceVisible = true;
   double _referenceOpacity = 1.0;
   bool _layersPanelExpanded = false;
@@ -1503,6 +1505,8 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
       setState(() {
         _videoController = newController;
         _videoReady = true;
+        _videoScrubPositionMs = newController.value.position.inMilliseconds
+            .toDouble();
       });
 
       if (widget.initialGenerateVideoTimeline &&
@@ -1526,6 +1530,46 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
         _videoReady = false;
       });
     }
+  }
+
+  String _formatVideoTime(Duration position) {
+    final totalMilliseconds = position.inMilliseconds;
+    final minutes = totalMilliseconds ~/ 60000;
+    final seconds = (totalMilliseconds ~/ 1000) % 60;
+    final milliseconds = totalMilliseconds % 1000;
+
+    return '${minutes.toString().padLeft(2, '0')}:'
+        '${seconds.toString().padLeft(2, '0')}.'
+        '${milliseconds.toString().padLeft(3, '0')}';
+  }
+
+  Future<void> _seekReferenceVideoToMs(double milliseconds) async {
+    final controller = _videoController;
+
+    if (controller == null || !controller.value.isInitialized) {
+      return;
+    }
+
+    final durationMs = controller.value.duration.inMilliseconds;
+
+    if (durationMs <= 0) {
+      return;
+    }
+
+    final safeMs = milliseconds.clamp(
+      0.0,
+      math.max(0, durationMs - 1).toDouble(),
+    );
+
+    await controller.seekTo(Duration(milliseconds: safeMs.round()));
+
+    if (!mounted) {
+      return;
+    }
+
+    setState(() {
+      _videoScrubPositionMs = safeMs;
+    });
   }
 
   void _generateReferenceTimeline(Duration duration) {
@@ -6349,6 +6393,176 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                                                       ],
                                                     ),
                                                   ),
+                                                  if (_referenceMediaType ==
+                                                          'video' &&
+                                                      _videoReady &&
+                                                      _videoController != null)
+                                                    ValueListenableBuilder<
+                                                      VideoPlayerValue
+                                                    >(
+                                                      valueListenable:
+                                                          _videoController!,
+                                                      builder:
+                                                          (
+                                                            context,
+                                                            videoValue,
+                                                            child,
+                                                          ) {
+                                                            final durationMs =
+                                                                videoValue
+                                                                    .duration
+                                                                    .inMilliseconds;
+
+                                                            final maxMs = math
+                                                                .max(
+                                                                  1,
+                                                                  durationMs,
+                                                                )
+                                                                .toDouble();
+
+                                                            final livePositionMs =
+                                                                _isVideoScrubbing
+                                                                ? _videoScrubPositionMs
+                                                                : videoValue
+                                                                      .position
+                                                                      .inMilliseconds
+                                                                      .toDouble();
+
+                                                            final sliderValue =
+                                                                livePositionMs
+                                                                    .clamp(
+                                                                      0.0,
+                                                                      maxMs,
+                                                                    );
+
+                                                            return Padding(
+                                                              padding:
+                                                                  const EdgeInsets.fromLTRB(
+                                                                    12,
+                                                                    0,
+                                                                    10,
+                                                                    8,
+                                                                  ),
+                                                              child: Column(
+                                                                mainAxisSize:
+                                                                    MainAxisSize
+                                                                        .min,
+                                                                children: [
+                                                                  Row(
+                                                                    children: [
+                                                                      const SizedBox(
+                                                                        width:
+                                                                            50,
+                                                                        child: Text(
+                                                                          'Video',
+                                                                          style: TextStyle(
+                                                                            fontSize:
+                                                                                11,
+                                                                          ),
+                                                                        ),
+                                                                      ),
+                                                                      Expanded(
+                                                                        child: Slider(
+                                                                          value:
+                                                                              sliderValue,
+                                                                          min:
+                                                                              0,
+                                                                          max:
+                                                                              maxMs,
+                                                                          onChangeStart:
+                                                                              (
+                                                                                value,
+                                                                              ) async {
+                                                                                final controller = _videoController;
+
+                                                                                if (controller !=
+                                                                                        null &&
+                                                                                    controller.value.isPlaying) {
+                                                                                  await controller.pause();
+                                                                                }
+
+                                                                                if (!mounted) {
+                                                                                  return;
+                                                                                }
+
+                                                                                setState(() {
+                                                                                  _isVideoScrubbing = true;
+                                                                                  _videoScrubPositionMs = value;
+                                                                                });
+                                                                              },
+                                                                          onChanged:
+                                                                              (
+                                                                                value,
+                                                                              ) {
+                                                                                setState(() {
+                                                                                  _videoScrubPositionMs = value;
+                                                                                });
+
+                                                                                unawaited(
+                                                                                  _seekReferenceVideoToMs(
+                                                                                    value,
+                                                                                  ),
+                                                                                );
+                                                                              },
+                                                                          onChangeEnd:
+                                                                              (
+                                                                                value,
+                                                                              ) {
+                                                                                setState(() {
+                                                                                  _isVideoScrubbing = false;
+                                                                                  _videoScrubPositionMs = value;
+                                                                                });
+
+                                                                                unawaited(
+                                                                                  _seekReferenceVideoToMs(
+                                                                                    value,
+                                                                                  ),
+                                                                                );
+                                                                              },
+                                                                        ),
+                                                                      ),
+                                                                    ],
+                                                                  ),
+                                                                  Row(
+                                                                    children: [
+                                                                      const SizedBox(
+                                                                        width:
+                                                                            50,
+                                                                      ),
+                                                                      Text(
+                                                                        _formatVideoTime(
+                                                                          Duration(
+                                                                            milliseconds:
+                                                                                sliderValue.round(),
+                                                                          ),
+                                                                        ),
+                                                                        style: const TextStyle(
+                                                                          fontSize:
+                                                                              9,
+                                                                          color:
+                                                                              Colors.white60,
+                                                                        ),
+                                                                      ),
+                                                                      const Spacer(),
+                                                                      Text(
+                                                                        _formatVideoTime(
+                                                                          videoValue
+                                                                              .duration,
+                                                                        ),
+                                                                        style: const TextStyle(
+                                                                          fontSize:
+                                                                              9,
+                                                                          color:
+                                                                              Colors.white60,
+                                                                        ),
+                                                                      ),
+                                                                    ],
+                                                                  ),
+                                                                ],
+                                                              ),
+                                                            );
+                                                          },
+                                                    ),
                                                 ],
                                               ),
                                             ),
