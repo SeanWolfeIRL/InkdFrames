@@ -87,6 +87,61 @@ class AnimationExportService {
     }
   }
 
+  Future<String> exportPngAsset({
+    required String assetName,
+    required List<VectorStroke> strokes,
+    required double canvasWidth,
+    required double canvasHeight,
+  }) async {
+    if (strokes.isEmpty) {
+      throw StateError('Cannot export an empty asset.');
+    }
+
+    final width = canvasWidth.round();
+    final height = canvasHeight.round();
+
+    final recorder = ui.PictureRecorder();
+    final canvas = ui.Canvas(recorder);
+
+    // Intentionally no background fill.
+    // PNG assets export with transparency.
+
+    for (final stroke in strokes) {
+      _paintStroke(canvas, stroke);
+    }
+
+    final picture = recorder.endRecording();
+    final image = await picture.toImage(width, height);
+
+    try {
+      final byteData = await image.toByteData(format: ui.ImageByteFormat.png);
+
+      if (byteData == null) {
+        throw StateError('Could not encode asset as PNG.');
+      }
+
+      final home = Platform.environment['HOME'] ?? Directory.current.path;
+
+      final exportDirectory = Directory('$home/InkdFrames_exports/assets');
+
+      await exportDirectory.create(recursive: true);
+
+      final safeName = _safeFileName(assetName);
+      final timestamp = DateTime.now().millisecondsSinceEpoch;
+
+      final outputPath = '${exportDirectory.path}/${safeName}_$timestamp.png';
+
+      await File(
+        outputPath,
+      ).writeAsBytes(byteData.buffer.asUint8List(), flush: true);
+
+      return outputPath;
+    } finally {
+      image.dispose();
+      picture.dispose();
+    }
+  }
+
   Future<List<int>> _renderFrame({
     required List<VectorStroke> strokes,
     required int width,
@@ -182,10 +237,6 @@ class AnimationExportService {
         p2.dx,
         p2.dy,
       );
-    }
-
-    if (stroke.filled) {
-      path.close();
     }
 
     if (stroke.filled) {

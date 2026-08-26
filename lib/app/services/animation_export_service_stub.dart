@@ -13,4 +13,15 @@ class AnimationExportService {
   }) {
     throw UnsupportedError('MP4 export is not available in the web preview.');
   }
+
+  Future<String> exportPngAsset({
+    required String assetName,
+    required List<VectorStroke> strokes,
+    required double canvasWidth,
+    required double canvasHeight,
+  }) {
+    throw UnsupportedError(
+      'PNG asset export is not available in the web preview.',
+    );
+  }
 }

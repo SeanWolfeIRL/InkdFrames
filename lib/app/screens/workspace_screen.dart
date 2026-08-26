@@ -871,6 +871,81 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     );
   }
 
+  Future<void> _exportLayerGroupPng(String groupId) async {
+    final groupIndex = _layerGroups.indexWhere((group) => group.id == groupId);
+
+    if (groupIndex == -1) {
+      return;
+    }
+
+    final group = _layerGroups[groupIndex];
+    final exportStrokes = <VectorStroke>[];
+
+    for (final layerId in group.childLayerIds) {
+      final layerIndex = _layers.indexWhere((layer) => layer.id == layerId);
+
+      if (layerIndex == -1) {
+        continue;
+      }
+
+      final layer = _layers[layerIndex];
+
+      if (!layer.visible ||
+          _selectedFrameIndex < 0 ||
+          _selectedFrameIndex >= layer.frames.length) {
+        continue;
+      }
+
+      for (final stroke in layer.frames[_selectedFrameIndex]) {
+        exportStrokes.add(_strokeWithOpacity(stroke, layer.opacity));
+      }
+    }
+
+    if (exportStrokes.isEmpty) {
+      if (!mounted) return;
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('This group has no visible artwork to export.'),
+        ),
+      );
+
+      return;
+    }
+
+    try {
+      final outputPath = await const AnimationExportService().exportPngAsset(
+        assetName: group.name,
+        strokes: exportStrokes,
+        canvasWidth: _canvasWidth,
+        canvasHeight: _canvasHeight,
+      );
+
+      if (!mounted) {
+        return;
+      }
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('${group.name} exported as PNG\n$outputPath'),
+          duration: const Duration(seconds: 6),
+        ),
+      );
+    } on UnsupportedError catch (error) {
+      if (!mounted) return;
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(error.message ?? error.toString())),
+      );
+    } catch (error) {
+      if (!mounted) return;
+
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('PNG export failed: $error')));
+    }
+  }
+
   Future<void> _addLayerGroupToBag(String groupId) async {
     final groupIndex = _layerGroups.indexWhere((group) => group.id == groupId);
 
@@ -3867,6 +3942,8 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                   onSelected: (value) {
                     if (value == 'bag') {
                       _addLayerGroupToBag(group.id);
+                    } else if (value == 'png') {
+                      _exportLayerGroupPng(group.id);
                     } else if (value == 'rename') {
                       _renameLayerGroup(group.id);
                     } else if (value == 'delete') {
@@ -3879,6 +3956,13 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                       child: ListTile(
                         leading: Icon(Icons.backpack_outlined),
                         title: Text('Add to Bag'),
+                      ),
+                    ),
+                    PopupMenuItem(
+                      value: 'png',
+                      child: ListTile(
+                        leading: Icon(Icons.image_outlined),
+                        title: Text('Export PNG'),
                       ),
                     ),
                     PopupMenuDivider(),
