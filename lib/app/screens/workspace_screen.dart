@@ -1607,6 +1607,51 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     _transformationController.value = Matrix4.identity();
   }
 
+  void _findNextReferencePose() {
+    final controller = _videoController;
+
+    if (_referenceMediaType != 'video' ||
+        controller == null ||
+        !controller.value.isInitialized) {
+      return;
+    }
+
+    setState(() {
+      // Return from drawing to pose hunting.
+      _drawingMode = false;
+      _drawingExpanded = false;
+
+      // Reopen the reference controls.
+      _layersPanelExpanded = true;
+      _referenceVisible = true;
+
+      // Keep the current animation frame and video position intact.
+      _isVideoScrubbing = false;
+      _videoScrubPositionMs = controller.value.position.inMilliseconds
+          .toDouble();
+
+      _blendExpanded = false;
+      _blendSamplingArmed = false;
+      _textureExpanded = false;
+      _textureActive = false;
+      _stampBrushPanelExpanded = false;
+
+      _isEraserActive = false;
+      _isFillToolActive = false;
+      _isShapeToolActive = false;
+      _isTransformActive = false;
+      _transformToolbarExpanded = false;
+
+      _draftStroke = const <VectorPoint>[];
+      _draftTextureStrokes = <VectorStroke>[];
+      _draftStampStrokes = <VectorStroke>[];
+
+      _clearFillLasso();
+      _clearShapeDraft();
+      _clearTransformSelection();
+    });
+  }
+
   void _captureReferencePose() {
     final controller = _videoController;
 
@@ -1617,6 +1662,30 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     }
 
     _addFrame();
+
+    setState(() {
+      // Leave pose-hunting mode and clear the canvas for drawing.
+      _isVideoScrubbing = false;
+      _layersPanelExpanded = false;
+
+      // Open the drawing tools ready for the captured frame.
+      _drawingMode = true;
+      _drawingExpanded = true;
+
+      _timingExpanded = false;
+      _timelineExpanded = false;
+      _transformToolbarExpanded = false;
+
+      _isEraserActive = false;
+      _isFillToolActive = false;
+      _isShapeToolActive = false;
+      _isTransformActive = false;
+
+      _draftStroke = const <VectorPoint>[];
+      _clearFillLasso();
+      _clearShapeDraft();
+      _clearTransformSelection();
+    });
 
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
@@ -4977,6 +5046,18 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                                       ),
                                     ),
 
+                                    if (_drawingMode &&
+                                        _referenceMediaType == 'video' &&
+                                        _videoReady) ...[
+                                      const SizedBox(height: 2),
+                                      IconButton(
+                                        tooltip: 'Find Next Pose',
+                                        visualDensity: VisualDensity.compact,
+                                        onPressed: _findNextReferencePose,
+                                        icon: const Icon(Icons.search),
+                                      ),
+                                    ],
+
                                     if (_drawingMode) ...[
                                       const SizedBox(height: 2),
                                       IconButton(
@@ -6636,6 +6717,22 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                                                                       ),
                                                                       IconButton(
                                                                         tooltip:
+                                                                            'Capture Pose & Draw',
+                                                                        visualDensity:
+                                                                            VisualDensity.compact,
+                                                                        onPressed:
+                                                                            _isPlaying
+                                                                            ? null
+                                                                            : _captureReferencePose,
+                                                                        icon: const Icon(
+                                                                          Icons
+                                                                              .add_a_photo_outlined,
+                                                                          size:
+                                                                              18,
+                                                                        ),
+                                                                      ),
+                                                                      IconButton(
+                                                                        tooltip:
                                                                             'Next Video Frame',
                                                                         visualDensity:
                                                                             VisualDensity.compact,
@@ -7067,6 +7164,27 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                                                           : 'Show Timing',
                                                       visualDensity:
                                                           VisualDensity.compact,
+                                                      constraints: BoxConstraints(
+                                                        minWidth:
+                                                            constraints
+                                                                    .maxWidth <
+                                                                500
+                                                            ? 32
+                                                            : 40,
+                                                        minHeight:
+                                                            constraints
+                                                                    .maxWidth <
+                                                                500
+                                                            ? 32
+                                                            : 40,
+                                                      ),
+                                                      padding:
+                                                          constraints.maxWidth <
+                                                              500
+                                                          ? EdgeInsets.zero
+                                                          : const EdgeInsets.all(
+                                                              8,
+                                                            ),
                                                       onPressed: () {
                                                         setState(() {
                                                           _timingExpanded =
@@ -7086,6 +7204,25 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                                                     tooltip: 'Onion Skin',
                                                     visualDensity:
                                                         VisualDensity.compact,
+                                                    constraints: BoxConstraints(
+                                                      minWidth:
+                                                          constraints.maxWidth <
+                                                              500
+                                                          ? 32
+                                                          : 40,
+                                                      minHeight:
+                                                          constraints.maxWidth <
+                                                              500
+                                                          ? 32
+                                                          : 40,
+                                                    ),
+                                                    padding:
+                                                        constraints.maxWidth <
+                                                            500
+                                                        ? EdgeInsets.zero
+                                                        : const EdgeInsets.all(
+                                                            8,
+                                                          ),
                                                     onPressed: _toggleOnionSkin,
                                                     icon: Icon(
                                                       Icons.layers,
@@ -7095,11 +7232,32 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                                                           : Colors.white70,
                                                     ),
                                                   ),
-                                                  const SizedBox(width: 4),
+                                                  if (constraints.maxWidth >=
+                                                      500)
+                                                    const SizedBox(width: 4),
                                                   IconButton(
                                                     tooltip: 'Add Frame',
                                                     visualDensity:
                                                         VisualDensity.compact,
+                                                    constraints: BoxConstraints(
+                                                      minWidth:
+                                                          constraints.maxWidth <
+                                                              500
+                                                          ? 32
+                                                          : 40,
+                                                      minHeight:
+                                                          constraints.maxWidth <
+                                                              500
+                                                          ? 32
+                                                          : 40,
+                                                    ),
+                                                    padding:
+                                                        constraints.maxWidth <
+                                                            500
+                                                        ? EdgeInsets.zero
+                                                        : const EdgeInsets.all(
+                                                            8,
+                                                          ),
                                                     onPressed: _isPlaying
                                                         ? null
                                                         : _addFrame,
@@ -7113,6 +7271,27 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                                                           'Capture Reference Pose',
                                                       visualDensity:
                                                           VisualDensity.compact,
+                                                      constraints: BoxConstraints(
+                                                        minWidth:
+                                                            constraints
+                                                                    .maxWidth <
+                                                                500
+                                                            ? 32
+                                                            : 40,
+                                                        minHeight:
+                                                            constraints
+                                                                    .maxWidth <
+                                                                500
+                                                            ? 32
+                                                            : 40,
+                                                      ),
+                                                      padding:
+                                                          constraints.maxWidth <
+                                                              500
+                                                          ? EdgeInsets.zero
+                                                          : const EdgeInsets.all(
+                                                              8,
+                                                            ),
                                                       onPressed: _isPlaying
                                                           ? null
                                                           : _captureReferencePose,
@@ -7125,6 +7304,25 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                                                     tooltip: 'Duplicate Frame',
                                                     visualDensity:
                                                         VisualDensity.compact,
+                                                    constraints: BoxConstraints(
+                                                      minWidth:
+                                                          constraints.maxWidth <
+                                                              500
+                                                          ? 32
+                                                          : 40,
+                                                      minHeight:
+                                                          constraints.maxWidth <
+                                                              500
+                                                          ? 32
+                                                          : 40,
+                                                    ),
+                                                    padding:
+                                                        constraints.maxWidth <
+                                                            500
+                                                        ? EdgeInsets.zero
+                                                        : const EdgeInsets.all(
+                                                            8,
+                                                          ),
                                                     onPressed: _isPlaying
                                                         ? null
                                                         : _duplicateFrame,
@@ -7136,6 +7334,25 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                                                     tooltip: 'Delete Frame',
                                                     visualDensity:
                                                         VisualDensity.compact,
+                                                    constraints: BoxConstraints(
+                                                      minWidth:
+                                                          constraints.maxWidth <
+                                                              500
+                                                          ? 32
+                                                          : 40,
+                                                      minHeight:
+                                                          constraints.maxWidth <
+                                                              500
+                                                          ? 32
+                                                          : 40,
+                                                    ),
+                                                    padding:
+                                                        constraints.maxWidth <
+                                                            500
+                                                        ? EdgeInsets.zero
+                                                        : const EdgeInsets.all(
+                                                            8,
+                                                          ),
                                                     onPressed: _isPlaying
                                                         ? null
                                                         : _deleteFrame,
@@ -7147,6 +7364,25 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                                                     tooltip: 'Clear Frame',
                                                     visualDensity:
                                                         VisualDensity.compact,
+                                                    constraints: BoxConstraints(
+                                                      minWidth:
+                                                          constraints.maxWidth <
+                                                              500
+                                                          ? 32
+                                                          : 40,
+                                                      minHeight:
+                                                          constraints.maxWidth <
+                                                              500
+                                                          ? 32
+                                                          : 40,
+                                                    ),
+                                                    padding:
+                                                        constraints.maxWidth <
+                                                            500
+                                                        ? EdgeInsets.zero
+                                                        : const EdgeInsets.all(
+                                                            8,
+                                                          ),
                                                     onPressed: _isPlaying
                                                         ? null
                                                         : _clearCurrentFrame,
