@@ -116,6 +116,17 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
   List<VectorStroke> _draftTextureStrokes = <VectorStroke>[];
   final math.Random _textureRandom = math.Random();
 
+  bool _stampBrushActive = false;
+  BagItem? _stampBrushItem;
+  double _stampBrushScale = 1.0;
+  double _stampBrushSpacing = 120.0;
+  double _stampBrushRotation = 0.0;
+  double _stampBrushRandomRotation = 0.0;
+  double _stampBrushScatter = 0.0;
+  Offset? _stampBrushLastPosition;
+  List<VectorStroke> _draftStampStrokes = <VectorStroke>[];
+  final math.Random _stampBrushRandom = math.Random();
+
   Color _blendBaseColor = Colors.white;
   Color _blendSampleColor = Colors.black;
   double _blendAmount = 0.5;
@@ -715,6 +726,10 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
       _isEraserActive = false;
       _isFillToolActive = false;
       _isShapeToolActive = false;
+
+      _stampBrushActive = false;
+      _stampBrushItem = null;
+
       _isTransformActive = true;
       _transformToolbarExpanded = true;
 
@@ -2367,6 +2382,8 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
       _isShapeToolActive = false;
 
       _draftStroke = const <VectorPoint>[];
+      _draftStampStrokes = <VectorStroke>[];
+      _stampBrushLastPosition = null;
       _clearFillLasso();
       _clearShapeDraft();
 
@@ -2812,6 +2829,340 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     }
   }
 
+  List<VectorStroke> _bagStampSourceStrokes(BagItem item) {
+    final strokes = <VectorStroke>[];
+
+    for (final layer in item.layers) {
+      if (!layer.visible) {
+        continue;
+      }
+
+      for (final stroke in layer.strokes) {
+        strokes.add(_strokeWithOpacity(stroke, layer.opacity));
+      }
+    }
+
+    return strokes;
+  }
+
+  Rect? _bagStampBounds(List<VectorStroke> strokes) {
+    var minX = double.infinity;
+    var minY = double.infinity;
+    var maxX = double.negativeInfinity;
+    var maxY = double.negativeInfinity;
+    var foundPoint = false;
+
+    for (final stroke in strokes) {
+      for (final point in stroke.points) {
+        foundPoint = true;
+
+        minX = math.min(minX, point.dx);
+        minY = math.min(minY, point.dy);
+        maxX = math.max(maxX, point.dx);
+        maxY = math.max(maxY, point.dy);
+      }
+    }
+
+    if (!foundPoint) {
+      return null;
+    }
+
+    return Rect.fromLTRB(minX, minY, maxX, maxY);
+  }
+
+  List<VectorStroke> _buildBagStamp(BagItem item, Offset position) {
+    final sourceStrokes = _bagStampSourceStrokes(item);
+    final bounds = _bagStampBounds(sourceStrokes);
+
+    if (bounds == null) {
+      return const <VectorStroke>[];
+    }
+
+    final sourceCenter = bounds.center;
+
+    // Each copy gets one coherent random rotation.
+    final randomRotation =
+        ((_stampBrushRandom.nextDouble() * 2.0) - 1.0) *
+        _stampBrushRandomRotation;
+
+    final rotationDegrees = _stampBrushRotation + randomRotation;
+    final rotationRadians = rotationDegrees * math.pi / 180.0;
+
+    final cosRotation = math.cos(rotationRadians);
+    final sinRotation = math.sin(rotationRadians);
+
+    // Scatter moves the entire asset away from the exact pointer path.
+    var stampCenter = position;
+
+    if (_stampBrushScatter > 0) {
+      final scatterAngle = _stampBrushRandom.nextDouble() * math.pi * 2.0;
+
+      final scatterRadius =
+          math.sqrt(_stampBrushRandom.nextDouble()) * _stampBrushScatter;
+
+      stampCenter += Offset(
+        math.cos(scatterAngle) * scatterRadius,
+        math.sin(scatterAngle) * scatterRadius,
+      );
+    }
+
+    return sourceStrokes.map((stroke) {
+      return VectorStroke(
+        points: stroke.points.map((point) {
+          final sourceOffset = Offset(
+            point.dx - sourceCenter.dx,
+            point.dy - sourceCenter.dy,
+          );
+
+          final scaledX = sourceOffset.dx * _stampBrushScale;
+          final scaledY = sourceOffset.dy * _stampBrushScale;
+
+          final rotatedOffset = Offset(
+            (scaledX * cosRotation) - (scaledY * sinRotation),
+            (scaledX * sinRotation) + (scaledY * cosRotation),
+          );
+
+          final transformed = stampCenter + rotatedOffset;
+
+          return VectorPoint(
+            dx: transformed.dx,
+            dy: transformed.dy,
+            pressure: point.pressure,
+          );
+        }).toList(),
+        strokeWidth: stroke.strokeWidth * _stampBrushScale,
+        color: stroke.color,
+        filled: stroke.filled,
+        brushType: stroke.brushType,
+      );
+    }).toList();
+  }
+
+  void _addBagStampToDraft(Offset position) {
+    final item = _stampBrushItem;
+
+    if (!_stampBrushActive || item == null) {
+      return;
+    }
+
+    final stampedStrokes = _buildBagStamp(item, position);
+
+    if (stampedStrokes.isEmpty) {
+      return;
+    }
+
+    _draftStampStrokes.addAll(stampedStrokes);
+  }
+
+  void _addBagStampsAlongPath(Offset position) {
+    final lastPosition = _stampBrushLastPosition;
+
+    if (lastPosition == null) {
+      _stampBrushLastPosition = position;
+      _addBagStampToDraft(position);
+      return;
+    }
+
+    final delta = position - lastPosition;
+    final distance = delta.distance;
+
+    if (distance < _stampBrushSpacing) {
+      return;
+    }
+
+    final direction = delta / distance;
+    final stampCount = (distance / _stampBrushSpacing).floor();
+
+    for (var index = 1; index <= stampCount; index++) {
+      final stampPosition =
+          lastPosition + direction * (_stampBrushSpacing * index);
+
+      _addBagStampToDraft(stampPosition);
+    }
+
+    _stampBrushLastPosition =
+        lastPosition + direction * (_stampBrushSpacing * stampCount);
+  }
+
+  void _commitStampBrushStroke() {
+    if (_draftStampStrokes.isEmpty) {
+      _stampBrushLastPosition = null;
+      return;
+    }
+
+    _saveUndoState();
+
+    setState(() {
+      final layer = _activeLayer;
+      final frames = _copyLayerFrames(layer.frames);
+
+      frames[_selectedFrameIndex] = <VectorStroke>[
+        ...frames[_selectedFrameIndex],
+        ..._draftStampStrokes,
+      ];
+
+      _layers[_activeLayerIndex] = layer.copyWith(frames: frames);
+
+      _draftStampStrokes = <VectorStroke>[];
+      _stampBrushLastPosition = null;
+
+      _rebuildCompositeFrames();
+    });
+
+    _scheduleAutosave();
+  }
+
+  void _activateStampBrush(BagItem item) {
+    final sourceStrokes = _bagStampSourceStrokes(item);
+
+    if (sourceStrokes.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('This Bag item has no visible strokes to stamp.'),
+        ),
+      );
+
+      return;
+    }
+
+    setState(() {
+      _drawingMode = true;
+
+      _stampBrushItem = item;
+      _stampBrushActive = true;
+
+      _textureActive = false;
+      _textureExpanded = false;
+      _draftTextureStrokes = <VectorStroke>[];
+
+      _blendSamplingArmed = false;
+
+      _isEraserActive = false;
+      _isFillToolActive = false;
+      _isShapeToolActive = false;
+      _isTransformActive = false;
+      _transformToolbarExpanded = false;
+
+      _activeLayerGroupId = null;
+
+      _draftStroke = const <VectorPoint>[];
+
+      _clearFillLasso();
+      _clearShapeDraft();
+      _clearTransformSelection();
+    });
+
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text('${item.name} loaded as Stamp Brush 🖌️')),
+    );
+  }
+
+  Future<void> _openStampBrushPicker() async {
+    final items = await BagService().loadItems();
+
+    if (!mounted) {
+      return;
+    }
+
+    await showDialog<void>(
+      context: context,
+      builder: (dialogContext) {
+        return AlertDialog(
+          title: const Row(
+            children: [
+              Icon(Icons.content_copy),
+              SizedBox(width: 10),
+              Text('Stamp Brush'),
+            ],
+          ),
+          content: SizedBox(
+            width: 420,
+            height: 420,
+            child: items.isEmpty
+                ? const Center(
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(
+                          Icons.backpack_outlined,
+                          size: 48,
+                          color: Colors.white38,
+                        ),
+                        SizedBox(height: 12),
+                        Text('Your Bag is empty.'),
+                        SizedBox(height: 6),
+                        Text(
+                          'Save some artwork to the Bag first.',
+                          style: TextStyle(fontSize: 12, color: Colors.white54),
+                        ),
+                      ],
+                    ),
+                  )
+                : ListView.separated(
+                    itemCount: items.length,
+                    separatorBuilder: (_, _) => const Divider(height: 1),
+                    itemBuilder: (context, index) {
+                      final item = items[index];
+
+                      final strokeCount = item.layers.fold<int>(
+                        0,
+                        (total, layer) => total + layer.strokes.length,
+                      );
+
+                      final selected =
+                          _stampBrushActive && _stampBrushItem?.id == item.id;
+
+                      return ListTile(
+                        selected: selected,
+                        leading: Icon(
+                          Icons.content_copy,
+                          color: selected
+                              ? Colors.deepPurpleAccent
+                              : Colors.white70,
+                        ),
+                        title: Text(item.name),
+                        subtitle: Text(
+                          '${item.layers.length} layers · '
+                          '$strokeCount strokes',
+                        ),
+                        trailing: selected
+                            ? const Icon(
+                                Icons.check_circle,
+                                color: Colors.deepPurpleAccent,
+                              )
+                            : const Icon(Icons.touch_app_outlined),
+                        onTap: () {
+                          Navigator.pop(dialogContext);
+                          _activateStampBrush(item);
+                        },
+                      );
+                    },
+                  ),
+          ),
+          actions: [
+            if (_stampBrushActive)
+              TextButton.icon(
+                onPressed: () {
+                  Navigator.pop(dialogContext);
+
+                  setState(() {
+                    _stampBrushActive = false;
+                    _stampBrushItem = null;
+                  });
+                },
+                icon: const Icon(Icons.edit_outlined),
+                label: const Text('Return to Pen'),
+              ),
+            TextButton(
+              onPressed: () => Navigator.pop(dialogContext),
+              child: const Text('Close'),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
   void _addTextureStamp(Offset position, double pressure) {
     final count = (1 + (_textureDensity * 7)).round().clamp(1, 8);
 
@@ -2934,6 +3285,8 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     if (_activePointerCount > 1) {
       setState(() {
         _draftStroke = const <VectorPoint>[];
+        _draftStampStrokes = <VectorStroke>[];
+        _stampBrushLastPosition = null;
       });
       return;
     }
@@ -2948,6 +3301,16 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
       _blendBaseColor = _brushColor;
 
       unawaited(_sampleBlendColour(canvasPosition));
+
+      return;
+    }
+
+    if (_drawingMode && _stampBrushActive && _stampBrushItem != null) {
+      setState(() {
+        _draftStampStrokes = <VectorStroke>[];
+        _stampBrushLastPosition = canvasPosition;
+        _addBagStampToDraft(canvasPosition);
+      });
 
       return;
     }
@@ -3102,6 +3465,14 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
 
     final renderBox = canvasContext.findRenderObject() as RenderBox;
     final canvasPosition = renderBox.globalToLocal(event.position);
+
+    if (_drawingMode && _stampBrushActive && _stampBrushItem != null) {
+      setState(() {
+        _addBagStampsAlongPath(canvasPosition);
+      });
+
+      return;
+    }
 
     if (_drawingMode && _textureActive) {
       setState(() {
@@ -3416,6 +3787,11 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
   void _handlePointerUp(PointerUpEvent event) {
     if (_activePointerCount > 0) {
       _activePointerCount -= 1;
+    }
+
+    if (_drawingMode && _stampBrushActive && _draftStampStrokes.isNotEmpty) {
+      _commitStampBrushStroke();
+      return;
     }
 
     if (_drawingMode && _textureActive && _draftTextureStrokes.isNotEmpty) {
@@ -4340,6 +4716,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                                               strokes: <VectorStroke>[
                                                 ..._frames[_selectedFrameIndex],
                                                 ..._draftTextureStrokes,
+                                                ..._draftStampStrokes,
                                               ],
                                               currentStroke:
                                                   _draftStroke.isEmpty
@@ -4541,6 +4918,8 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                                           _textureActive = _textureExpanded;
 
                                           if (_textureExpanded) {
+                                            _stampBrushActive = false;
+                                            _stampBrushItem = null;
                                             _blendSamplingArmed = false;
                                           } else {
                                             _draftTextureStrokes =
@@ -4566,18 +4945,254 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                                         color: Colors.white70,
                                       ),
                                     ),
+
+                                    const SizedBox(height: 2),
+
+                                    IconButton(
+                                      tooltip: _stampBrushActive
+                                          ? 'Stamp Brush: ${_stampBrushItem?.name ?? ''}'
+                                          : 'Stamp Brush',
+                                      visualDensity: VisualDensity.compact,
+                                      onPressed: _openStampBrushPicker,
+                                      icon: Icon(
+                                        Icons.content_copy,
+                                        color: _stampBrushActive
+                                            ? Colors.deepPurpleAccent
+                                            : Colors.white70,
+                                      ),
+                                    ),
                                   ],
                                 ],
                               ),
                             ),
                           ),
                           if (_drawingExpanded ||
-                              (_drawingMode && _blendExpanded)) ...[
+                              (_drawingMode && _blendExpanded) ||
+                              (_drawingMode && _stampBrushActive)) ...[
                             const SizedBox(width: 8),
                             Column(
                               mainAxisSize: MainAxisSize.min,
                               crossAxisAlignment: CrossAxisAlignment.start,
                               children: [
+                                if (_drawingMode && _stampBrushActive)
+                                  Material(
+                                    elevation: 8,
+                                    color: const Color(0xE61A1720),
+                                    borderRadius: BorderRadius.circular(16),
+                                    clipBehavior: Clip.antiAlias,
+                                    child: SizedBox(
+                                      width: constraints.maxWidth < 420
+                                          ? constraints.maxWidth - 96
+                                          : 300,
+                                      child: Padding(
+                                        padding: const EdgeInsets.fromLTRB(
+                                          14,
+                                          12,
+                                          14,
+                                          12,
+                                        ),
+                                        child: Column(
+                                          mainAxisSize: MainAxisSize.min,
+                                          children: [
+                                            Row(
+                                              children: [
+                                                const Expanded(
+                                                  child: Text(
+                                                    'Stamp',
+                                                    style: TextStyle(
+                                                      fontWeight:
+                                                          FontWeight.w600,
+                                                    ),
+                                                  ),
+                                                ),
+                                                Flexible(
+                                                  child: Text(
+                                                    _stampBrushItem?.name ??
+                                                        'Bag Asset',
+                                                    overflow:
+                                                        TextOverflow.ellipsis,
+                                                    style: const TextStyle(
+                                                      fontSize: 11,
+                                                      color: Colors.white60,
+                                                    ),
+                                                  ),
+                                                ),
+                                              ],
+                                            ),
+                                            const SizedBox(height: 10),
+                                            Row(
+                                              children: [
+                                                const SizedBox(
+                                                  width: 70,
+                                                  child: Text('Scale'),
+                                                ),
+                                                Expanded(
+                                                  child: Slider(
+                                                    value: _stampBrushScale,
+                                                    min: 0.1,
+                                                    max: 3.0,
+                                                    divisions: 29,
+                                                    label:
+                                                        '${(_stampBrushScale * 100).round()}%',
+                                                    onChanged: (value) {
+                                                      setState(() {
+                                                        _stampBrushScale =
+                                                            value;
+                                                      });
+                                                    },
+                                                  ),
+                                                ),
+                                                SizedBox(
+                                                  width: 46,
+                                                  child: Text(
+                                                    '${(_stampBrushScale * 100).round()}%',
+                                                    textAlign: TextAlign.right,
+                                                  ),
+                                                ),
+                                              ],
+                                            ),
+                                            Row(
+                                              children: [
+                                                const SizedBox(
+                                                  width: 70,
+                                                  child: Text('Spacing'),
+                                                ),
+                                                Expanded(
+                                                  child: Slider(
+                                                    value: _stampBrushSpacing,
+                                                    min: 20,
+                                                    max: 400,
+                                                    divisions: 38,
+                                                    label: _stampBrushSpacing
+                                                        .round()
+                                                        .toString(),
+                                                    onChanged: (value) {
+                                                      setState(() {
+                                                        _stampBrushSpacing =
+                                                            value;
+                                                      });
+                                                    },
+                                                  ),
+                                                ),
+                                                SizedBox(
+                                                  width: 46,
+                                                  child: Text(
+                                                    _stampBrushSpacing
+                                                        .round()
+                                                        .toString(),
+                                                    textAlign: TextAlign.right,
+                                                  ),
+                                                ),
+                                              ],
+                                            ),
+                                            Row(
+                                              children: [
+                                                const SizedBox(
+                                                  width: 70,
+                                                  child: Text('Rotation'),
+                                                ),
+                                                Expanded(
+                                                  child: Slider(
+                                                    value: _stampBrushRotation,
+                                                    min: -180,
+                                                    max: 180,
+                                                    divisions: 72,
+                                                    label:
+                                                        '${_stampBrushRotation.round()}°',
+                                                    onChanged: (value) {
+                                                      setState(() {
+                                                        _stampBrushRotation =
+                                                            value;
+                                                      });
+                                                    },
+                                                  ),
+                                                ),
+                                                SizedBox(
+                                                  width: 46,
+                                                  child: Text(
+                                                    '${_stampBrushRotation.round()}°',
+                                                    textAlign: TextAlign.right,
+                                                  ),
+                                                ),
+                                              ],
+                                            ),
+                                            Row(
+                                              children: [
+                                                const SizedBox(
+                                                  width: 70,
+                                                  child: Text('Random'),
+                                                ),
+                                                Expanded(
+                                                  child: Slider(
+                                                    value:
+                                                        _stampBrushRandomRotation,
+                                                    min: 0,
+                                                    max: 180,
+                                                    divisions: 36,
+                                                    label:
+                                                        '±${_stampBrushRandomRotation.round()}°',
+                                                    onChanged: (value) {
+                                                      setState(() {
+                                                        _stampBrushRandomRotation =
+                                                            value;
+                                                      });
+                                                    },
+                                                  ),
+                                                ),
+                                                SizedBox(
+                                                  width: 46,
+                                                  child: Text(
+                                                    '±${_stampBrushRandomRotation.round()}°',
+                                                    textAlign: TextAlign.right,
+                                                  ),
+                                                ),
+                                              ],
+                                            ),
+                                            Row(
+                                              children: [
+                                                const SizedBox(
+                                                  width: 70,
+                                                  child: Text('Scatter'),
+                                                ),
+                                                Expanded(
+                                                  child: Slider(
+                                                    value: _stampBrushScatter,
+                                                    min: 0,
+                                                    max: 300,
+                                                    divisions: 30,
+                                                    label: _stampBrushScatter
+                                                        .round()
+                                                        .toString(),
+                                                    onChanged: (value) {
+                                                      setState(() {
+                                                        _stampBrushScatter =
+                                                            value;
+                                                      });
+                                                    },
+                                                  ),
+                                                ),
+                                                SizedBox(
+                                                  width: 46,
+                                                  child: Text(
+                                                    _stampBrushScatter
+                                                        .round()
+                                                        .toString(),
+                                                    textAlign: TextAlign.right,
+                                                  ),
+                                                ),
+                                              ],
+                                            ),
+                                          ],
+                                        ),
+                                      ),
+                                    ),
+                                  ),
+
+                                if (_drawingMode &&
+                                    _stampBrushActive &&
+                                    _textureExpanded)
+                                  const SizedBox(height: 8),
+
                                 if (_drawingMode && _textureExpanded)
                                   Material(
                                     elevation: 8,
