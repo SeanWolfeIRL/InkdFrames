@@ -165,6 +165,8 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
   bool _videoReady = false;
   double _videoScrubPositionMs = 0.0;
   bool _isVideoScrubbing = false;
+  double _videoScrubDragStartMs = 0.0;
+  double _videoScrubDragStartSliderMs = 0.0;
   bool _referenceVisible = true;
   double _referenceOpacity = 1.0;
   bool _layersPanelExpanded = false;
@@ -1509,11 +1511,8 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
             .toDouble();
       });
 
-      if (widget.initialGenerateVideoTimeline &&
-          _referenceFrameTimesMs.isEmpty) {
-        _generateReferenceTimeline(newController.value.duration);
-      }
-
+      // Video references now start with the existing animation timeline.
+      // Users manually create only the poses/frames they actually want.
       _syncVideoToSelectedFrame();
 
       if (oldController != null && oldController != newController) {
@@ -1614,36 +1613,85 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     _scheduleAutosave();
   }
 
+  Future<void> _stepReferenceVideo(int direction) async {
+    final controller = _videoController;
+
+    if (controller == null || !controller.value.isInitialized) {
+      return;
+    }
+
+    const stepMs = 33;
+
+    final currentMs = controller.value.position.inMilliseconds;
+    final durationMs = controller.value.duration.inMilliseconds;
+
+    final targetMs = (currentMs + (stepMs * direction)).clamp(
+      0,
+      math.max(0, durationMs - 1),
+    );
+
+    await _seekReferenceVideoToMs(targetMs.toDouble());
+  }
+
   void _resetCanvasView() {
     _transformationController.value = Matrix4.identity();
   }
 
   void _addFrame() {
+    final controller = _videoController;
+
+    final capturedReferenceTimeMs =
+        controller != null &&
+            controller.value.isInitialized &&
+            _referenceMediaType == 'video'
+        ? controller.value.position.inMilliseconds
+        : null;
+
+    final insertIndex = (_selectedFrameIndex + 1).clamp(
+      0,
+      _frameDurations.length,
+    );
+
     setState(() {
-      _frameDurations.add(1);
+      _frameDurations.insert(insertIndex, 1);
 
-      if (_referenceFrameTimesMs.isNotEmpty) {
-        final intervalMs = (1000 / _fps).round();
-        final lastTime = _referenceFrameTimesMs.last;
+      if (capturedReferenceTimeMs != null) {
+        final safeReferenceIndex = insertIndex.clamp(
+          0,
+          _referenceFrameTimesMs.length,
+        );
 
-        final videoDurationMs =
-            _videoController?.value.duration.inMilliseconds ?? 0;
+        _referenceFrameTimesMs.insert(
+          safeReferenceIndex,
+          capturedReferenceTimeMs,
+        );
+      } else if (_referenceFrameTimesMs.isNotEmpty) {
+        final fallbackIndex = _selectedFrameIndex.clamp(
+          0,
+          _referenceFrameTimesMs.length - 1,
+        );
 
-        final nextTime = videoDurationMs > 0
-            ? math.min(videoDurationMs - 1, lastTime + intervalMs)
-            : lastTime + intervalMs;
+        final safeReferenceIndex = insertIndex.clamp(
+          0,
+          _referenceFrameTimesMs.length,
+        );
 
-        _referenceFrameTimesMs.add(nextTime);
+        _referenceFrameTimesMs.insert(
+          safeReferenceIndex,
+          _referenceFrameTimesMs[fallbackIndex],
+        );
       }
 
       for (var i = 0; i < _layers.length; i++) {
         final layer = _layers[i];
-        final frames = _copyLayerFrames(layer.frames)..add(<VectorStroke>[]);
+        final frames = _copyLayerFrames(layer.frames);
+
+        frames.insert(insertIndex, <VectorStroke>[]);
 
         _layers[i] = layer.copyWith(frames: frames);
       }
 
-      _selectedFrameIndex = _frameDurations.length - 1;
+      _selectedFrameIndex = insertIndex;
       _draftStroke = const <VectorPoint>[];
 
       _resetUndoRedo();
@@ -1651,6 +1699,10 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     });
 
     _scheduleAutosave();
+
+    if (capturedReferenceTimeMs != null) {
+      _videoScrubPositionMs = capturedReferenceTimeMs.toDouble();
+    }
   }
 
   void _duplicateFrame() {
@@ -4867,88 +4919,57 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                         ),
                       ),
                     ),
-                    Positioned(
-                      top: 78,
-                      left: 16,
-                      child: Row(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Material(
-                            elevation: 8,
-                            color: const Color(0xE61A1720),
-                            borderRadius: BorderRadius.circular(16),
-                            clipBehavior: Clip.antiAlias,
-                            child: Padding(
-                              padding: const EdgeInsets.symmetric(
-                                horizontal: 4,
-                                vertical: 6,
-                              ),
-                              child: Column(
-                                mainAxisSize: MainAxisSize.min,
-                                children: [
-                                  IconButton(
-                                    tooltip: _drawingExpanded
-                                        ? 'Hide Pen'
-                                        : 'Show Pen',
-                                    visualDensity: VisualDensity.compact,
-                                    onPressed: () {
-                                      setState(() {
-                                        _drawingExpanded = !_drawingExpanded;
-                                      });
-                                    },
-                                    icon: Icon(
-                                      Icons.edit,
-                                      color: _drawingExpanded
-                                          ? Colors.deepPurpleAccent
-                                          : Colors.white70,
-                                    ),
-                                  ),
-                                  const SizedBox(height: 2),
-                                  IconButton(
-                                    tooltip: _drawingMode
-                                        ? 'Return to Animation Mode'
-                                        : 'Enter Drawing Mode',
-                                    visualDensity: VisualDensity.compact,
-                                    onPressed: () {
-                                      setState(() {
-                                        _drawingMode = !_drawingMode;
-
-                                        if (_drawingMode) {
-                                          _timingExpanded = false;
-                                          _timelineExpanded = false;
-                                          _transformToolbarExpanded = false;
-                                        } else {
-                                          _blendExpanded = false;
-                                          _blendSamplingArmed = false;
-                                        }
-                                      });
-                                    },
-                                    icon: Icon(
-                                      _drawingMode
-                                          ? Icons.animation
-                                          : Icons.draw_outlined,
-                                      color: _drawingMode
-                                          ? Colors.cyanAccent
-                                          : Colors.white70,
-                                    ),
-                                  ),
-
-                                  if (_drawingMode) ...[
-                                    const SizedBox(height: 2),
+                    if (!_isVideoScrubbing)
+                      Positioned(
+                        top: 78,
+                        left: 16,
+                        child: Row(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Material(
+                              elevation: 8,
+                              color: const Color(0xE61A1720),
+                              borderRadius: BorderRadius.circular(16),
+                              clipBehavior: Clip.antiAlias,
+                              child: Padding(
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 4,
+                                  vertical: 6,
+                                ),
+                                child: Column(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
                                     IconButton(
-                                      tooltip: _blendExpanded
-                                          ? 'Hide Blend'
-                                          : 'Show Blend',
+                                      tooltip: _drawingExpanded
+                                          ? 'Hide Pen'
+                                          : 'Show Pen',
                                       visualDensity: VisualDensity.compact,
                                       onPressed: () {
                                         setState(() {
-                                          if (!_blendExpanded) {
-                                            _blendExpanded = true;
-                                            _blendSamplingArmed = true;
-                                            _blendBaseColor = _brushColor;
-                                          } else if (!_blendSamplingArmed) {
-                                            _blendSamplingArmed = true;
-                                            _blendBaseColor = _brushColor;
+                                          _drawingExpanded = !_drawingExpanded;
+                                        });
+                                      },
+                                      icon: Icon(
+                                        Icons.edit,
+                                        color: _drawingExpanded
+                                            ? Colors.deepPurpleAccent
+                                            : Colors.white70,
+                                      ),
+                                    ),
+                                    const SizedBox(height: 2),
+                                    IconButton(
+                                      tooltip: _drawingMode
+                                          ? 'Return to Animation Mode'
+                                          : 'Enter Drawing Mode',
+                                      visualDensity: VisualDensity.compact,
+                                      onPressed: () {
+                                        setState(() {
+                                          _drawingMode = !_drawingMode;
+
+                                          if (_drawingMode) {
+                                            _timingExpanded = false;
+                                            _timelineExpanded = false;
+                                            _transformToolbarExpanded = false;
                                           } else {
                                             _blendExpanded = false;
                                             _blendSamplingArmed = false;
@@ -4956,1237 +4977,1293 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                                         });
                                       },
                                       icon: Icon(
-                                        Icons.blur_on,
-                                        color: _blendExpanded
-                                            ? Colors.deepPurpleAccent
+                                        _drawingMode
+                                            ? Icons.animation
+                                            : Icons.draw_outlined,
+                                        color: _drawingMode
+                                            ? Colors.cyanAccent
                                             : Colors.white70,
                                       ),
                                     ),
 
-                                    const SizedBox(height: 2),
-                                    IconButton(
-                                      tooltip: _textureExpanded
-                                          ? 'Hide Texture'
-                                          : 'Show Texture',
-                                      visualDensity: VisualDensity.compact,
-                                      onPressed: () {
-                                        setState(() {
-                                          _textureExpanded = !_textureExpanded;
-                                          _textureActive = _textureExpanded;
-
-                                          if (_textureExpanded) {
-                                            _stampBrushActive = false;
-                                            _stampBrushItem = null;
-                                            _blendSamplingArmed = false;
-                                          } else {
-                                            _draftTextureStrokes =
-                                                <VectorStroke>[];
-                                          }
-                                        });
-                                      },
-                                      icon: Icon(
-                                        Icons.grid_on_outlined,
-                                        color: _textureExpanded
-                                            ? Colors.deepPurpleAccent
-                                            : Colors.white70,
-                                      ),
-                                    ),
-
-                                    const SizedBox(height: 2),
-                                    IconButton(
-                                      tooltip: 'Open Bag',
-                                      visualDensity: VisualDensity.compact,
-                                      onPressed: _openBag,
-                                      icon: const Icon(
-                                        Icons.backpack_outlined,
-                                        color: Colors.white70,
-                                      ),
-                                    ),
-
-                                    const SizedBox(height: 2),
-
-                                    IconButton(
-                                      tooltip: _stampBrushActive
-                                          ? 'Stamp Brush: ${_stampBrushItem?.name ?? ''}'
-                                          : 'Stamp Brush',
-                                      visualDensity: VisualDensity.compact,
-                                      onPressed: () {
-                                        if (_stampBrushActive &&
-                                            !_stampBrushPanelExpanded) {
+                                    if (_drawingMode) ...[
+                                      const SizedBox(height: 2),
+                                      IconButton(
+                                        tooltip: _blendExpanded
+                                            ? 'Hide Blend'
+                                            : 'Show Blend',
+                                        visualDensity: VisualDensity.compact,
+                                        onPressed: () {
                                           setState(() {
-                                            _stampBrushPanelExpanded = true;
+                                            if (!_blendExpanded) {
+                                              _blendExpanded = true;
+                                              _blendSamplingArmed = true;
+                                              _blendBaseColor = _brushColor;
+                                            } else if (!_blendSamplingArmed) {
+                                              _blendSamplingArmed = true;
+                                              _blendBaseColor = _brushColor;
+                                            } else {
+                                              _blendExpanded = false;
+                                              _blendSamplingArmed = false;
+                                            }
                                           });
-                                          return;
-                                        }
-
-                                        _openStampBrushPicker();
-                                      },
-                                      icon: Icon(
-                                        Icons.content_copy,
-                                        color: _stampBrushActive
-                                            ? Colors.deepPurpleAccent
-                                            : Colors.white70,
+                                        },
+                                        icon: Icon(
+                                          Icons.blur_on,
+                                          color: _blendExpanded
+                                              ? Colors.deepPurpleAccent
+                                              : Colors.white70,
+                                        ),
                                       ),
-                                    ),
+
+                                      const SizedBox(height: 2),
+                                      IconButton(
+                                        tooltip: _textureExpanded
+                                            ? 'Hide Texture'
+                                            : 'Show Texture',
+                                        visualDensity: VisualDensity.compact,
+                                        onPressed: () {
+                                          setState(() {
+                                            _textureExpanded =
+                                                !_textureExpanded;
+                                            _textureActive = _textureExpanded;
+
+                                            if (_textureExpanded) {
+                                              _stampBrushActive = false;
+                                              _stampBrushItem = null;
+                                              _blendSamplingArmed = false;
+                                            } else {
+                                              _draftTextureStrokes =
+                                                  <VectorStroke>[];
+                                            }
+                                          });
+                                        },
+                                        icon: Icon(
+                                          Icons.grid_on_outlined,
+                                          color: _textureExpanded
+                                              ? Colors.deepPurpleAccent
+                                              : Colors.white70,
+                                        ),
+                                      ),
+
+                                      const SizedBox(height: 2),
+                                      IconButton(
+                                        tooltip: 'Open Bag',
+                                        visualDensity: VisualDensity.compact,
+                                        onPressed: _openBag,
+                                        icon: const Icon(
+                                          Icons.backpack_outlined,
+                                          color: Colors.white70,
+                                        ),
+                                      ),
+
+                                      const SizedBox(height: 2),
+
+                                      IconButton(
+                                        tooltip: _stampBrushActive
+                                            ? 'Stamp Brush: ${_stampBrushItem?.name ?? ''}'
+                                            : 'Stamp Brush',
+                                        visualDensity: VisualDensity.compact,
+                                        onPressed: () {
+                                          if (_stampBrushActive &&
+                                              !_stampBrushPanelExpanded) {
+                                            setState(() {
+                                              _stampBrushPanelExpanded = true;
+                                            });
+                                            return;
+                                          }
+
+                                          _openStampBrushPicker();
+                                        },
+                                        icon: Icon(
+                                          Icons.content_copy,
+                                          color: _stampBrushActive
+                                              ? Colors.deepPurpleAccent
+                                              : Colors.white70,
+                                        ),
+                                      ),
+                                    ],
                                   ],
-                                ],
+                                ),
                               ),
                             ),
-                          ),
-                          if (_drawingExpanded ||
-                              (_drawingMode && _blendExpanded) ||
-                              (_drawingMode &&
-                                  _stampBrushActive &&
-                                  _stampBrushPanelExpanded)) ...[
-                            const SizedBox(width: 8),
-                            Column(
-                              mainAxisSize: MainAxisSize.min,
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                if (_drawingMode &&
+                            if (_drawingExpanded ||
+                                (_drawingMode && _blendExpanded) ||
+                                (_drawingMode &&
                                     _stampBrushActive &&
-                                    _stampBrushPanelExpanded)
-                                  Material(
-                                    elevation: 8,
-                                    color: const Color(0xE61A1720),
-                                    borderRadius: BorderRadius.circular(16),
-                                    clipBehavior: Clip.antiAlias,
-                                    child: SizedBox(
-                                      width: constraints.maxWidth < 420
-                                          ? constraints.maxWidth - 96
-                                          : 300,
-                                      child: Padding(
-                                        padding: const EdgeInsets.fromLTRB(
-                                          14,
-                                          12,
-                                          14,
-                                          12,
-                                        ),
-                                        child: Column(
-                                          mainAxisSize: MainAxisSize.min,
-                                          children: [
-                                            Row(
-                                              children: [
-                                                const Expanded(
-                                                  child: Text(
-                                                    'Stamp',
-                                                    style: TextStyle(
-                                                      fontWeight:
-                                                          FontWeight.w600,
-                                                    ),
-                                                  ),
-                                                ),
-                                                Flexible(
-                                                  child: Text(
-                                                    _stampBrushItem?.name ??
-                                                        'Bag Asset',
-                                                    overflow:
-                                                        TextOverflow.ellipsis,
-                                                    style: const TextStyle(
-                                                      fontSize: 11,
-                                                      color: Colors.white60,
-                                                    ),
-                                                  ),
-                                                ),
-                                                const SizedBox(width: 4),
-                                                IconButton(
-                                                  tooltip:
-                                                      'Hide Stamp Controls',
-                                                  visualDensity:
-                                                      VisualDensity.compact,
-                                                  onPressed: () {
-                                                    setState(() {
-                                                      _stampBrushPanelExpanded =
-                                                          false;
-                                                    });
-                                                  },
-                                                  icon: const Icon(
-                                                    Icons.keyboard_arrow_left,
-                                                    size: 20,
-                                                  ),
-                                                ),
-                                              ],
-                                            ),
-                                            const SizedBox(height: 10),
-                                            Row(
-                                              children: [
-                                                const SizedBox(
-                                                  width: 70,
-                                                  child: Text('Scale'),
-                                                ),
-                                                Expanded(
-                                                  child: Slider(
-                                                    value: _stampBrushScale,
-                                                    min: 0.1,
-                                                    max: 3.0,
-                                                    divisions: 29,
-                                                    label:
-                                                        '${(_stampBrushScale * 100).round()}%',
-                                                    onChanged: (value) {
-                                                      setState(() {
-                                                        _stampBrushScale =
-                                                            value;
-                                                      });
-                                                    },
-                                                  ),
-                                                ),
-                                                SizedBox(
-                                                  width: 46,
-                                                  child: Text(
-                                                    '${(_stampBrushScale * 100).round()}%',
-                                                    textAlign: TextAlign.right,
-                                                  ),
-                                                ),
-                                              ],
-                                            ),
-                                            Row(
-                                              children: [
-                                                const SizedBox(
-                                                  width: 70,
-                                                  child: Text('Spacing'),
-                                                ),
-                                                Expanded(
-                                                  child: Slider(
-                                                    value: _stampBrushSpacing,
-                                                    min: 20,
-                                                    max: 400,
-                                                    divisions: 38,
-                                                    label: _stampBrushSpacing
-                                                        .round()
-                                                        .toString(),
-                                                    onChanged: (value) {
-                                                      setState(() {
-                                                        _stampBrushSpacing =
-                                                            value;
-                                                      });
-                                                    },
-                                                  ),
-                                                ),
-                                                SizedBox(
-                                                  width: 46,
-                                                  child: Text(
-                                                    _stampBrushSpacing
-                                                        .round()
-                                                        .toString(),
-                                                    textAlign: TextAlign.right,
-                                                  ),
-                                                ),
-                                              ],
-                                            ),
-                                            Row(
-                                              children: [
-                                                const SizedBox(
-                                                  width: 70,
-                                                  child: Text('Rotation'),
-                                                ),
-                                                Expanded(
-                                                  child: Slider(
-                                                    value: _stampBrushRotation,
-                                                    min: -180,
-                                                    max: 180,
-                                                    divisions: 72,
-                                                    label:
-                                                        '${_stampBrushRotation.round()}°',
-                                                    onChanged: (value) {
-                                                      setState(() {
-                                                        _stampBrushRotation =
-                                                            value;
-                                                      });
-                                                    },
-                                                  ),
-                                                ),
-                                                SizedBox(
-                                                  width: 46,
-                                                  child: Text(
-                                                    '${_stampBrushRotation.round()}°',
-                                                    textAlign: TextAlign.right,
-                                                  ),
-                                                ),
-                                              ],
-                                            ),
-                                            Row(
-                                              children: [
-                                                const SizedBox(
-                                                  width: 70,
-                                                  child: Text('Random'),
-                                                ),
-                                                Expanded(
-                                                  child: Slider(
-                                                    value:
-                                                        _stampBrushRandomRotation,
-                                                    min: 0,
-                                                    max: 180,
-                                                    divisions: 36,
-                                                    label:
-                                                        '±${_stampBrushRandomRotation.round()}°',
-                                                    onChanged: (value) {
-                                                      setState(() {
-                                                        _stampBrushRandomRotation =
-                                                            value;
-                                                      });
-                                                    },
-                                                  ),
-                                                ),
-                                                SizedBox(
-                                                  width: 46,
-                                                  child: Text(
-                                                    '±${_stampBrushRandomRotation.round()}°',
-                                                    textAlign: TextAlign.right,
-                                                  ),
-                                                ),
-                                              ],
-                                            ),
-                                            Row(
-                                              children: [
-                                                const SizedBox(
-                                                  width: 70,
-                                                  child: Text('Scatter'),
-                                                ),
-                                                Expanded(
-                                                  child: Slider(
-                                                    value: _stampBrushScatter,
-                                                    min: 0,
-                                                    max: 300,
-                                                    divisions: 30,
-                                                    label: _stampBrushScatter
-                                                        .round()
-                                                        .toString(),
-                                                    onChanged: (value) {
-                                                      setState(() {
-                                                        _stampBrushScatter =
-                                                            value;
-                                                      });
-                                                    },
-                                                  ),
-                                                ),
-                                                SizedBox(
-                                                  width: 46,
-                                                  child: Text(
-                                                    _stampBrushScatter
-                                                        .round()
-                                                        .toString(),
-                                                    textAlign: TextAlign.right,
-                                                  ),
-                                                ),
-                                              ],
-                                            ),
-                                          ],
-                                        ),
-                                      ),
-                                    ),
-                                  ),
-
-                                if (_drawingMode &&
-                                    _stampBrushActive &&
-                                    _textureExpanded)
-                                  const SizedBox(height: 8),
-
-                                if (_drawingMode && _textureExpanded)
-                                  Material(
-                                    elevation: 8,
-                                    color: const Color(0xE61A1720),
-                                    borderRadius: BorderRadius.circular(16),
-                                    clipBehavior: Clip.antiAlias,
-                                    child: SizedBox(
-                                      width: constraints.maxWidth < 420
-                                          ? constraints.maxWidth - 96
-                                          : 300,
-                                      child: Padding(
-                                        padding: const EdgeInsets.fromLTRB(
-                                          14,
-                                          12,
-                                          14,
-                                          12,
-                                        ),
-                                        child: Column(
-                                          mainAxisSize: MainAxisSize.min,
-                                          children: [
-                                            const Align(
-                                              alignment: Alignment.centerLeft,
-                                              child: Text(
-                                                'Texture',
-                                                style: TextStyle(
-                                                  fontWeight: FontWeight.w600,
-                                                ),
-                                              ),
-                                            ),
-                                            const SizedBox(height: 10),
-
-                                            SegmentedButton<String>(
-                                              segments: const [
-                                                ButtonSegment<String>(
-                                                  value: 'stipple',
-                                                  label: Text('Stipple'),
-                                                ),
-                                                ButtonSegment<String>(
-                                                  value: 'hatch',
-                                                  label: Text('Hatch'),
-                                                ),
-                                                ButtonSegment<String>(
-                                                  value: 'grain',
-                                                  label: Text('Grain'),
-                                                ),
-                                              ],
-                                              selected: <String>{
-                                                _texturePattern,
-                                              },
-                                              onSelectionChanged: (selection) {
-                                                setState(() {
-                                                  _texturePattern =
-                                                      selection.first;
-                                                });
-                                              },
-                                            ),
-
-                                            const SizedBox(height: 10),
-
-                                            Row(
-                                              children: [
-                                                const SizedBox(
-                                                  width: 70,
-                                                  child: Text('Scale'),
-                                                ),
-                                                Expanded(
-                                                  child: Slider(
-                                                    value: _textureScale,
-                                                    min: 2,
-                                                    max: 30,
-                                                    divisions: 28,
-                                                    label: _textureScale
-                                                        .round()
-                                                        .toString(),
-                                                    onChanged: (value) {
-                                                      setState(() {
-                                                        _textureScale = value;
-                                                      });
-                                                    },
-                                                  ),
-                                                ),
-                                                SizedBox(
-                                                  width: 38,
-                                                  child: Text(
-                                                    _textureScale
-                                                        .round()
-                                                        .toString(),
-                                                    textAlign: TextAlign.right,
-                                                  ),
-                                                ),
-                                              ],
-                                            ),
-
-                                            Row(
-                                              children: [
-                                                const SizedBox(
-                                                  width: 70,
-                                                  child: Text('Density'),
-                                                ),
-                                                Expanded(
-                                                  child: Slider(
-                                                    value: _textureDensity,
-                                                    min: 0.1,
-                                                    max: 1.0,
-                                                    divisions: 9,
-                                                    label:
-                                                        '${(_textureDensity * 100).round()}%',
-                                                    onChanged: (value) {
-                                                      setState(() {
-                                                        _textureDensity = value;
-                                                      });
-                                                    },
-                                                  ),
-                                                ),
-                                                SizedBox(
-                                                  width: 40,
-                                                  child: Text(
-                                                    '${(_textureDensity * 100).round()}%',
-                                                    textAlign: TextAlign.right,
-                                                  ),
-                                                ),
-                                              ],
-                                            ),
-
-                                            Row(
-                                              children: [
-                                                const SizedBox(
-                                                  width: 70,
-                                                  child: Text('Scatter'),
-                                                ),
-                                                Expanded(
-                                                  child: Slider(
-                                                    value: _textureScatter,
-                                                    min: 0,
-                                                    max: 50,
-                                                    divisions: 25,
-                                                    label: _textureScatter
-                                                        .round()
-                                                        .toString(),
-                                                    onChanged: (value) {
-                                                      setState(() {
-                                                        _textureScatter = value;
-                                                      });
-                                                    },
-                                                  ),
-                                                ),
-                                                SizedBox(
-                                                  width: 40,
-                                                  child: Text(
-                                                    _textureScatter
-                                                        .round()
-                                                        .toString(),
-                                                    textAlign: TextAlign.right,
-                                                  ),
-                                                ),
-                                              ],
-                                            ),
-                                          ],
-                                        ),
-                                      ),
-                                    ),
-                                  ),
-
-                                if (_drawingMode &&
-                                    _textureExpanded &&
-                                    _blendExpanded)
-                                  const SizedBox(height: 8),
-
-                                if (_drawingMode && _blendExpanded)
-                                  Material(
-                                    elevation: 8,
-                                    color: const Color(0xE61A1720),
-                                    borderRadius: BorderRadius.circular(16),
-                                    clipBehavior: Clip.antiAlias,
-                                    child: SizedBox(
-                                      width: constraints.maxWidth < 420
-                                          ? constraints.maxWidth - 96
-                                          : 300,
-                                      child: Padding(
-                                        padding: const EdgeInsets.fromLTRB(
-                                          14,
-                                          12,
-                                          14,
-                                          12,
-                                        ),
-                                        child: Column(
-                                          mainAxisSize: MainAxisSize.min,
-                                          children: [
-                                            Row(
-                                              children: [
-                                                const Expanded(
-                                                  child: Text(
-                                                    'Blend',
-                                                    style: TextStyle(
-                                                      fontWeight:
-                                                          FontWeight.w600,
-                                                    ),
-                                                  ),
-                                                ),
-                                                if (_blendSamplingArmed)
-                                                  const Row(
-                                                    mainAxisSize:
-                                                        MainAxisSize.min,
-                                                    children: [
-                                                      Icon(
-                                                        Icons.colorize,
-                                                        size: 16,
-                                                        color:
-                                                            Colors.cyanAccent,
-                                                      ),
-                                                      SizedBox(width: 4),
-                                                      Text(
-                                                        'Tap canvas',
-                                                        style: TextStyle(
-                                                          fontSize: 11,
-                                                          color:
-                                                              Colors.cyanAccent,
-                                                        ),
-                                                      ),
-                                                    ],
-                                                  ),
-                                              ],
-                                            ),
-                                            const SizedBox(height: 12),
-
-                                            Row(
-                                              children: [
-                                                const SizedBox(
-                                                  width: 70,
-                                                  child: Text('Base'),
-                                                ),
-                                                Container(
-                                                  width: 50,
-                                                  height: 30,
-                                                  decoration: BoxDecoration(
-                                                    color: _blendBaseColor,
-                                                    borderRadius:
-                                                        BorderRadius.circular(
-                                                          9,
-                                                        ),
-                                                    border: Border.all(
-                                                      color: Colors.white38,
-                                                    ),
-                                                  ),
-                                                ),
-                                                const SizedBox(width: 8),
-                                                Expanded(
-                                                  child: Text(
-                                                    '#${_colorHex(_blendBaseColor)}',
-                                                    style: const TextStyle(
-                                                      fontSize: 10,
-                                                      color: Colors.white60,
-                                                    ),
-                                                  ),
-                                                ),
-                                              ],
-                                            ),
-
-                                            const SizedBox(height: 8),
-
-                                            Row(
-                                              children: [
-                                                const SizedBox(
-                                                  width: 70,
-                                                  child: Text('Sample'),
-                                                ),
-                                                Container(
-                                                  width: 50,
-                                                  height: 30,
-                                                  decoration: BoxDecoration(
-                                                    color: _blendSampleColor,
-                                                    borderRadius:
-                                                        BorderRadius.circular(
-                                                          9,
-                                                        ),
-                                                    border: Border.all(
-                                                      color: Colors.white38,
-                                                    ),
-                                                  ),
-                                                ),
-                                                const SizedBox(width: 8),
-                                                Expanded(
-                                                  child: Text(
-                                                    '#${_colorHex(_blendSampleColor)}',
-                                                    style: const TextStyle(
-                                                      fontSize: 10,
-                                                      color: Colors.white60,
-                                                    ),
-                                                  ),
-                                                ),
-                                                IconButton(
-                                                  tooltip: 'Sample Again',
-                                                  visualDensity:
-                                                      VisualDensity.compact,
-                                                  onPressed: () {
-                                                    setState(() {
-                                                      _blendBaseColor =
-                                                          _brushColor;
-                                                      _blendSamplingArmed =
-                                                          true;
-                                                    });
-                                                  },
-                                                  icon: Icon(
-                                                    Icons.colorize,
-                                                    size: 18,
-                                                    color: _blendSamplingArmed
-                                                        ? Colors.cyanAccent
-                                                        : Colors.white70,
-                                                  ),
-                                                ),
-                                              ],
-                                            ),
-
-                                            const SizedBox(height: 10),
-
-                                            Row(
-                                              children: [
-                                                const SizedBox(
-                                                  width: 70,
-                                                  child: Text('Strength'),
-                                                ),
-                                                Expanded(
-                                                  child: Slider(
-                                                    value: _blendAmount,
-                                                    min: 0,
-                                                    max: 1,
-                                                    divisions: 20,
-                                                    label:
-                                                        '${(_blendAmount * 100).round()}%',
-                                                    onChanged: (value) {
-                                                      setState(() {
-                                                        _blendAmount = value;
-                                                        _applyCurrentBlend();
-                                                      });
-                                                    },
-                                                  ),
-                                                ),
-                                                SizedBox(
-                                                  width: 40,
-                                                  child: Text(
-                                                    '${(_blendAmount * 100).round()}%',
-                                                    textAlign: TextAlign.right,
-                                                  ),
-                                                ),
-                                              ],
-                                            ),
-
-                                            const SizedBox(height: 8),
-
-                                            Builder(
-                                              builder: (context) {
-                                                final mixedColor =
-                                                    _currentBlendColor();
-
-                                                return Row(
-                                                  children: [
-                                                    const SizedBox(
-                                                      width: 70,
-                                                      child: Text('Result'),
-                                                    ),
-                                                    Expanded(
-                                                      child: Container(
-                                                        height: 34,
-                                                        decoration: BoxDecoration(
-                                                          color: mixedColor,
-                                                          borderRadius:
-                                                              BorderRadius.circular(
-                                                                10,
-                                                              ),
-                                                          border: Border.all(
-                                                            color:
-                                                                Colors.white24,
-                                                          ),
-                                                        ),
+                                    _stampBrushPanelExpanded)) ...[
+                              const SizedBox(width: 8),
+                              Column(
+                                mainAxisSize: MainAxisSize.min,
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  if (_drawingMode &&
+                                      _stampBrushActive &&
+                                      _stampBrushPanelExpanded)
+                                    Material(
+                                      elevation: 8,
+                                      color: const Color(0xE61A1720),
+                                      borderRadius: BorderRadius.circular(16),
+                                      clipBehavior: Clip.antiAlias,
+                                      child: SizedBox(
+                                        width: constraints.maxWidth < 420
+                                            ? constraints.maxWidth - 96
+                                            : 300,
+                                        child: Padding(
+                                          padding: const EdgeInsets.fromLTRB(
+                                            14,
+                                            12,
+                                            14,
+                                            12,
+                                          ),
+                                          child: Column(
+                                            mainAxisSize: MainAxisSize.min,
+                                            children: [
+                                              Row(
+                                                children: [
+                                                  const Expanded(
+                                                    child: Text(
+                                                      'Stamp',
+                                                      style: TextStyle(
+                                                        fontWeight:
+                                                            FontWeight.w600,
                                                       ),
                                                     ),
-                                                    const SizedBox(width: 8),
-                                                    Text(
-                                                      '#${_colorHex(mixedColor)}',
+                                                  ),
+                                                  Flexible(
+                                                    child: Text(
+                                                      _stampBrushItem?.name ??
+                                                          'Bag Asset',
+                                                      overflow:
+                                                          TextOverflow.ellipsis,
                                                       style: const TextStyle(
-                                                        fontSize: 10,
+                                                        fontSize: 11,
                                                         color: Colors.white60,
                                                       ),
                                                     ),
-                                                  ],
-                                                );
-                                              },
-                                            ),
-                                          ],
-                                        ),
-                                      ),
-                                    ),
-                                  ),
-
-                                if (_drawingMode &&
-                                    _blendExpanded &&
-                                    _drawingExpanded)
-                                  const SizedBox(height: 8),
-
-                                if (_drawingExpanded)
-                                  Material(
-                                    elevation: 8,
-                                    color: const Color(0xE61A1720),
-                                    borderRadius: BorderRadius.circular(16),
-                                    clipBehavior: Clip.antiAlias,
-                                    child: SizedBox(
-                                      width: constraints.maxWidth < 420
-                                          ? constraints.maxWidth - 96
-                                          : 300,
-                                      child: Padding(
-                                        padding: const EdgeInsets.fromLTRB(
-                                          14,
-                                          10,
-                                          14,
-                                          12,
-                                        ),
-                                        child: Column(
-                                          mainAxisSize: MainAxisSize.min,
-                                          children: [
-                                            Row(
-                                              children: [
-                                                const SizedBox(
-                                                  width: 70,
-                                                  child: Text('Presets'),
-                                                ),
-                                                Expanded(
-                                                  child: Row(
-                                                    mainAxisSize:
-                                                        MainAxisSize.min,
-                                                    children: [
-                                                      IconButton(
-                                                        tooltip:
-                                                            'Open Brush Presets',
-                                                        visualDensity:
-                                                            VisualDensity
-                                                                .compact,
-                                                        onPressed:
-                                                            _openBrushPresets,
-                                                        icon: const Icon(
-                                                          Icons
-                                                              .folder_open_outlined,
-                                                        ),
-                                                      ),
-                                                      const SizedBox(width: 4),
-                                                      IconButton(
-                                                        tooltip:
-                                                            'Save Current Brush',
-                                                        visualDensity:
-                                                            VisualDensity
-                                                                .compact,
-                                                        onPressed:
-                                                            _saveCurrentBrushPreset,
-                                                        icon: const Icon(
-                                                          Icons.save_outlined,
-                                                        ),
-                                                      ),
-                                                    ],
                                                   ),
-                                                ),
-                                              ],
-                                            ),
-
-                                            const SizedBox(height: 8),
-
-                                            Row(
-                                              children: [
-                                                const SizedBox(
-                                                  width: 70,
-                                                  child: Text('Type'),
-                                                ),
-                                                Expanded(
-                                                  child:
-                                                      SegmentedButton<
-                                                        StrokeBrushType
-                                                      >(
-                                                        segments: const [
-                                                          ButtonSegment<
-                                                            StrokeBrushType
-                                                          >(
-                                                            value:
-                                                                StrokeBrushType
-                                                                    .solid,
-                                                            label: Text(
-                                                              'Solid',
-                                                            ),
-                                                          ),
-                                                          ButtonSegment<
-                                                            StrokeBrushType
-                                                          >(
-                                                            value:
-                                                                StrokeBrushType
-                                                                    .pressure,
-                                                            label: Text(
-                                                              'Pressure',
-                                                            ),
-                                                          ),
-                                                        ],
-                                                        selected:
-                                                            <StrokeBrushType>{
-                                                              _brushType,
-                                                            },
-                                                        onSelectionChanged:
-                                                            (selection) {
-                                                              setState(() {
-                                                                _brushType =
-                                                                    selection
-                                                                        .first;
-                                                              });
-                                                            },
-                                                      ),
-                                                ),
-                                              ],
-                                            ),
-                                            const SizedBox(height: 6),
-                                            Row(
-                                              children: [
-                                                const SizedBox(
-                                                  width: 70,
-                                                  child: Text('Size'),
-                                                ),
-                                                Expanded(
-                                                  child: Slider(
-                                                    value: _brushSize,
-                                                    min: 1,
-                                                    max: 20,
-                                                    divisions: 19,
-                                                    label: _brushSize
-                                                        .toStringAsFixed(0),
-                                                    onChanged: (value) {
-                                                      setState(() {
-                                                        _brushSize = value;
-                                                      });
-                                                    },
-                                                  ),
-                                                ),
-                                                SizedBox(
-                                                  width: 28,
-                                                  child: Text(
-                                                    _brushSize.toStringAsFixed(
-                                                      0,
-                                                    ),
-                                                  ),
-                                                ),
-                                              ],
-                                            ),
-                                            const SizedBox(height: 6),
-                                            Row(
-                                              children: [
-                                                const SizedBox(
-                                                  width: 70,
-                                                  child: Text('Stabiliser'),
-                                                ),
-                                                Expanded(
-                                                  child: Slider(
-                                                    value: _stabilizerStrength,
-                                                    min: 0,
-                                                    max: 0.9,
-                                                    divisions: 9,
-                                                    label:
-                                                        '${(_stabilizerStrength * 100).round()}%',
-                                                    onChanged: (value) {
-                                                      setState(() {
-                                                        _stabilizerStrength =
-                                                            value;
-                                                      });
-                                                    },
-                                                  ),
-                                                ),
-                                                SizedBox(
-                                                  width: 40,
-                                                  child: Text(
-                                                    '${(_stabilizerStrength * 100).round()}%',
-                                                    textAlign: TextAlign.right,
-                                                  ),
-                                                ),
-                                              ],
-                                            ),
-                                            const SizedBox(height: 4),
-                                            Row(
-                                              children: [
-                                                const SizedBox(
-                                                  width: 70,
-                                                  child: Text('Pull'),
-                                                ),
-                                                Expanded(
-                                                  child: Slider(
-                                                    value:
-                                                        _stabilizerPullDistance,
-                                                    min: 0,
-                                                    max: 40,
-                                                    divisions: 20,
-                                                    label:
-                                                        '${_stabilizerPullDistance.round()} px',
-                                                    onChanged: (value) {
-                                                      setState(() {
-                                                        _stabilizerPullDistance =
-                                                            value;
-                                                      });
-                                                    },
-                                                  ),
-                                                ),
-                                                SizedBox(
-                                                  width: 40,
-                                                  child: Text(
-                                                    '${_stabilizerPullDistance.round()}',
-                                                    textAlign: TextAlign.right,
-                                                  ),
-                                                ),
-                                              ],
-                                            ),
-                                            const SizedBox(height: 6),
-
-                                            // Brush opacity.
-                                            Row(
-                                              children: [
-                                                const SizedBox(
-                                                  width: 70,
-                                                  child: Text('Opacity'),
-                                                ),
-                                                Expanded(
-                                                  child: Slider(
-                                                    value: _brushOpacity,
-                                                    min: 0.05,
-                                                    max: 1.0,
-                                                    divisions: 19,
-                                                    label:
-                                                        '${(_brushOpacity * 100).round()}%',
-                                                    onChanged: (value) {
-                                                      setState(() {
-                                                        _brushOpacity = value;
-                                                      });
-                                                    },
-                                                  ),
-                                                ),
-                                                SizedBox(
-                                                  width: 40,
-                                                  child: Text(
-                                                    '${(_brushOpacity * 100).round()}%',
-                                                    textAlign: TextAlign.right,
-                                                  ),
-                                                ),
-                                              ],
-                                            ),
-
-                                            const SizedBox(height: 8),
-
-                                            // Current brush colour.
-                                            Row(
-                                              children: [
-                                                const SizedBox(
-                                                  width: 70,
-                                                  child: Text('Colour'),
-                                                ),
-                                                Expanded(
-                                                  child: Align(
-                                                    alignment:
-                                                        Alignment.centerLeft,
-                                                    child: Tooltip(
-                                                      message:
-                                                          'Choose Brush Colour',
-                                                      child: InkWell(
-                                                        borderRadius:
-                                                            BorderRadius.circular(
-                                                              12,
-                                                            ),
-                                                        onTap: () async {
-                                                          final color =
-                                                              await _showColourPicker(
-                                                                _brushColor,
-                                                                title:
-                                                                    'Brush Colour',
-                                                              );
-
-                                                          if (color == null ||
-                                                              !mounted) {
-                                                            return;
-                                                          }
-
-                                                          setState(() {
-                                                            _brushColor = color;
-                                                            _rememberRecentColor(
-                                                              color,
-                                                            );
-                                                          });
-                                                        },
-                                                        child: Container(
-                                                          width: 72,
-                                                          height: 38,
-                                                          decoration: BoxDecoration(
-                                                            color: _brushColor,
-                                                            borderRadius:
-                                                                BorderRadius.circular(
-                                                                  12,
-                                                                ),
-                                                            border: Border.all(
-                                                              color: Colors
-                                                                  .deepPurpleAccent,
-                                                              width: 2,
-                                                            ),
-                                                          ),
-                                                          child: Icon(
-                                                            Icons
-                                                                .palette_outlined,
-                                                            color:
-                                                                _brushColor
-                                                                        .computeLuminance() >
-                                                                    0.55
-                                                                ? Colors.black87
-                                                                : Colors.white,
-                                                            size: 19,
-                                                          ),
-                                                        ),
-                                                      ),
-                                                    ),
-                                                  ),
-                                                ),
-                                                Tooltip(
-                                                  message:
-                                                      'Visual Colour Picker',
-                                                  child: IconButton(
+                                                  const SizedBox(width: 4),
+                                                  IconButton(
                                                     tooltip:
-                                                        'Visual Colour Picker',
+                                                        'Hide Stamp Controls',
                                                     visualDensity:
                                                         VisualDensity.compact,
-                                                    onPressed: () async {
-                                                      final color =
-                                                          await _showRadialColourPicker(
-                                                            _brushColor,
-                                                          );
-
-                                                      if (color == null ||
-                                                          !mounted) {
-                                                        return;
-                                                      }
-
+                                                    onPressed: () {
                                                       setState(() {
-                                                        _brushColor = color;
-                                                        _rememberRecentColor(
-                                                          color,
-                                                        );
+                                                        _stampBrushPanelExpanded =
+                                                            false;
                                                       });
                                                     },
                                                     icon: const Icon(
-                                                      Icons.color_lens_outlined,
+                                                      Icons.keyboard_arrow_left,
+                                                      size: 20,
                                                     ),
                                                   ),
-                                                ),
-                                                const SizedBox(width: 4),
-                                                Text(
-                                                  '#${_colorHex(_brushColor)}',
-                                                  style: const TextStyle(
-                                                    fontSize: 10,
-                                                    color: Colors.white60,
-                                                  ),
-                                                ),
-                                              ],
-                                            ),
-
-                                            if (_recentColors.isNotEmpty) ...[
-                                              const SizedBox(height: 8),
+                                                ],
+                                              ),
+                                              const SizedBox(height: 10),
                                               Row(
-                                                crossAxisAlignment:
-                                                    CrossAxisAlignment.center,
                                                 children: [
                                                   const SizedBox(
                                                     width: 70,
-                                                    child: Text('Recent'),
+                                                    child: Text('Scale'),
                                                   ),
                                                   Expanded(
-                                                    child: Wrap(
-                                                      spacing: 7,
-                                                      runSpacing: 7,
-                                                      children: [
-                                                        for (final color
-                                                            in _recentColors)
-                                                          GestureDetector(
-                                                            onTap: () {
-                                                              setState(() {
-                                                                _brushColor =
-                                                                    color;
-                                                                _rememberRecentColor(
-                                                                  color,
-                                                                );
-                                                              });
-                                                            },
-                                                            child: Container(
-                                                              width: 24,
-                                                              height: 24,
-                                                              decoration: BoxDecoration(
-                                                                color: color,
-                                                                shape: BoxShape
-                                                                    .circle,
-                                                                border: Border.all(
-                                                                  color:
-                                                                      _brushColor ==
-                                                                          color
-                                                                      ? Colors
-                                                                            .deepPurpleAccent
-                                                                      : Colors
-                                                                            .white38,
-                                                                  width:
-                                                                      _brushColor ==
-                                                                          color
-                                                                      ? 3
-                                                                      : 2,
-                                                                ),
-                                                              ),
-                                                            ),
-                                                          ),
-                                                      ],
+                                                    child: Slider(
+                                                      value: _stampBrushScale,
+                                                      min: 0.1,
+                                                      max: 3.0,
+                                                      divisions: 29,
+                                                      label:
+                                                          '${(_stampBrushScale * 100).round()}%',
+                                                      onChanged: (value) {
+                                                        setState(() {
+                                                          _stampBrushScale =
+                                                              value;
+                                                        });
+                                                      },
+                                                    ),
+                                                  ),
+                                                  SizedBox(
+                                                    width: 46,
+                                                    child: Text(
+                                                      '${(_stampBrushScale * 100).round()}%',
+                                                      textAlign:
+                                                          TextAlign.right,
+                                                    ),
+                                                  ),
+                                                ],
+                                              ),
+                                              Row(
+                                                children: [
+                                                  const SizedBox(
+                                                    width: 70,
+                                                    child: Text('Spacing'),
+                                                  ),
+                                                  Expanded(
+                                                    child: Slider(
+                                                      value: _stampBrushSpacing,
+                                                      min: 20,
+                                                      max: 400,
+                                                      divisions: 38,
+                                                      label: _stampBrushSpacing
+                                                          .round()
+                                                          .toString(),
+                                                      onChanged: (value) {
+                                                        setState(() {
+                                                          _stampBrushSpacing =
+                                                              value;
+                                                        });
+                                                      },
+                                                    ),
+                                                  ),
+                                                  SizedBox(
+                                                    width: 46,
+                                                    child: Text(
+                                                      _stampBrushSpacing
+                                                          .round()
+                                                          .toString(),
+                                                      textAlign:
+                                                          TextAlign.right,
+                                                    ),
+                                                  ),
+                                                ],
+                                              ),
+                                              Row(
+                                                children: [
+                                                  const SizedBox(
+                                                    width: 70,
+                                                    child: Text('Rotation'),
+                                                  ),
+                                                  Expanded(
+                                                    child: Slider(
+                                                      value:
+                                                          _stampBrushRotation,
+                                                      min: -180,
+                                                      max: 180,
+                                                      divisions: 72,
+                                                      label:
+                                                          '${_stampBrushRotation.round()}°',
+                                                      onChanged: (value) {
+                                                        setState(() {
+                                                          _stampBrushRotation =
+                                                              value;
+                                                        });
+                                                      },
+                                                    ),
+                                                  ),
+                                                  SizedBox(
+                                                    width: 46,
+                                                    child: Text(
+                                                      '${_stampBrushRotation.round()}°',
+                                                      textAlign:
+                                                          TextAlign.right,
+                                                    ),
+                                                  ),
+                                                ],
+                                              ),
+                                              Row(
+                                                children: [
+                                                  const SizedBox(
+                                                    width: 70,
+                                                    child: Text('Random'),
+                                                  ),
+                                                  Expanded(
+                                                    child: Slider(
+                                                      value:
+                                                          _stampBrushRandomRotation,
+                                                      min: 0,
+                                                      max: 180,
+                                                      divisions: 36,
+                                                      label:
+                                                          '±${_stampBrushRandomRotation.round()}°',
+                                                      onChanged: (value) {
+                                                        setState(() {
+                                                          _stampBrushRandomRotation =
+                                                              value;
+                                                        });
+                                                      },
+                                                    ),
+                                                  ),
+                                                  SizedBox(
+                                                    width: 46,
+                                                    child: Text(
+                                                      '±${_stampBrushRandomRotation.round()}°',
+                                                      textAlign:
+                                                          TextAlign.right,
+                                                    ),
+                                                  ),
+                                                ],
+                                              ),
+                                              Row(
+                                                children: [
+                                                  const SizedBox(
+                                                    width: 70,
+                                                    child: Text('Scatter'),
+                                                  ),
+                                                  Expanded(
+                                                    child: Slider(
+                                                      value: _stampBrushScatter,
+                                                      min: 0,
+                                                      max: 300,
+                                                      divisions: 30,
+                                                      label: _stampBrushScatter
+                                                          .round()
+                                                          .toString(),
+                                                      onChanged: (value) {
+                                                        setState(() {
+                                                          _stampBrushScatter =
+                                                              value;
+                                                        });
+                                                      },
+                                                    ),
+                                                  ),
+                                                  SizedBox(
+                                                    width: 46,
+                                                    child: Text(
+                                                      _stampBrushScatter
+                                                          .round()
+                                                          .toString(),
+                                                      textAlign:
+                                                          TextAlign.right,
                                                     ),
                                                   ),
                                                 ],
                                               ),
                                             ],
+                                          ),
+                                        ),
+                                      ),
+                                    ),
 
-                                            const SizedBox(height: 10),
-                                            const Divider(height: 1),
-                                            const SizedBox(height: 8),
+                                  if (_drawingMode &&
+                                      _stampBrushActive &&
+                                      _textureExpanded)
+                                    const SizedBox(height: 8),
 
-                                            // Canvas colour remains available,
-                                            // but no longer occupies a huge grid.
-                                            Row(
-                                              children: [
-                                                const SizedBox(
-                                                  width: 70,
-                                                  child: Text('Canvas'),
+                                  if (_drawingMode && _textureExpanded)
+                                    Material(
+                                      elevation: 8,
+                                      color: const Color(0xE61A1720),
+                                      borderRadius: BorderRadius.circular(16),
+                                      clipBehavior: Clip.antiAlias,
+                                      child: SizedBox(
+                                        width: constraints.maxWidth < 420
+                                            ? constraints.maxWidth - 96
+                                            : 300,
+                                        child: Padding(
+                                          padding: const EdgeInsets.fromLTRB(
+                                            14,
+                                            12,
+                                            14,
+                                            12,
+                                          ),
+                                          child: Column(
+                                            mainAxisSize: MainAxisSize.min,
+                                            children: [
+                                              const Align(
+                                                alignment: Alignment.centerLeft,
+                                                child: Text(
+                                                  'Texture',
+                                                  style: TextStyle(
+                                                    fontWeight: FontWeight.w600,
+                                                  ),
                                                 ),
-                                                Expanded(
-                                                  child: Align(
-                                                    alignment:
-                                                        Alignment.centerLeft,
-                                                    child: Tooltip(
-                                                      message:
-                                                          'Choose Canvas Colour',
-                                                      child: InkWell(
-                                                        borderRadius:
-                                                            BorderRadius.circular(
-                                                              12,
-                                                            ),
-                                                        onTap: () async {
-                                                          final color =
-                                                              await _showColourPicker(
-                                                                _canvasBackgroundColor,
-                                                                title:
-                                                                    'Canvas Background',
-                                                              );
+                                              ),
+                                              const SizedBox(height: 10),
 
-                                                          if (color == null ||
-                                                              !mounted) {
-                                                            return;
-                                                          }
+                                              SegmentedButton<String>(
+                                                segments: const [
+                                                  ButtonSegment<String>(
+                                                    value: 'stipple',
+                                                    label: Text('Stipple'),
+                                                  ),
+                                                  ButtonSegment<String>(
+                                                    value: 'hatch',
+                                                    label: Text('Hatch'),
+                                                  ),
+                                                  ButtonSegment<String>(
+                                                    value: 'grain',
+                                                    label: Text('Grain'),
+                                                  ),
+                                                ],
+                                                selected: <String>{
+                                                  _texturePattern,
+                                                },
+                                                onSelectionChanged:
+                                                    (selection) {
+                                                      setState(() {
+                                                        _texturePattern =
+                                                            selection.first;
+                                                      });
+                                                    },
+                                              ),
 
-                                                          setState(() {
-                                                            _canvasBackgroundColor =
-                                                                color;
-                                                          });
+                                              const SizedBox(height: 10),
 
-                                                          _scheduleAutosave();
-                                                        },
+                                              Row(
+                                                children: [
+                                                  const SizedBox(
+                                                    width: 70,
+                                                    child: Text('Scale'),
+                                                  ),
+                                                  Expanded(
+                                                    child: Slider(
+                                                      value: _textureScale,
+                                                      min: 2,
+                                                      max: 30,
+                                                      divisions: 28,
+                                                      label: _textureScale
+                                                          .round()
+                                                          .toString(),
+                                                      onChanged: (value) {
+                                                        setState(() {
+                                                          _textureScale = value;
+                                                        });
+                                                      },
+                                                    ),
+                                                  ),
+                                                  SizedBox(
+                                                    width: 38,
+                                                    child: Text(
+                                                      _textureScale
+                                                          .round()
+                                                          .toString(),
+                                                      textAlign:
+                                                          TextAlign.right,
+                                                    ),
+                                                  ),
+                                                ],
+                                              ),
+
+                                              Row(
+                                                children: [
+                                                  const SizedBox(
+                                                    width: 70,
+                                                    child: Text('Density'),
+                                                  ),
+                                                  Expanded(
+                                                    child: Slider(
+                                                      value: _textureDensity,
+                                                      min: 0.1,
+                                                      max: 1.0,
+                                                      divisions: 9,
+                                                      label:
+                                                          '${(_textureDensity * 100).round()}%',
+                                                      onChanged: (value) {
+                                                        setState(() {
+                                                          _textureDensity =
+                                                              value;
+                                                        });
+                                                      },
+                                                    ),
+                                                  ),
+                                                  SizedBox(
+                                                    width: 40,
+                                                    child: Text(
+                                                      '${(_textureDensity * 100).round()}%',
+                                                      textAlign:
+                                                          TextAlign.right,
+                                                    ),
+                                                  ),
+                                                ],
+                                              ),
+
+                                              Row(
+                                                children: [
+                                                  const SizedBox(
+                                                    width: 70,
+                                                    child: Text('Scatter'),
+                                                  ),
+                                                  Expanded(
+                                                    child: Slider(
+                                                      value: _textureScatter,
+                                                      min: 0,
+                                                      max: 50,
+                                                      divisions: 25,
+                                                      label: _textureScatter
+                                                          .round()
+                                                          .toString(),
+                                                      onChanged: (value) {
+                                                        setState(() {
+                                                          _textureScatter =
+                                                              value;
+                                                        });
+                                                      },
+                                                    ),
+                                                  ),
+                                                  SizedBox(
+                                                    width: 40,
+                                                    child: Text(
+                                                      _textureScatter
+                                                          .round()
+                                                          .toString(),
+                                                      textAlign:
+                                                          TextAlign.right,
+                                                    ),
+                                                  ),
+                                                ],
+                                              ),
+                                            ],
+                                          ),
+                                        ),
+                                      ),
+                                    ),
+
+                                  if (_drawingMode &&
+                                      _textureExpanded &&
+                                      _blendExpanded)
+                                    const SizedBox(height: 8),
+
+                                  if (_drawingMode && _blendExpanded)
+                                    Material(
+                                      elevation: 8,
+                                      color: const Color(0xE61A1720),
+                                      borderRadius: BorderRadius.circular(16),
+                                      clipBehavior: Clip.antiAlias,
+                                      child: SizedBox(
+                                        width: constraints.maxWidth < 420
+                                            ? constraints.maxWidth - 96
+                                            : 300,
+                                        child: Padding(
+                                          padding: const EdgeInsets.fromLTRB(
+                                            14,
+                                            12,
+                                            14,
+                                            12,
+                                          ),
+                                          child: Column(
+                                            mainAxisSize: MainAxisSize.min,
+                                            children: [
+                                              Row(
+                                                children: [
+                                                  const Expanded(
+                                                    child: Text(
+                                                      'Blend',
+                                                      style: TextStyle(
+                                                        fontWeight:
+                                                            FontWeight.w600,
+                                                      ),
+                                                    ),
+                                                  ),
+                                                  if (_blendSamplingArmed)
+                                                    const Row(
+                                                      mainAxisSize:
+                                                          MainAxisSize.min,
+                                                      children: [
+                                                        Icon(
+                                                          Icons.colorize,
+                                                          size: 16,
+                                                          color:
+                                                              Colors.cyanAccent,
+                                                        ),
+                                                        SizedBox(width: 4),
+                                                        Text(
+                                                          'Tap canvas',
+                                                          style: TextStyle(
+                                                            fontSize: 11,
+                                                            color: Colors
+                                                                .cyanAccent,
+                                                          ),
+                                                        ),
+                                                      ],
+                                                    ),
+                                                ],
+                                              ),
+                                              const SizedBox(height: 12),
+
+                                              Row(
+                                                children: [
+                                                  const SizedBox(
+                                                    width: 70,
+                                                    child: Text('Base'),
+                                                  ),
+                                                  Container(
+                                                    width: 50,
+                                                    height: 30,
+                                                    decoration: BoxDecoration(
+                                                      color: _blendBaseColor,
+                                                      borderRadius:
+                                                          BorderRadius.circular(
+                                                            9,
+                                                          ),
+                                                      border: Border.all(
+                                                        color: Colors.white38,
+                                                      ),
+                                                    ),
+                                                  ),
+                                                  const SizedBox(width: 8),
+                                                  Expanded(
+                                                    child: Text(
+                                                      '#${_colorHex(_blendBaseColor)}',
+                                                      style: const TextStyle(
+                                                        fontSize: 10,
+                                                        color: Colors.white60,
+                                                      ),
+                                                    ),
+                                                  ),
+                                                ],
+                                              ),
+
+                                              const SizedBox(height: 8),
+
+                                              Row(
+                                                children: [
+                                                  const SizedBox(
+                                                    width: 70,
+                                                    child: Text('Sample'),
+                                                  ),
+                                                  Container(
+                                                    width: 50,
+                                                    height: 30,
+                                                    decoration: BoxDecoration(
+                                                      color: _blendSampleColor,
+                                                      borderRadius:
+                                                          BorderRadius.circular(
+                                                            9,
+                                                          ),
+                                                      border: Border.all(
+                                                        color: Colors.white38,
+                                                      ),
+                                                    ),
+                                                  ),
+                                                  const SizedBox(width: 8),
+                                                  Expanded(
+                                                    child: Text(
+                                                      '#${_colorHex(_blendSampleColor)}',
+                                                      style: const TextStyle(
+                                                        fontSize: 10,
+                                                        color: Colors.white60,
+                                                      ),
+                                                    ),
+                                                  ),
+                                                  IconButton(
+                                                    tooltip: 'Sample Again',
+                                                    visualDensity:
+                                                        VisualDensity.compact,
+                                                    onPressed: () {
+                                                      setState(() {
+                                                        _blendBaseColor =
+                                                            _brushColor;
+                                                        _blendSamplingArmed =
+                                                            true;
+                                                      });
+                                                    },
+                                                    icon: Icon(
+                                                      Icons.colorize,
+                                                      size: 18,
+                                                      color: _blendSamplingArmed
+                                                          ? Colors.cyanAccent
+                                                          : Colors.white70,
+                                                    ),
+                                                  ),
+                                                ],
+                                              ),
+
+                                              const SizedBox(height: 10),
+
+                                              Row(
+                                                children: [
+                                                  const SizedBox(
+                                                    width: 70,
+                                                    child: Text('Strength'),
+                                                  ),
+                                                  Expanded(
+                                                    child: Slider(
+                                                      value: _blendAmount,
+                                                      min: 0,
+                                                      max: 1,
+                                                      divisions: 20,
+                                                      label:
+                                                          '${(_blendAmount * 100).round()}%',
+                                                      onChanged: (value) {
+                                                        setState(() {
+                                                          _blendAmount = value;
+                                                          _applyCurrentBlend();
+                                                        });
+                                                      },
+                                                    ),
+                                                  ),
+                                                  SizedBox(
+                                                    width: 40,
+                                                    child: Text(
+                                                      '${(_blendAmount * 100).round()}%',
+                                                      textAlign:
+                                                          TextAlign.right,
+                                                    ),
+                                                  ),
+                                                ],
+                                              ),
+
+                                              const SizedBox(height: 8),
+
+                                              Builder(
+                                                builder: (context) {
+                                                  final mixedColor =
+                                                      _currentBlendColor();
+
+                                                  return Row(
+                                                    children: [
+                                                      const SizedBox(
+                                                        width: 70,
+                                                        child: Text('Result'),
+                                                      ),
+                                                      Expanded(
                                                         child: Container(
-                                                          width: 72,
-                                                          height: 38,
+                                                          height: 34,
                                                           decoration: BoxDecoration(
-                                                            color:
-                                                                _canvasBackgroundColor,
+                                                            color: mixedColor,
                                                             borderRadius:
                                                                 BorderRadius.circular(
-                                                                  12,
+                                                                  10,
                                                                 ),
                                                             border: Border.all(
                                                               color: Colors
-                                                                  .white38,
-                                                              width: 2,
+                                                                  .white24,
                                                             ),
                                                           ),
-                                                          child: const Icon(
+                                                        ),
+                                                      ),
+                                                      const SizedBox(width: 8),
+                                                      Text(
+                                                        '#${_colorHex(mixedColor)}',
+                                                        style: const TextStyle(
+                                                          fontSize: 10,
+                                                          color: Colors.white60,
+                                                        ),
+                                                      ),
+                                                    ],
+                                                  );
+                                                },
+                                              ),
+                                            ],
+                                          ),
+                                        ),
+                                      ),
+                                    ),
+
+                                  if (_drawingMode &&
+                                      _blendExpanded &&
+                                      _drawingExpanded)
+                                    const SizedBox(height: 8),
+
+                                  if (_drawingExpanded)
+                                    Material(
+                                      elevation: 8,
+                                      color: const Color(0xE61A1720),
+                                      borderRadius: BorderRadius.circular(16),
+                                      clipBehavior: Clip.antiAlias,
+                                      child: SizedBox(
+                                        width: constraints.maxWidth < 420
+                                            ? constraints.maxWidth - 96
+                                            : 300,
+                                        child: Padding(
+                                          padding: const EdgeInsets.fromLTRB(
+                                            14,
+                                            10,
+                                            14,
+                                            12,
+                                          ),
+                                          child: Column(
+                                            mainAxisSize: MainAxisSize.min,
+                                            children: [
+                                              Row(
+                                                children: [
+                                                  const SizedBox(
+                                                    width: 70,
+                                                    child: Text('Presets'),
+                                                  ),
+                                                  Expanded(
+                                                    child: Row(
+                                                      mainAxisSize:
+                                                          MainAxisSize.min,
+                                                      children: [
+                                                        IconButton(
+                                                          tooltip:
+                                                              'Open Brush Presets',
+                                                          visualDensity:
+                                                              VisualDensity
+                                                                  .compact,
+                                                          onPressed:
+                                                              _openBrushPresets,
+                                                          icon: const Icon(
                                                             Icons
-                                                                .format_color_fill,
-                                                            size: 19,
+                                                                .folder_open_outlined,
+                                                          ),
+                                                        ),
+                                                        const SizedBox(
+                                                          width: 4,
+                                                        ),
+                                                        IconButton(
+                                                          tooltip:
+                                                              'Save Current Brush',
+                                                          visualDensity:
+                                                              VisualDensity
+                                                                  .compact,
+                                                          onPressed:
+                                                              _saveCurrentBrushPreset,
+                                                          icon: const Icon(
+                                                            Icons.save_outlined,
+                                                          ),
+                                                        ),
+                                                      ],
+                                                    ),
+                                                  ),
+                                                ],
+                                              ),
+
+                                              const SizedBox(height: 8),
+
+                                              Row(
+                                                children: [
+                                                  const SizedBox(
+                                                    width: 70,
+                                                    child: Text('Type'),
+                                                  ),
+                                                  Expanded(
+                                                    child:
+                                                        SegmentedButton<
+                                                          StrokeBrushType
+                                                        >(
+                                                          segments: const [
+                                                            ButtonSegment<
+                                                              StrokeBrushType
+                                                            >(
+                                                              value:
+                                                                  StrokeBrushType
+                                                                      .solid,
+                                                              label: Text(
+                                                                'Solid',
+                                                              ),
+                                                            ),
+                                                            ButtonSegment<
+                                                              StrokeBrushType
+                                                            >(
+                                                              value:
+                                                                  StrokeBrushType
+                                                                      .pressure,
+                                                              label: Text(
+                                                                'Pressure',
+                                                              ),
+                                                            ),
+                                                          ],
+                                                          selected:
+                                                              <StrokeBrushType>{
+                                                                _brushType,
+                                                              },
+                                                          onSelectionChanged:
+                                                              (selection) {
+                                                                setState(() {
+                                                                  _brushType =
+                                                                      selection
+                                                                          .first;
+                                                                });
+                                                              },
+                                                        ),
+                                                  ),
+                                                ],
+                                              ),
+                                              const SizedBox(height: 6),
+                                              Row(
+                                                children: [
+                                                  const SizedBox(
+                                                    width: 70,
+                                                    child: Text('Size'),
+                                                  ),
+                                                  Expanded(
+                                                    child: Slider(
+                                                      value: _brushSize,
+                                                      min: 1,
+                                                      max: 20,
+                                                      divisions: 19,
+                                                      label: _brushSize
+                                                          .toStringAsFixed(0),
+                                                      onChanged: (value) {
+                                                        setState(() {
+                                                          _brushSize = value;
+                                                        });
+                                                      },
+                                                    ),
+                                                  ),
+                                                  SizedBox(
+                                                    width: 28,
+                                                    child: Text(
+                                                      _brushSize
+                                                          .toStringAsFixed(0),
+                                                    ),
+                                                  ),
+                                                ],
+                                              ),
+                                              const SizedBox(height: 6),
+                                              Row(
+                                                children: [
+                                                  const SizedBox(
+                                                    width: 70,
+                                                    child: Text('Stabiliser'),
+                                                  ),
+                                                  Expanded(
+                                                    child: Slider(
+                                                      value:
+                                                          _stabilizerStrength,
+                                                      min: 0,
+                                                      max: 0.9,
+                                                      divisions: 9,
+                                                      label:
+                                                          '${(_stabilizerStrength * 100).round()}%',
+                                                      onChanged: (value) {
+                                                        setState(() {
+                                                          _stabilizerStrength =
+                                                              value;
+                                                        });
+                                                      },
+                                                    ),
+                                                  ),
+                                                  SizedBox(
+                                                    width: 40,
+                                                    child: Text(
+                                                      '${(_stabilizerStrength * 100).round()}%',
+                                                      textAlign:
+                                                          TextAlign.right,
+                                                    ),
+                                                  ),
+                                                ],
+                                              ),
+                                              const SizedBox(height: 4),
+                                              Row(
+                                                children: [
+                                                  const SizedBox(
+                                                    width: 70,
+                                                    child: Text('Pull'),
+                                                  ),
+                                                  Expanded(
+                                                    child: Slider(
+                                                      value:
+                                                          _stabilizerPullDistance,
+                                                      min: 0,
+                                                      max: 40,
+                                                      divisions: 20,
+                                                      label:
+                                                          '${_stabilizerPullDistance.round()} px',
+                                                      onChanged: (value) {
+                                                        setState(() {
+                                                          _stabilizerPullDistance =
+                                                              value;
+                                                        });
+                                                      },
+                                                    ),
+                                                  ),
+                                                  SizedBox(
+                                                    width: 40,
+                                                    child: Text(
+                                                      '${_stabilizerPullDistance.round()}',
+                                                      textAlign:
+                                                          TextAlign.right,
+                                                    ),
+                                                  ),
+                                                ],
+                                              ),
+                                              const SizedBox(height: 6),
+
+                                              // Brush opacity.
+                                              Row(
+                                                children: [
+                                                  const SizedBox(
+                                                    width: 70,
+                                                    child: Text('Opacity'),
+                                                  ),
+                                                  Expanded(
+                                                    child: Slider(
+                                                      value: _brushOpacity,
+                                                      min: 0.05,
+                                                      max: 1.0,
+                                                      divisions: 19,
+                                                      label:
+                                                          '${(_brushOpacity * 100).round()}%',
+                                                      onChanged: (value) {
+                                                        setState(() {
+                                                          _brushOpacity = value;
+                                                        });
+                                                      },
+                                                    ),
+                                                  ),
+                                                  SizedBox(
+                                                    width: 40,
+                                                    child: Text(
+                                                      '${(_brushOpacity * 100).round()}%',
+                                                      textAlign:
+                                                          TextAlign.right,
+                                                    ),
+                                                  ),
+                                                ],
+                                              ),
+
+                                              const SizedBox(height: 8),
+
+                                              // Current brush colour.
+                                              Row(
+                                                children: [
+                                                  const SizedBox(
+                                                    width: 70,
+                                                    child: Text('Colour'),
+                                                  ),
+                                                  Expanded(
+                                                    child: Align(
+                                                      alignment:
+                                                          Alignment.centerLeft,
+                                                      child: Tooltip(
+                                                        message:
+                                                            'Choose Brush Colour',
+                                                        child: InkWell(
+                                                          borderRadius:
+                                                              BorderRadius.circular(
+                                                                12,
+                                                              ),
+                                                          onTap: () async {
+                                                            final color =
+                                                                await _showColourPicker(
+                                                                  _brushColor,
+                                                                  title:
+                                                                      'Brush Colour',
+                                                                );
+
+                                                            if (color == null ||
+                                                                !mounted) {
+                                                              return;
+                                                            }
+
+                                                            setState(() {
+                                                              _brushColor =
+                                                                  color;
+                                                              _rememberRecentColor(
+                                                                color,
+                                                              );
+                                                            });
+                                                          },
+                                                          child: Container(
+                                                            width: 72,
+                                                            height: 38,
+                                                            decoration: BoxDecoration(
+                                                              color:
+                                                                  _brushColor,
+                                                              borderRadius:
+                                                                  BorderRadius.circular(
+                                                                    12,
+                                                                  ),
+                                                              border: Border.all(
+                                                                color: Colors
+                                                                    .deepPurpleAccent,
+                                                                width: 2,
+                                                              ),
+                                                            ),
+                                                            child: Icon(
+                                                              Icons
+                                                                  .palette_outlined,
+                                                              color:
+                                                                  _brushColor
+                                                                          .computeLuminance() >
+                                                                      0.55
+                                                                  ? Colors
+                                                                        .black87
+                                                                  : Colors
+                                                                        .white,
+                                                              size: 19,
+                                                            ),
                                                           ),
                                                         ),
                                                       ),
                                                     ),
                                                   ),
-                                                ),
-                                                Text(
-                                                  '#${_colorHex(_canvasBackgroundColor)}',
-                                                  style: const TextStyle(
-                                                    fontSize: 10,
-                                                    color: Colors.white60,
+                                                  Tooltip(
+                                                    message:
+                                                        'Visual Colour Picker',
+                                                    child: IconButton(
+                                                      tooltip:
+                                                          'Visual Colour Picker',
+                                                      visualDensity:
+                                                          VisualDensity.compact,
+                                                      onPressed: () async {
+                                                        final color =
+                                                            await _showRadialColourPicker(
+                                                              _brushColor,
+                                                            );
+
+                                                        if (color == null ||
+                                                            !mounted) {
+                                                          return;
+                                                        }
+
+                                                        setState(() {
+                                                          _brushColor = color;
+                                                          _rememberRecentColor(
+                                                            color,
+                                                          );
+                                                        });
+                                                      },
+                                                      icon: const Icon(
+                                                        Icons
+                                                            .color_lens_outlined,
+                                                      ),
+                                                    ),
                                                   ),
+                                                  const SizedBox(width: 4),
+                                                  Text(
+                                                    '#${_colorHex(_brushColor)}',
+                                                    style: const TextStyle(
+                                                      fontSize: 10,
+                                                      color: Colors.white60,
+                                                    ),
+                                                  ),
+                                                ],
+                                              ),
+
+                                              if (_recentColors.isNotEmpty) ...[
+                                                const SizedBox(height: 8),
+                                                Row(
+                                                  crossAxisAlignment:
+                                                      CrossAxisAlignment.center,
+                                                  children: [
+                                                    const SizedBox(
+                                                      width: 70,
+                                                      child: Text('Recent'),
+                                                    ),
+                                                    Expanded(
+                                                      child: Wrap(
+                                                        spacing: 7,
+                                                        runSpacing: 7,
+                                                        children: [
+                                                          for (final color
+                                                              in _recentColors)
+                                                            GestureDetector(
+                                                              onTap: () {
+                                                                setState(() {
+                                                                  _brushColor =
+                                                                      color;
+                                                                  _rememberRecentColor(
+                                                                    color,
+                                                                  );
+                                                                });
+                                                              },
+                                                              child: Container(
+                                                                width: 24,
+                                                                height: 24,
+                                                                decoration: BoxDecoration(
+                                                                  color: color,
+                                                                  shape: BoxShape
+                                                                      .circle,
+                                                                  border: Border.all(
+                                                                    color:
+                                                                        _brushColor ==
+                                                                            color
+                                                                        ? Colors
+                                                                              .deepPurpleAccent
+                                                                        : Colors
+                                                                              .white38,
+                                                                    width:
+                                                                        _brushColor ==
+                                                                            color
+                                                                        ? 3
+                                                                        : 2,
+                                                                  ),
+                                                                ),
+                                                              ),
+                                                            ),
+                                                        ],
+                                                      ),
+                                                    ),
+                                                  ],
                                                 ),
                                               ],
-                                            ),
-                                          ],
+
+                                              const SizedBox(height: 10),
+                                              const Divider(height: 1),
+                                              const SizedBox(height: 8),
+
+                                              // Canvas colour remains available,
+                                              // but no longer occupies a huge grid.
+                                              Row(
+                                                children: [
+                                                  const SizedBox(
+                                                    width: 70,
+                                                    child: Text('Canvas'),
+                                                  ),
+                                                  Expanded(
+                                                    child: Align(
+                                                      alignment:
+                                                          Alignment.centerLeft,
+                                                      child: Tooltip(
+                                                        message:
+                                                            'Choose Canvas Colour',
+                                                        child: InkWell(
+                                                          borderRadius:
+                                                              BorderRadius.circular(
+                                                                12,
+                                                              ),
+                                                          onTap: () async {
+                                                            final color =
+                                                                await _showColourPicker(
+                                                                  _canvasBackgroundColor,
+                                                                  title:
+                                                                      'Canvas Background',
+                                                                );
+
+                                                            if (color == null ||
+                                                                !mounted) {
+                                                              return;
+                                                            }
+
+                                                            setState(() {
+                                                              _canvasBackgroundColor =
+                                                                  color;
+                                                            });
+
+                                                            _scheduleAutosave();
+                                                          },
+                                                          child: Container(
+                                                            width: 72,
+                                                            height: 38,
+                                                            decoration: BoxDecoration(
+                                                              color:
+                                                                  _canvasBackgroundColor,
+                                                              borderRadius:
+                                                                  BorderRadius.circular(
+                                                                    12,
+                                                                  ),
+                                                              border: Border.all(
+                                                                color: Colors
+                                                                    .white38,
+                                                                width: 2,
+                                                              ),
+                                                            ),
+                                                            child: const Icon(
+                                                              Icons
+                                                                  .format_color_fill,
+                                                              size: 19,
+                                                            ),
+                                                          ),
+                                                        ),
+                                                      ),
+                                                    ),
+                                                  ),
+                                                  Text(
+                                                    '#${_colorHex(_canvasBackgroundColor)}',
+                                                    style: const TextStyle(
+                                                      fontSize: 10,
+                                                      color: Colors.white60,
+                                                    ),
+                                                  ),
+                                                ],
+                                              ),
+                                            ],
+                                          ),
                                         ),
                                       ),
                                     ),
-                                  ),
-                              ],
-                            ),
+                                ],
+                              ),
+                            ],
                           ],
-                        ],
+                        ),
                       ),
-                    ),
 
                     Positioned(
                       right: 16,
@@ -6203,48 +6280,52 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                             crossAxisAlignment: CrossAxisAlignment.end,
                             children: [
                               if (_layersPanelExpanded) ...[
-                                SizedBox(
-                                  width: 300,
-                                  child: Padding(
-                                    padding: const EdgeInsets.fromLTRB(
-                                      8,
-                                      8,
-                                      8,
-                                      4,
-                                    ),
-                                    child: Row(
-                                      children: [
-                                        const Expanded(
-                                          child: Text(
-                                            'Layers',
-                                            style: TextStyle(
-                                              fontWeight: FontWeight.w600,
+                                if (!_isVideoScrubbing)
+                                  SizedBox(
+                                    width: 300,
+                                    child: Padding(
+                                      padding: const EdgeInsets.fromLTRB(
+                                        8,
+                                        8,
+                                        8,
+                                        4,
+                                      ),
+                                      child: Row(
+                                        children: [
+                                          const Expanded(
+                                            child: Text(
+                                              'Layers',
+                                              style: TextStyle(
+                                                fontWeight: FontWeight.w600,
+                                              ),
                                             ),
                                           ),
-                                        ),
-                                        IconButton(
-                                          tooltip: 'Add Layer Group',
-                                          visualDensity: VisualDensity.compact,
-                                          onPressed: _isPlaying
-                                              ? null
-                                              : _addLayerGroup,
-                                          icon: const Icon(
-                                            Icons.create_new_folder_outlined,
+                                          IconButton(
+                                            tooltip: 'Add Layer Group',
+                                            visualDensity:
+                                                VisualDensity.compact,
+                                            onPressed: _isPlaying
+                                                ? null
+                                                : _addLayerGroup,
+                                            icon: const Icon(
+                                              Icons.create_new_folder_outlined,
+                                            ),
                                           ),
-                                        ),
-                                        IconButton(
-                                          tooltip: 'Add Drawing Layer',
-                                          visualDensity: VisualDensity.compact,
-                                          onPressed: _isPlaying
-                                              ? null
-                                              : _addDrawingLayer,
-                                          icon: const Icon(Icons.add),
-                                        ),
-                                      ],
+                                          IconButton(
+                                            tooltip: 'Add Drawing Layer',
+                                            visualDensity:
+                                                VisualDensity.compact,
+                                            onPressed: _isPlaying
+                                                ? null
+                                                : _addDrawingLayer,
+                                            icon: const Icon(Icons.add),
+                                          ),
+                                        ],
+                                      ),
                                     ),
                                   ),
-                                ),
-                                const Divider(height: 1),
+                                if (!_isVideoScrubbing)
+                                  const Divider(height: 1),
 
                                 SizedBox(
                                   width: 300,
@@ -6256,15 +6337,17 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                                       child: Column(
                                         mainAxisSize: MainAxisSize.min,
                                         children: [
-                                          ..._buildLayerPanelEntries(),
+                                          if (!_isVideoScrubbing)
+                                            ..._buildLayerPanelEntries(),
 
                                           if (_referenceMediaPath != null) ...[
-                                            const Padding(
-                                              padding: EdgeInsets.symmetric(
-                                                vertical: 5,
+                                            if (!_isVideoScrubbing)
+                                              const Padding(
+                                                padding: EdgeInsets.symmetric(
+                                                  vertical: 5,
+                                                ),
+                                                child: Divider(height: 1),
                                               ),
-                                              child: Divider(height: 1),
-                                            ),
                                             Container(
                                               margin:
                                                   const EdgeInsets.symmetric(
@@ -6287,112 +6370,120 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                                               child: Column(
                                                 mainAxisSize: MainAxisSize.min,
                                                 children: [
-                                                  Row(
-                                                    children: [
-                                                      IconButton(
-                                                        tooltip:
+                                                  if (!_isVideoScrubbing)
+                                                    Row(
+                                                      children: [
+                                                        IconButton(
+                                                          tooltip:
+                                                              _referenceVisible
+                                                              ? 'Hide Reference'
+                                                              : 'Show Reference',
+                                                          visualDensity:
+                                                              VisualDensity
+                                                                  .compact,
+                                                          onPressed: () {
+                                                            setState(() {
+                                                              _referenceVisible =
+                                                                  !_referenceVisible;
+                                                            });
+                                                            _scheduleAutosave();
+                                                          },
+                                                          icon: Icon(
                                                             _referenceVisible
-                                                            ? 'Hide Reference'
-                                                            : 'Show Reference',
-                                                        visualDensity:
-                                                            VisualDensity
-                                                                .compact,
-                                                        onPressed: () {
-                                                          setState(() {
-                                                            _referenceVisible =
-                                                                !_referenceVisible;
-                                                          });
-                                                          _scheduleAutosave();
-                                                        },
-                                                        icon: Icon(
-                                                          _referenceVisible
-                                                              ? Icons.visibility
-                                                              : Icons
-                                                                    .visibility_off,
-                                                          size: 20,
+                                                                ? Icons
+                                                                      .visibility
+                                                                : Icons
+                                                                      .visibility_off,
+                                                            size: 20,
+                                                          ),
                                                         ),
-                                                      ),
-                                                      Icon(
-                                                        _referenceMediaType ==
-                                                                'video'
-                                                            ? Icons
-                                                                  .movie_outlined
-                                                            : Icons
-                                                                  .image_outlined,
-                                                        size: 19,
-                                                        color: Colors.white70,
-                                                      ),
-                                                      const SizedBox(width: 8),
-                                                      Expanded(
-                                                        child: Text(
+                                                        Icon(
                                                           _referenceMediaType ==
                                                                   'video'
-                                                              ? 'Video Reference'
-                                                              : 'Image Reference',
-                                                          overflow: TextOverflow
-                                                              .ellipsis,
+                                                              ? Icons
+                                                                    .movie_outlined
+                                                              : Icons
+                                                                    .image_outlined,
+                                                          size: 19,
+                                                          color: Colors.white70,
                                                         ),
-                                                      ),
-                                                      const Padding(
-                                                        padding:
-                                                            EdgeInsets.only(
-                                                              right: 10,
-                                                            ),
-                                                        child: Icon(
-                                                          Icons.lock_outline,
-                                                          size: 17,
-                                                          color: Colors.white38,
-                                                        ),
-                                                      ),
-                                                    ],
-                                                  ),
-                                                  Padding(
-                                                    padding:
-                                                        const EdgeInsets.fromLTRB(
-                                                          12,
-                                                          0,
-                                                          10,
-                                                          2,
-                                                        ),
-                                                    child: Row(
-                                                      children: [
                                                         const SizedBox(
-                                                          width: 50,
-                                                          child: Text(
-                                                            'Opacity',
-                                                            style: TextStyle(
-                                                              fontSize: 11,
-                                                            ),
-                                                          ),
+                                                          width: 8,
                                                         ),
                                                         Expanded(
-                                                          child: Slider(
-                                                            value:
-                                                                _referenceOpacity,
-                                                            min: 0,
-                                                            max: 1,
-                                                            onChanged: (value) {
-                                                              setState(() {
-                                                                _referenceOpacity =
-                                                                    value;
-                                                              });
-                                                              _scheduleAutosave();
-                                                            },
+                                                          child: Text(
+                                                            _referenceMediaType ==
+                                                                    'video'
+                                                                ? 'Video Reference'
+                                                                : 'Image Reference',
+                                                            overflow:
+                                                                TextOverflow
+                                                                    .ellipsis,
                                                           ),
                                                         ),
-                                                        SizedBox(
-                                                          width: 38,
-                                                          child: Text(
-                                                            '${(_referenceOpacity * 100).round()}%',
-                                                            style:
-                                                                const TextStyle(
-                                                                  fontSize: 10,
-                                                                ),
+                                                        const Padding(
+                                                          padding:
+                                                              EdgeInsets.only(
+                                                                right: 10,
+                                                              ),
+                                                          child: Icon(
+                                                            Icons.lock_outline,
+                                                            size: 17,
+                                                            color:
+                                                                Colors.white38,
                                                           ),
                                                         ),
                                                       ],
                                                     ),
-                                                  ),
+                                                  if (!_isVideoScrubbing)
+                                                    Padding(
+                                                      padding:
+                                                          const EdgeInsets.fromLTRB(
+                                                            12,
+                                                            0,
+                                                            10,
+                                                            2,
+                                                          ),
+                                                      child: Row(
+                                                        children: [
+                                                          const SizedBox(
+                                                            width: 50,
+                                                            child: Text(
+                                                              'Opacity',
+                                                              style: TextStyle(
+                                                                fontSize: 11,
+                                                              ),
+                                                            ),
+                                                          ),
+                                                          Expanded(
+                                                            child: Slider(
+                                                              value:
+                                                                  _referenceOpacity,
+                                                              min: 0,
+                                                              max: 1,
+                                                              onChanged: (value) {
+                                                                setState(() {
+                                                                  _referenceOpacity =
+                                                                      value;
+                                                                });
+                                                                _scheduleAutosave();
+                                                              },
+                                                            ),
+                                                          ),
+                                                          SizedBox(
+                                                            width: 38,
+                                                            child: Text(
+                                                              '${(_referenceOpacity * 100).round()}%',
+                                                              style:
+                                                                  const TextStyle(
+                                                                    fontSize:
+                                                                        10,
+                                                                  ),
+                                                            ),
+                                                          ),
+                                                        ],
+                                                      ),
+                                                    ),
                                                   if (_referenceMediaType ==
                                                           'video' &&
                                                       _videoReady &&
@@ -6461,6 +6552,25 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                                                                           ),
                                                                         ),
                                                                       ),
+                                                                      IconButton(
+                                                                        tooltip:
+                                                                            'Previous Video Frame',
+                                                                        visualDensity:
+                                                                            VisualDensity.compact,
+                                                                        onPressed: () {
+                                                                          unawaited(
+                                                                            _stepReferenceVideo(
+                                                                              -1,
+                                                                            ),
+                                                                          );
+                                                                        },
+                                                                        icon: const Icon(
+                                                                          Icons
+                                                                              .chevron_left,
+                                                                          size:
+                                                                              18,
+                                                                        ),
+                                                                      ),
                                                                       Expanded(
                                                                         child: Slider(
                                                                           value:
@@ -6488,19 +6598,31 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                                                                                 setState(() {
                                                                                   _isVideoScrubbing = true;
                                                                                   _videoScrubPositionMs = value;
+                                                                                  _videoScrubDragStartMs = value;
+                                                                                  _videoScrubDragStartSliderMs = value;
                                                                                 });
                                                                               },
                                                                           onChanged:
                                                                               (
                                                                                 value,
                                                                               ) {
+                                                                                final dampedValue =
+                                                                                    (_videoScrubDragStartMs +
+                                                                                            ((value -
+                                                                                                    _videoScrubDragStartSliderMs) *
+                                                                                                0.75))
+                                                                                        .clamp(
+                                                                                          0.0,
+                                                                                          maxMs,
+                                                                                        );
+
                                                                                 setState(() {
-                                                                                  _videoScrubPositionMs = value;
+                                                                                  _videoScrubPositionMs = dampedValue;
                                                                                 });
 
                                                                                 unawaited(
                                                                                   _seekReferenceVideoToMs(
-                                                                                    value,
+                                                                                    dampedValue,
                                                                                   ),
                                                                                 );
                                                                               },
@@ -6519,6 +6641,25 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                                                                                   ),
                                                                                 );
                                                                               },
+                                                                        ),
+                                                                      ),
+                                                                      IconButton(
+                                                                        tooltip:
+                                                                            'Next Video Frame',
+                                                                        visualDensity:
+                                                                            VisualDensity.compact,
+                                                                        onPressed: () {
+                                                                          unawaited(
+                                                                            _stepReferenceVideo(
+                                                                              1,
+                                                                            ),
+                                                                          );
+                                                                        },
+                                                                        icon: const Icon(
+                                                                          Icons
+                                                                              .chevron_right,
+                                                                          size:
+                                                                              18,
                                                                         ),
                                                                       ),
                                                                     ],
@@ -6597,198 +6738,201 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                       ),
                     ),
 
-                    Positioned(
-                      top:
-                          MediaQuery.of(context).viewPadding.top +
-                          kToolbarHeight +
-                          8,
-                      right: 16,
-                      child: Material(
-                        elevation: 8,
-                        color: const Color(0xE61A1720),
-                        borderRadius: BorderRadius.circular(16),
-                        clipBehavior: Clip.antiAlias,
-                        child: Padding(
-                          padding: const EdgeInsets.symmetric(
-                            horizontal: 6,
-                            vertical: 4,
-                          ),
-                          child: Row(
-                            mainAxisSize: MainAxisSize.min,
-                            children: [
-                              if (editToolbarExpanded) ...[
+                    if (!_isVideoScrubbing)
+                      Positioned(
+                        top:
+                            MediaQuery.of(context).viewPadding.top +
+                            kToolbarHeight +
+                            8,
+                        right: 16,
+                        child: Material(
+                          elevation: 8,
+                          color: const Color(0xE61A1720),
+                          borderRadius: BorderRadius.circular(16),
+                          clipBehavior: Clip.antiAlias,
+                          child: Padding(
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 6,
+                              vertical: 4,
+                            ),
+                            child: Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                if (editToolbarExpanded) ...[
+                                  IconButton(
+                                    tooltip: 'Undo',
+                                    visualDensity: VisualDensity.compact,
+                                    onPressed: _undo,
+                                    icon: const Icon(Icons.undo),
+                                  ),
+                                  IconButton(
+                                    tooltip: 'Redo',
+                                    visualDensity: VisualDensity.compact,
+                                    onPressed: _redo,
+                                    icon: const Icon(Icons.redo),
+                                  ),
+                                  IconButton(
+                                    tooltip: 'Reset View',
+                                    visualDensity: VisualDensity.compact,
+                                    onPressed: _resetCanvasView,
+                                    icon: const Icon(Icons.center_focus_strong),
+                                  ),
+                                  IconButton(
+                                    tooltip: 'Eraser',
+                                    visualDensity: VisualDensity.compact,
+                                    onPressed: () {
+                                      setState(() {
+                                        _isEraserActive = !_isEraserActive;
+                                        _isFillToolActive = false;
+                                        _clearFillLasso();
+                                        _isShapeToolActive = false;
+                                        _clearShapeDraft();
+                                        _isTransformActive = false;
+                                        _clearTransformSelection();
+                                      });
+                                    },
+                                    icon: Icon(
+                                      Icons.auto_fix_off,
+                                      color: _isEraserActive
+                                          ? Colors.deepPurpleAccent
+                                          : Colors.white70,
+                                    ),
+                                  ),
+                                  IconButton(
+                                    tooltip: _transformToolbarExpanded
+                                        ? 'Hide Transform Tools'
+                                        : 'Show Transform Tools',
+                                    visualDensity: VisualDensity.compact,
+                                    onPressed: _isPlaying
+                                        ? null
+                                        : () {
+                                            setState(() {
+                                              _transformToolbarExpanded =
+                                                  !_transformToolbarExpanded;
+                                            });
+                                          },
+                                    icon: Icon(
+                                      Icons.open_with,
+                                      color:
+                                          _isTransformActive ||
+                                              _transformToolbarExpanded
+                                          ? Colors.deepPurpleAccent
+                                          : Colors.white70,
+                                    ),
+                                  ),
+                                  IconButton(
+                                    tooltip: 'Fill Tool',
+                                    visualDensity: VisualDensity.compact,
+                                    onPressed: _isPlaying
+                                        ? null
+                                        : () {
+                                            setState(() {
+                                              _isFillToolActive =
+                                                  !_isFillToolActive;
+
+                                              _isEraserActive = false;
+                                              _isShapeToolActive = false;
+                                              _isTransformActive = false;
+
+                                              _draftStroke =
+                                                  const <VectorPoint>[];
+                                              _clearShapeDraft();
+                                              _clearTransformSelection();
+
+                                              if (!_isFillToolActive) {
+                                                _clearFillLasso();
+                                              }
+                                            });
+                                          },
+                                    icon: Icon(
+                                      Icons.format_color_fill,
+                                      color: _isFillToolActive
+                                          ? Colors.deepPurpleAccent
+                                          : Colors.white70,
+                                    ),
+                                  ),
+                                  PopupMenuButton<_ShapeToolType>(
+                                    tooltip: 'Shape Tool',
+                                    enabled: !_isPlaying,
+                                    onSelected: (shape) {
+                                      setState(() {
+                                        _shapeToolType = shape;
+                                        _isShapeToolActive = true;
+
+                                        _isFillToolActive = false;
+                                        _clearFillLasso();
+                                        _isEraserActive = false;
+                                        _isTransformActive = false;
+                                        _activeLayerGroupId = null;
+
+                                        _draftStroke = const <VectorPoint>[];
+                                        _clearTransformSelection();
+                                        _clearShapeDraft();
+                                      });
+                                    },
+                                    itemBuilder: (context) => const [
+                                      PopupMenuItem(
+                                        value: _ShapeToolType.line,
+                                        child: ListTile(
+                                          leading: Icon(Icons.horizontal_rule),
+                                          title: Text('Line'),
+                                        ),
+                                      ),
+                                      PopupMenuItem(
+                                        value: _ShapeToolType.rectangle,
+                                        child: ListTile(
+                                          leading: Icon(
+                                            Icons.rectangle_outlined,
+                                          ),
+                                          title: Text('Rectangle'),
+                                        ),
+                                      ),
+                                      PopupMenuItem(
+                                        value: _ShapeToolType.square,
+                                        child: ListTile(
+                                          leading: Icon(Icons.crop_square),
+                                          title: Text('Square'),
+                                        ),
+                                      ),
+                                      PopupMenuItem(
+                                        value: _ShapeToolType.circle,
+                                        child: ListTile(
+                                          leading: Icon(Icons.circle_outlined),
+                                          title: Text('Circle'),
+                                        ),
+                                      ),
+                                    ],
+                                    icon: Icon(
+                                      Icons.category_outlined,
+                                      color: _isShapeToolActive
+                                          ? Colors.deepPurpleAccent
+                                          : Colors.white70,
+                                    ),
+                                  ),
+                                ],
                                 IconButton(
-                                  tooltip: 'Undo',
-                                  visualDensity: VisualDensity.compact,
-                                  onPressed: _undo,
-                                  icon: const Icon(Icons.undo),
-                                ),
-                                IconButton(
-                                  tooltip: 'Redo',
-                                  visualDensity: VisualDensity.compact,
-                                  onPressed: _redo,
-                                  icon: const Icon(Icons.redo),
-                                ),
-                                IconButton(
-                                  tooltip: 'Reset View',
-                                  visualDensity: VisualDensity.compact,
-                                  onPressed: _resetCanvasView,
-                                  icon: const Icon(Icons.center_focus_strong),
-                                ),
-                                IconButton(
-                                  tooltip: 'Eraser',
+                                  tooltip: editToolbarExpanded
+                                      ? 'Hide Edit Tools'
+                                      : 'Show Edit Tools',
                                   visualDensity: VisualDensity.compact,
                                   onPressed: () {
                                     setState(() {
-                                      _isEraserActive = !_isEraserActive;
-                                      _isFillToolActive = false;
-                                      _clearFillLasso();
-                                      _isShapeToolActive = false;
-                                      _clearShapeDraft();
-                                      _isTransformActive = false;
-                                      _clearTransformSelection();
+                                      final next = !editToolbarExpanded;
+                                      _editToolbarExpanded = next;
                                     });
                                   },
                                   icon: Icon(
-                                    Icons.auto_fix_off,
-                                    color: _isEraserActive
-                                        ? Colors.deepPurpleAccent
-                                        : Colors.white70,
-                                  ),
-                                ),
-                                IconButton(
-                                  tooltip: _transformToolbarExpanded
-                                      ? 'Hide Transform Tools'
-                                      : 'Show Transform Tools',
-                                  visualDensity: VisualDensity.compact,
-                                  onPressed: _isPlaying
-                                      ? null
-                                      : () {
-                                          setState(() {
-                                            _transformToolbarExpanded =
-                                                !_transformToolbarExpanded;
-                                          });
-                                        },
-                                  icon: Icon(
-                                    Icons.open_with,
-                                    color:
-                                        _isTransformActive ||
-                                            _transformToolbarExpanded
-                                        ? Colors.deepPurpleAccent
-                                        : Colors.white70,
-                                  ),
-                                ),
-                                IconButton(
-                                  tooltip: 'Fill Tool',
-                                  visualDensity: VisualDensity.compact,
-                                  onPressed: _isPlaying
-                                      ? null
-                                      : () {
-                                          setState(() {
-                                            _isFillToolActive =
-                                                !_isFillToolActive;
-
-                                            _isEraserActive = false;
-                                            _isShapeToolActive = false;
-                                            _isTransformActive = false;
-
-                                            _draftStroke =
-                                                const <VectorPoint>[];
-                                            _clearShapeDraft();
-                                            _clearTransformSelection();
-
-                                            if (!_isFillToolActive) {
-                                              _clearFillLasso();
-                                            }
-                                          });
-                                        },
-                                  icon: Icon(
-                                    Icons.format_color_fill,
-                                    color: _isFillToolActive
-                                        ? Colors.deepPurpleAccent
-                                        : Colors.white70,
-                                  ),
-                                ),
-                                PopupMenuButton<_ShapeToolType>(
-                                  tooltip: 'Shape Tool',
-                                  enabled: !_isPlaying,
-                                  onSelected: (shape) {
-                                    setState(() {
-                                      _shapeToolType = shape;
-                                      _isShapeToolActive = true;
-
-                                      _isFillToolActive = false;
-                                      _clearFillLasso();
-                                      _isEraserActive = false;
-                                      _isTransformActive = false;
-                                      _activeLayerGroupId = null;
-
-                                      _draftStroke = const <VectorPoint>[];
-                                      _clearTransformSelection();
-                                      _clearShapeDraft();
-                                    });
-                                  },
-                                  itemBuilder: (context) => const [
-                                    PopupMenuItem(
-                                      value: _ShapeToolType.line,
-                                      child: ListTile(
-                                        leading: Icon(Icons.horizontal_rule),
-                                        title: Text('Line'),
-                                      ),
-                                    ),
-                                    PopupMenuItem(
-                                      value: _ShapeToolType.rectangle,
-                                      child: ListTile(
-                                        leading: Icon(Icons.rectangle_outlined),
-                                        title: Text('Rectangle'),
-                                      ),
-                                    ),
-                                    PopupMenuItem(
-                                      value: _ShapeToolType.square,
-                                      child: ListTile(
-                                        leading: Icon(Icons.crop_square),
-                                        title: Text('Square'),
-                                      ),
-                                    ),
-                                    PopupMenuItem(
-                                      value: _ShapeToolType.circle,
-                                      child: ListTile(
-                                        leading: Icon(Icons.circle_outlined),
-                                        title: Text('Circle'),
-                                      ),
-                                    ),
-                                  ],
-                                  icon: Icon(
-                                    Icons.category_outlined,
-                                    color: _isShapeToolActive
-                                        ? Colors.deepPurpleAccent
-                                        : Colors.white70,
+                                    editToolbarExpanded
+                                        ? Icons.chevron_right
+                                        : Icons.tune,
                                   ),
                                 ),
                               ],
-                              IconButton(
-                                tooltip: editToolbarExpanded
-                                    ? 'Hide Edit Tools'
-                                    : 'Show Edit Tools',
-                                visualDensity: VisualDensity.compact,
-                                onPressed: () {
-                                  setState(() {
-                                    final next = !editToolbarExpanded;
-                                    _editToolbarExpanded = next;
-                                  });
-                                },
-                                icon: Icon(
-                                  editToolbarExpanded
-                                      ? Icons.chevron_right
-                                      : Icons.tune,
-                                ),
-                              ),
-                            ],
+                            ),
                           ),
                         ),
                       ),
-                    ),
-                    if (_transformToolbarExpanded)
+                    if (_transformToolbarExpanded && !_isVideoScrubbing)
                       Positioned(
                         top:
                             MediaQuery.of(context).viewPadding.top +
@@ -6877,7 +7021,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                         ),
                       ),
 
-                    if (!_drawingMode)
+                    if (!_drawingMode && !_isVideoScrubbing)
                       Positioned(
                         bottom: 16 + MediaQuery.of(context).viewPadding.bottom,
                         left: 16,
@@ -7282,7 +7426,10 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                               ),
                       ),
 
-                    if (_timingExpanded && !_drawingMode && _timelineExpanded)
+                    if (_timingExpanded &&
+                        !_drawingMode &&
+                        _timelineExpanded &&
+                        !_isVideoScrubbing)
                       CompositedTransformFollower(
                         link: _timingButtonLink,
                         showWhenUnlinked: false,
