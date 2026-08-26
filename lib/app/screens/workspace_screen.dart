@@ -1571,48 +1571,6 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     });
   }
 
-  void _generateReferenceTimeline(Duration duration) {
-    final durationMs = duration.inMilliseconds;
-
-    if (durationMs <= 0 || _fps <= 0) {
-      return;
-    }
-
-    final frameCount = math.max(1, (durationMs * _fps / 1000).ceil()).toInt();
-
-    final timestamps = List<int>.generate(frameCount, (index) {
-      final time = ((index * 1000) / _fps).round();
-
-      return math.min(durationMs - 1, time);
-    });
-
-    setState(() {
-      _referenceFrameTimesMs
-        ..clear()
-        ..addAll(timestamps);
-
-      _frameDurations
-        ..clear()
-        ..addAll(List<int>.filled(frameCount, 1));
-
-      for (var layerIndex = 0; layerIndex < _layers.length; layerIndex++) {
-        final layer = _layers[layerIndex];
-
-        _layers[layerIndex] = layer.copyWith(
-          frames: List.generate(frameCount, (_) => <VectorStroke>[]),
-        );
-      }
-
-      _selectedFrameIndex = 0;
-      _draftStroke = const <VectorPoint>[];
-
-      _resetUndoRedo();
-      _rebuildCompositeFrames();
-    });
-
-    _scheduleAutosave();
-  }
-
   Future<void> _stepReferenceVideo(int direction) async {
     final controller = _videoController;
 
@@ -1620,17 +1578,29 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
       return;
     }
 
-    const stepMs = 33;
+    if (controller.value.isPlaying) {
+      await controller.pause();
+    }
 
-    final currentMs = controller.value.position.inMilliseconds;
     final durationMs = controller.value.duration.inMilliseconds;
 
-    final targetMs = (currentMs + (stepMs * direction)).clamp(
-      0,
-      math.max(0, durationMs - 1),
+    if (durationMs <= 0) {
+      return;
+    }
+
+    // Step by one source-video frame.
+    // 30 fps is used as a practical default where the source FPS
+    // is not exposed by video_player.
+    const frameDurationMs = 1000.0 / 30.0;
+
+    final currentMs = controller.value.position.inMilliseconds.toDouble();
+
+    final targetMs = (currentMs + (frameDurationMs * direction)).clamp(
+      0.0,
+      (durationMs - 1).toDouble(),
     );
 
-    await _seekReferenceVideoToMs(targetMs.toDouble());
+    await _seekReferenceVideoToMs(targetMs);
   }
 
   void _resetCanvasView() {
