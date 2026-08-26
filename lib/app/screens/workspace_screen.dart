@@ -117,6 +117,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
   final math.Random _textureRandom = math.Random();
 
   bool _stampBrushActive = false;
+  bool _stampBrushPanelExpanded = true;
   BagItem? _stampBrushItem;
   double _stampBrushScale = 1.0;
   double _stampBrushSpacing = 120.0;
@@ -2870,7 +2871,11 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     return Rect.fromLTRB(minX, minY, maxX, maxY);
   }
 
-  List<VectorStroke> _buildBagStamp(BagItem item, Offset position) {
+  List<VectorStroke> _buildBagStamp(
+    BagItem item,
+    Offset position,
+    double pressure,
+  ) {
     final sourceStrokes = _bagStampSourceStrokes(item);
     final bounds = _bagStampBounds(sourceStrokes);
 
@@ -2879,6 +2884,13 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     }
 
     final sourceCenter = bounds.center;
+
+    final normalizedPressure = pressure.clamp(0.0, 1.0);
+
+    // Keep very light contact visible while allowing full pressure
+    // to reach the Scale slider's selected size.
+    final pressureScale = 0.25 + (normalizedPressure * 0.75);
+    final effectiveScale = _stampBrushScale * pressureScale;
 
     // Each copy gets one coherent random rotation.
     final randomRotation =
@@ -2914,8 +2926,8 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
             point.dy - sourceCenter.dy,
           );
 
-          final scaledX = sourceOffset.dx * _stampBrushScale;
-          final scaledY = sourceOffset.dy * _stampBrushScale;
+          final scaledX = sourceOffset.dx * effectiveScale;
+          final scaledY = sourceOffset.dy * effectiveScale;
 
           final rotatedOffset = Offset(
             (scaledX * cosRotation) - (scaledY * sinRotation),
@@ -2930,7 +2942,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
             pressure: point.pressure,
           );
         }).toList(),
-        strokeWidth: stroke.strokeWidth * _stampBrushScale,
+        strokeWidth: stroke.strokeWidth * effectiveScale,
         color: stroke.color,
         filled: stroke.filled,
         brushType: stroke.brushType,
@@ -2938,14 +2950,14 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     }).toList();
   }
 
-  void _addBagStampToDraft(Offset position) {
+  void _addBagStampToDraft(Offset position, double pressure) {
     final item = _stampBrushItem;
 
     if (!_stampBrushActive || item == null) {
       return;
     }
 
-    final stampedStrokes = _buildBagStamp(item, position);
+    final stampedStrokes = _buildBagStamp(item, position, pressure);
 
     if (stampedStrokes.isEmpty) {
       return;
@@ -2954,12 +2966,12 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     _draftStampStrokes.addAll(stampedStrokes);
   }
 
-  void _addBagStampsAlongPath(Offset position) {
+  void _addBagStampsAlongPath(Offset position, double pressure) {
     final lastPosition = _stampBrushLastPosition;
 
     if (lastPosition == null) {
       _stampBrushLastPosition = position;
-      _addBagStampToDraft(position);
+      _addBagStampToDraft(position, pressure);
       return;
     }
 
@@ -2977,7 +2989,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
       final stampPosition =
           lastPosition + direction * (_stampBrushSpacing * index);
 
-      _addBagStampToDraft(stampPosition);
+      _addBagStampToDraft(stampPosition, pressure);
     }
 
     _stampBrushLastPosition =
@@ -3030,6 +3042,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
 
       _stampBrushItem = item;
       _stampBrushActive = true;
+      _stampBrushPanelExpanded = true;
 
       _textureActive = false;
       _textureExpanded = false;
@@ -3309,7 +3322,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
       setState(() {
         _draftStampStrokes = <VectorStroke>[];
         _stampBrushLastPosition = canvasPosition;
-        _addBagStampToDraft(canvasPosition);
+        _addBagStampToDraft(canvasPosition, event.pressure);
       });
 
       return;
@@ -3468,7 +3481,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
 
     if (_drawingMode && _stampBrushActive && _stampBrushItem != null) {
       setState(() {
-        _addBagStampsAlongPath(canvasPosition);
+        _addBagStampsAlongPath(canvasPosition, event.pressure);
       });
 
       return;
@@ -4953,7 +4966,17 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                                           ? 'Stamp Brush: ${_stampBrushItem?.name ?? ''}'
                                           : 'Stamp Brush',
                                       visualDensity: VisualDensity.compact,
-                                      onPressed: _openStampBrushPicker,
+                                      onPressed: () {
+                                        if (_stampBrushActive &&
+                                            !_stampBrushPanelExpanded) {
+                                          setState(() {
+                                            _stampBrushPanelExpanded = true;
+                                          });
+                                          return;
+                                        }
+
+                                        _openStampBrushPicker();
+                                      },
                                       icon: Icon(
                                         Icons.content_copy,
                                         color: _stampBrushActive
@@ -4968,13 +4991,17 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                           ),
                           if (_drawingExpanded ||
                               (_drawingMode && _blendExpanded) ||
-                              (_drawingMode && _stampBrushActive)) ...[
+                              (_drawingMode &&
+                                  _stampBrushActive &&
+                                  _stampBrushPanelExpanded)) ...[
                             const SizedBox(width: 8),
                             Column(
                               mainAxisSize: MainAxisSize.min,
                               crossAxisAlignment: CrossAxisAlignment.start,
                               children: [
-                                if (_drawingMode && _stampBrushActive)
+                                if (_drawingMode &&
+                                    _stampBrushActive &&
+                                    _stampBrushPanelExpanded)
                                   Material(
                                     elevation: 8,
                                     color: const Color(0xE61A1720),
@@ -5015,6 +5042,23 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                                                       fontSize: 11,
                                                       color: Colors.white60,
                                                     ),
+                                                  ),
+                                                ),
+                                                const SizedBox(width: 4),
+                                                IconButton(
+                                                  tooltip:
+                                                      'Hide Stamp Controls',
+                                                  visualDensity:
+                                                      VisualDensity.compact,
+                                                  onPressed: () {
+                                                    setState(() {
+                                                      _stampBrushPanelExpanded =
+                                                          false;
+                                                    });
+                                                  },
+                                                  icon: const Icon(
+                                                    Icons.keyboard_arrow_left,
+                                                    size: 20,
                                                   ),
                                                 ),
                                               ],
