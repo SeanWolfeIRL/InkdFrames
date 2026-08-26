@@ -711,6 +711,27 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
       _clearShapeDraft();
       _clearTransformSelection();
 
+      // Bag items arrive ready to transform.
+      _isEraserActive = false;
+      _isFillToolActive = false;
+      _isShapeToolActive = false;
+      _isTransformActive = true;
+      _transformToolbarExpanded = true;
+
+      // Automatically select every stroke in the newly unpacked group.
+      _selectedTransformStrokes = <String, Set<int>>{
+        for (final layer in newLayers)
+          if (_selectedFrameIndex >= 0 &&
+              _selectedFrameIndex < layer.frames.length &&
+              layer.frames[_selectedFrameIndex].isNotEmpty)
+            layer.id: Set<int>.from(
+              List<int>.generate(
+                layer.frames[_selectedFrameIndex].length,
+                (index) => index,
+              ),
+            ),
+      };
+
       _resetUndoRedo();
       _rebuildCompositeFrames();
     });
