@@ -1,9 +1,11 @@
+import 'dart:convert';
+
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+
 import '../models/inkdframes_project.dart';
-import 'dart:convert';
-import 'workspace_screen.dart';
 import '../painters/frame_thumbnail_painter.dart';
+import 'workspace_screen.dart';
 
 class ProjectLibraryScreen extends StatefulWidget {
   const ProjectLibraryScreen({super.key});
@@ -44,156 +46,437 @@ class _ProjectLibraryScreenState extends State<ProjectLibraryScreen> {
     });
   }
 
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(title: const Text('Project Library')),
-      body: ListView.builder(
-        padding: const EdgeInsets.all(16),
-        itemCount: _projects.length,
-        itemBuilder: (context, index) {
-          final project = _projects[index];
+  Future<void> _openProject(InkdFramesProject project) async {
+    await Navigator.of(context).push(
+      MaterialPageRoute(builder: (_) => WorkspaceScreen(projectId: project.id)),
+    );
 
-          return Card(
-            child: ListTile(
-              leading: SizedBox(
-                width: 72,
-                height: 72,
-                child: ClipRRect(
-                  borderRadius: BorderRadius.circular(8),
-                  child: CustomPaint(
-                    painter: project.frames.isNotEmpty
-                        ? FrameThumbnailPainter(strokes: project.frames.first)
-                        : null,
-                    child: project.frames.isEmpty
-                        ? const Center(child: Icon(Icons.movie_outlined))
-                        : const SizedBox.expand(),
+    await _loadProjectIds();
+  }
+
+  Future<void> _renameProject(InkdFramesProject project, int index) async {
+    final controller = TextEditingController(text: project.name);
+
+    final newName = await showDialog<String>(
+      context: context,
+      builder: (dialogContext) {
+        return AlertDialog(
+          backgroundColor: const Color(0xFF1B1817),
+          title: const Text(
+            'Rename project',
+            style: TextStyle(color: Color(0xFFF4E7D0)),
+          ),
+          content: TextField(
+            controller: controller,
+            autofocus: true,
+            style: const TextStyle(color: Color(0xFFF4E7D0)),
+            decoration: const InputDecoration(
+              hintText: 'Project name',
+              hintStyle: TextStyle(color: Colors.white54),
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(dialogContext),
+              child: const Text('Cancel'),
+            ),
+            FilledButton(
+              onPressed: () {
+                final name = controller.text.trim();
+
+                if (name.isNotEmpty) {
+                  Navigator.pop(dialogContext, name);
+                }
+              },
+              child: const Text('Rename'),
+            ),
+          ],
+        );
+      },
+    );
+
+    controller.dispose();
+
+    if (newName == null || !mounted) return;
+
+    final prefs = await SharedPreferences.getInstance();
+
+    final renamedProject = InkdFramesProject(
+      id: project.id,
+      name: newName,
+      fps: project.fps,
+      frames: project.frames,
+      frameDurations: project.frameDurations,
+      canvasWidth: project.canvasWidth,
+      canvasHeight: project.canvasHeight,
+      referenceMediaPath: project.referenceMediaPath,
+      referenceMediaType: project.referenceMediaType,
+    );
+
+    await prefs.setString(
+      'project_${project.id}',
+      jsonEncode(renamedProject.toJson()),
+    );
+
+    if (!mounted) return;
+
+    setState(() {
+      _projects[index] = renamedProject;
+    });
+  }
+
+  Future<void> _deleteProject(InkdFramesProject project, int index) async {
+    final shouldDelete = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) {
+        return AlertDialog(
+          backgroundColor: const Color(0xFF1B1817),
+          title: const Text(
+            'Delete project?',
+            style: TextStyle(color: Color(0xFFF4E7D0)),
+          ),
+          content: Text(
+            'Are you sure you want to delete "${project.name}"?',
+            style: const TextStyle(color: Color(0xFFD7C7B1)),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(dialogContext, false),
+              child: const Text('Cancel'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(dialogContext, true),
+              child: const Text('Delete'),
+            ),
+          ],
+        );
+      },
+    );
+
+    if (shouldDelete != true) return;
+
+    final prefs = await SharedPreferences.getInstance();
+
+    await prefs.remove('project_${project.id}');
+
+    final projectIds = prefs.getStringList('project_ids') ?? [];
+    projectIds.remove(project.id);
+    await prefs.setStringList('project_ids', projectIds);
+
+    if (!mounted) return;
+
+    setState(() {
+      _projects.removeAt(index);
+    });
+  }
+
+  void _showProjectSheet(InkdFramesProject project, int index) {
+    showModalBottomSheet<void>(
+      context: context,
+      backgroundColor: Colors.transparent,
+      barrierColor: Colors.black.withValues(alpha: 0.58),
+      builder: (sheetContext) {
+        return SafeArea(
+          child: Container(
+            margin: const EdgeInsets.all(16),
+            padding: const EdgeInsets.fromLTRB(20, 14, 20, 20),
+            decoration: BoxDecoration(
+              color: const Color(0xF21A1817),
+              borderRadius: BorderRadius.circular(24),
+              border: Border.all(
+                color: const Color(0xFFB88A52).withValues(alpha: 0.45),
+              ),
+              boxShadow: const [
+                BoxShadow(
+                  color: Colors.black54,
+                  blurRadius: 24,
+                  offset: Offset(0, 10),
+                ),
+              ],
+            ),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Container(
+                  width: 36,
+                  height: 4,
+                  decoration: BoxDecoration(
+                    color: Colors.white38,
+                    borderRadius: BorderRadius.circular(20),
                   ),
                 ),
-              ),
-              title: Text(project.name),
-              subtitle: Text(
-                '${project.frames.length} frames • ${project.fps} FPS',
-              ),
-              trailing: Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  IconButton(
-                    icon: const Icon(Icons.edit_outlined),
-                    onPressed: () async {
-                      final controller = TextEditingController(
-                        text: project.name,
-                      );
-
-                      final newName = await showDialog<String>(
-                        context: context,
-                        builder: (context) {
-                          return AlertDialog(
-                            title: const Text('Rename project'),
-                            content: TextField(
-                              controller: controller,
-                              autofocus: true,
+                const SizedBox(height: 18),
+                Row(
+                  children: [
+                    const Icon(
+                      Icons.auto_stories_outlined,
+                      color: Color(0xFFD8B47A),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            project.name,
+                            style: const TextStyle(
+                              color: Color(0xFFF6E8D2),
+                              fontSize: 20,
+                              fontWeight: FontWeight.w600,
                             ),
-                            actions: [
-                              TextButton(
-                                onPressed: () => Navigator.pop(context),
-                                child: const Text('Cancel'),
-                              ),
-                              FilledButton(
-                                onPressed: () {
-                                  final name = controller.text.trim();
-
-                                  if (name.isNotEmpty) {
-                                    Navigator.pop(context, name);
-                                  }
-                                },
-                                child: const Text('Rename'),
-                              ),
-                            ],
-                          );
-                        },
-                      );
-
-                      controller.dispose();
-                      if (newName == null) return;
-
-                      final prefs = await SharedPreferences.getInstance();
-
-                      final renamedProject = InkdFramesProject(
-                        id: project.id,
-                        name: newName,
-                        fps: project.fps,
-                        frames: project.frames,
-                        frameDurations: project.frameDurations,
-                        canvasWidth: project.canvasWidth,
-                        canvasHeight: project.canvasHeight,
-                        referenceMediaPath: project.referenceMediaPath,
-                        referenceMediaType: project.referenceMediaType,
-                      );
-
-                      await prefs.setString(
-                        'project_${project.id}',
-                        jsonEncode(renamedProject.toJson()),
-                      );
-
-                      setState(() {
-                        _projects[index] = renamedProject;
-                      });
-                    },
+                          ),
+                          const SizedBox(height: 3),
+                          Text(
+                            '${project.frames.length} ${project.frames.length == 1 ? 'frame' : 'frames'} • ${project.fps} FPS',
+                            style: const TextStyle(color: Color(0xFFBDAE9A)),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 18),
+                ListTile(
+                  leading: const Icon(
+                    Icons.play_arrow_rounded,
+                    color: Color(0xFFD8B47A),
                   ),
-                  IconButton(
-                    icon: const Icon(Icons.delete_outline),
-                    onPressed: () async {
-                      final shouldDelete = await showDialog<bool>(
-                        context: context,
-                        builder: (context) {
-                          return AlertDialog(
-                            title: const Text('Delete project?'),
-                            content: Text(
-                              'Are you sure you want to delete "${project.name}"?',
-                            ),
-                            actions: [
-                              TextButton(
-                                onPressed: () => Navigator.pop(context, false),
-                                child: const Text('Cancel'),
-                              ),
-                              FilledButton(
-                                onPressed: () => Navigator.pop(context, true),
-                                child: const Text('Delete'),
-                              ),
-                            ],
-                          );
-                        },
-                      );
+                  title: const Text(
+                    'Continue creating',
+                    style: TextStyle(color: Colors.white),
+                  ),
+                  onTap: () {
+                    Navigator.pop(sheetContext);
+                    _openProject(project);
+                  },
+                ),
+                ListTile(
+                  leading: const Icon(
+                    Icons.edit_outlined,
+                    color: Color(0xFFD8B47A),
+                  ),
+                  title: const Text(
+                    'Rename',
+                    style: TextStyle(color: Colors.white),
+                  ),
+                  onTap: () {
+                    Navigator.pop(sheetContext);
+                    _renameProject(project, index);
+                  },
+                ),
+                ListTile(
+                  leading: const Icon(
+                    Icons.delete_outline,
+                    color: Color(0xFFE3A29A),
+                  ),
+                  title: const Text(
+                    'Delete',
+                    style: TextStyle(color: Color(0xFFE3A29A)),
+                  ),
+                  onTap: () {
+                    Navigator.pop(sheetContext);
+                    _deleteProject(project, index);
+                  },
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
 
-                      if (shouldDelete != true) return;
-                      final prefs = await SharedPreferences.getInstance();
-
-                      await prefs.remove('project_${project.id}');
-                      final projectIds =
-                          prefs.getStringList('project_ids') ?? [];
-                      projectIds.remove(project.id);
-                      await prefs.setStringList('project_ids', projectIds);
-
-                      setState(() {
-                        _projects.removeAt(index);
-                      });
-                    },
+  Widget _buildProjectCard(InkdFramesProject project, int index) {
+    return GestureDetector(
+      behavior: HitTestBehavior.opaque,
+      onTap: () => _showProjectSheet(project, index),
+      child: Column(
+        children: [
+          Expanded(
+            child: Container(
+              width: double.infinity,
+              decoration: BoxDecoration(
+                color: const Color(0xFFF1E5CB),
+                border: Border.all(color: const Color(0xFFC9AD7E), width: 1.5),
+                boxShadow: const [
+                  BoxShadow(
+                    color: Colors.black38,
+                    blurRadius: 6,
+                    offset: Offset(2, 4),
                   ),
                 ],
               ),
-              onTap: () async {
-                await Navigator.of(context).push(
-                  MaterialPageRoute(
-                    builder: (_) => WorkspaceScreen(projectId: project.id),
-                  ),
-                );
+              padding: const EdgeInsets.all(6),
+              child: CustomPaint(
+                painter: project.frames.isNotEmpty
+                    ? FrameThumbnailPainter(strokes: project.frames.first)
+                    : null,
+                child: project.frames.isEmpty
+                    ? const Center(
+                        child: Icon(
+                          Icons.movie_outlined,
+                          size: 34,
+                          color: Color(0xFF70543C),
+                        ),
+                      )
+                    : const SizedBox.expand(),
+              ),
+            ),
+          ),
+          const SizedBox(height: 4),
+          Container(
+            constraints: const BoxConstraints(minWidth: 72, maxWidth: 120),
+            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+            decoration: BoxDecoration(
+              color: const Color(0xFFE3C99D),
+              borderRadius: BorderRadius.circular(3),
+              border: Border.all(color: const Color(0xFF8A6847)),
+              boxShadow: const [
+                BoxShadow(
+                  color: Colors.black26,
+                  blurRadius: 3,
+                  offset: Offset(1, 2),
+                ),
+              ],
+            ),
+            child: Text(
+              project.name,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              textAlign: TextAlign.center,
+              style: const TextStyle(
+                color: Color(0xFF3C291E),
+                fontSize: 12,
+                fontWeight: FontWeight.w700,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
 
-                _loadProjectIds();
+  Widget _buildEmptyState() {
+    return Center(
+      child: Container(
+        constraints: const BoxConstraints(maxWidth: 330),
+        margin: const EdgeInsets.symmetric(horizontal: 24),
+        padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 20),
+        decoration: BoxDecoration(
+          color: const Color(0xE8E9D4AD),
+          borderRadius: BorderRadius.circular(8),
+          border: Border.all(color: const Color(0xFF6A472E), width: 2),
+          boxShadow: const [
+            BoxShadow(
+              color: Colors.black38,
+              blurRadius: 14,
+              offset: Offset(0, 6),
+            ),
+          ],
+        ),
+        child: const Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(Icons.push_pin_outlined, color: Color(0xFF5B3A28), size: 30),
+            SizedBox(height: 10),
+            Text(
+              'Your wall is waiting.',
+              textAlign: TextAlign.center,
+              style: TextStyle(
+                color: Color(0xFF3B291F),
+                fontSize: 20,
+                fontWeight: FontWeight.w700,
+              ),
+            ),
+            SizedBox(height: 8),
+            Text(
+              'Make something at the Creation Desk and it will find a home here.',
+              textAlign: TextAlign.center,
+              style: TextStyle(color: Color(0xFF5D4939), height: 1.4),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: const Color(0xFF17110D),
+      body: Stack(
+        fit: StackFit.expand,
+        children: [
+          FittedBox(
+            fit: BoxFit.cover,
+            alignment: Alignment.center,
+            child: Image.asset('assets/images/inkdframes_project_wall_v1.png'),
+          ),
+
+          // Slight shading helps dynamic project cards sit naturally
+          // against the illustrated room.
+          Container(color: Colors.black.withValues(alpha: 0.05)),
+
+          SafeArea(
+            child: LayoutBuilder(
+              builder: (context, constraints) {
+                return Stack(
+                  children: [
+                    Positioned(
+                      left: 16,
+                      top: 18,
+                      width: 120,
+                      height: 70,
+                      child: GestureDetector(
+                        behavior: HitTestBehavior.opaque,
+                        onTap: () => Navigator.pop(context),
+                        child: const SizedBox.expand(),
+                      ),
+                    ),
+
+                    // Projects occupy the eight physical mounting
+                    // positions painted into the Project Wall.
+                    if (_projects.isEmpty)
+                      Positioned(
+                        left: constraints.maxWidth * 0.39,
+                        top: constraints.maxHeight * 0.43,
+                        width: constraints.maxWidth * 0.22,
+                        child: _buildEmptyState(),
+                      )
+                    else
+                      ...List.generate(
+                        _projects.length > 8 ? 8 : _projects.length,
+                        (index) {
+                          const slots = <Offset>[
+                            Offset(0.250, 0.260),
+                            Offset(0.365, 0.260),
+                            Offset(0.486, 0.260),
+                            Offset(0.595, 0.260),
+                            Offset(0.250, 0.530),
+                            Offset(0.365, 0.530),
+                            Offset(0.480, 0.530),
+                            Offset(0.595, 0.530),
+                          ];
+
+                          final slot = slots[index];
+                          final cardWidth = constraints.maxWidth * 0.100;
+                          final cardHeight = constraints.maxHeight * 0.165;
+
+                          return Positioned(
+                            left: constraints.maxWidth * slot.dx,
+                            top: constraints.maxHeight * slot.dy,
+                            width: cardWidth,
+                            height: cardHeight,
+                            child: _buildProjectCard(_projects[index], index),
+                          );
+                        },
+                      ),
+                  ],
+                );
               },
             ),
-          );
-        },
+          ),
+        ],
       ),
     );
   }
