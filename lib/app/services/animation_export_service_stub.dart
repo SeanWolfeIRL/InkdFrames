@@ -1,3 +1,5 @@
+import 'dart:ui' as ui;
+
 import '../models/vector_stroke.dart';
 
 class AnimationExportService {
@@ -10,6 +12,7 @@ class AnimationExportService {
     required double fps,
     required double canvasWidth,
     required double canvasHeight,
+    required ui.Color backgroundColor,
   }) {
     throw UnsupportedError('MP4 export is not available in the web preview.');
   }

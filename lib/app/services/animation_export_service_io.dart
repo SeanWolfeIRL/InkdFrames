@@ -1,6 +1,10 @@
 import 'dart:io';
 import 'dart:ui' as ui;
 
+import 'package:ffmpeg_kit_flutter_new_min_gpl/ffmpeg_kit.dart';
+import 'package:ffmpeg_kit_flutter_new_min_gpl/return_code.dart';
+import 'package:media_store_plus/media_store_plus.dart';
+
 import '../models/vector_stroke.dart';
 
 class AnimationExportService {
@@ -13,6 +17,7 @@ class AnimationExportService {
     required double fps,
     required double canvasWidth,
     required double canvasHeight,
+    required ui.Color backgroundColor,
   }) async {
     if (frames.isEmpty) {
       throw StateError('Cannot export an animation with no frames.');
@@ -22,8 +27,7 @@ class AnimationExportService {
       throw StateError('Frame and duration counts do not match.');
     }
 
-    final home = Platform.environment['HOME'] ?? Directory.current.path;
-    final exportDirectory = Directory('$home/InkdFrames_exports');
+    final exportDirectory = _exportRootDirectory();
     await exportDirectory.create(recursive: true);
 
     final tempDirectory = await Directory.systemTemp.createTemp(
@@ -38,6 +42,7 @@ class AnimationExportService {
           strokes: frames[frameIndex],
           width: canvasWidth.round(),
           height: canvasHeight.round(),
+          backgroundColor: backgroundColor,
         );
 
         final repeats = frameDurations[frameIndex].clamp(1, 1000);
@@ -58,7 +63,7 @@ class AnimationExportService {
       final timestamp = DateTime.now().millisecondsSinceEpoch;
       final outputPath = '${exportDirectory.path}/${safeName}_$timestamp.mp4';
 
-      final result = await Process.run('ffmpeg', [
+      final ffmpegArguments = <String>[
         '-y',
         '-framerate',
         fps.toString(),
@@ -73,10 +78,47 @@ class AnimationExportService {
         '-movflags',
         '+faststart',
         outputPath,
-      ]);
+      ];
 
-      if (result.exitCode != 0) {
-        throw StateError('FFmpeg export failed:\n${result.stderr}');
+      if (Platform.isAndroid) {
+        final session = await FFmpegKit.executeWithArguments(ffmpegArguments);
+        final returnCode = await session.getReturnCode();
+
+        if (!ReturnCode.isSuccess(returnCode)) {
+          final output = await session.getOutput();
+
+          throw StateError(
+            'FFmpeg export failed'
+            '${output == null || output.isEmpty ? '' : ':\n$output'}',
+          );
+        }
+      } else {
+        final result = await Process.run('ffmpeg', ffmpegArguments);
+
+        if (result.exitCode != 0) {
+          throw StateError('FFmpeg export failed:\n${result.stderr}');
+        }
+      }
+
+      if (Platform.isAndroid) {
+        await MediaStore.ensureInitialized();
+        MediaStore.appFolder = 'InkdFrames';
+
+        final saveInfo = await MediaStore().saveFile(
+          tempFilePath: outputPath,
+          dirType: DirType.video,
+          dirName: DirName.movies,
+        );
+
+        if (saveInfo == null) {
+          throw StateError(
+            'Animation encoded successfully but could not be saved to Movies/InkdFrames.',
+          );
+        }
+
+        final fileName = outputPath.split('/').last;
+
+        return '/storage/emulated/0/Movies/InkdFrames/$fileName';
       }
 
       return outputPath;
@@ -120,9 +162,9 @@ class AnimationExportService {
         throw StateError('Could not encode asset as PNG.');
       }
 
-      final home = Platform.environment['HOME'] ?? Directory.current.path;
-
-      final exportDirectory = Directory('$home/InkdFrames_exports/assets');
+      final exportDirectory = Directory(
+        '${_exportRootDirectory().path}/assets',
+      );
 
       await exportDirectory.create(recursive: true);
 
@@ -146,12 +188,13 @@ class AnimationExportService {
     required List<VectorStroke> strokes,
     required int width,
     required int height,
+    required ui.Color backgroundColor,
   }) async {
     final recorder = ui.PictureRecorder();
     final canvas = ui.Canvas(recorder);
 
     final backgroundPaint = ui.Paint()
-      ..color = const ui.Color(0xFF1F1B24)
+      ..color = backgroundColor
       ..style = ui.PaintingStyle.fill;
 
     canvas.drawRect(
@@ -244,6 +287,29 @@ class AnimationExportService {
     }
 
     canvas.drawPath(path, paint);
+  }
+
+  Directory _exportRootDirectory() {
+    if (Platform.isLinux) {
+      // Development/X11 export location.
+      return Directory('/tmp/InkdFrames_exports');
+    }
+
+    if (Platform.isAndroid) {
+      // App-owned Android storage for now.
+      // Save/share UX can expose this externally later.
+      return Directory(
+        '/data/user/0/com.inkdframes.app/files/InkdFrames_exports',
+      );
+    }
+
+    final home = Platform.environment['HOME'];
+
+    if (home != null && home.isNotEmpty && home != '/') {
+      return Directory('$home/InkdFrames_exports');
+    }
+
+    return Directory('${Directory.systemTemp.path}/InkdFrames_exports');
   }
 
   String _safeFileName(String name) {

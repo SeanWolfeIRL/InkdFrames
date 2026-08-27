@@ -1520,7 +1520,10 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
           oldController.dispose();
         });
       }
-    } catch (_) {
+    } catch (error, stackTrace) {
+      debugPrint('❌ Video reference initialization failed: $error');
+      debugPrint(stackTrace.toString());
+
       await newController.dispose();
 
       if (!mounted) return;
@@ -4077,14 +4080,19 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
         fps: _fps,
         canvasWidth: _canvasWidth,
         canvasHeight: _canvasHeight,
+        backgroundColor: _canvasBackgroundColor,
       );
 
       if (!mounted) return;
 
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text('Animation exported to $outputPath'),
-          duration: const Duration(seconds: 6),
+          content: Text(
+            Platform.isAndroid
+                ? 'Animation exported to Movies/InkdFrames'
+                : 'Animation exported to $outputPath',
+          ),
+          duration: const Duration(seconds: 8),
         ),
       );
     } on UnsupportedError catch (error) {
