@@ -4,6 +4,7 @@ import 'dart:io';
 import 'dart:math' as math;
 import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter/rendering.dart';
 import 'package:video_player/video_player.dart';
 import '../models/bag_item.dart';
@@ -4061,6 +4062,32 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     });
   }
 
+  static const MethodChannel _shareChannel = MethodChannel(
+    'com.inkdframes.app/share',
+  );
+
+  Future<void> _shareExportedVideo(String uri) async {
+    if (!Platform.isAndroid) {
+      return;
+    }
+
+    try {
+      await _shareChannel.invokeMethod<void>('shareVideo', <String, dynamic>{
+        'uri': uri,
+      });
+    } on PlatformException catch (error) {
+      if (!mounted) return;
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            'Could not share animation: ${error.message ?? error.code}',
+          ),
+        ),
+      );
+    }
+  }
+
   Future<void> _exportAnimation() async {
     if (_isExporting) {
       return;
@@ -4093,6 +4120,14 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                 : 'Animation exported to $outputPath',
           ),
           duration: const Duration(seconds: 8),
+          action: Platform.isAndroid
+              ? SnackBarAction(
+                  label: 'SHARE',
+                  onPressed: () {
+                    unawaited(_shareExportedVideo(outputPath));
+                  },
+                )
+              : null,
         ),
       );
     } on UnsupportedError catch (error) {

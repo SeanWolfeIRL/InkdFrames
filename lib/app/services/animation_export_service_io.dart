@@ -116,9 +116,7 @@ class AnimationExportService {
           );
         }
 
-        final fileName = outputPath.split('/').last;
-
-        return '/storage/emulated/0/Movies/InkdFrames/$fileName';
+        return saveInfo.uri.toString();
       }
 
       return outputPath;
