@@ -64,25 +64,107 @@ class HomeScreen extends StatelessWidget {
 
                   if (mediaType == null || !context.mounted) return;
 
-                  final pickedFile = await FilePicker.pickFile(
-                    type: mediaType == 'image'
-                        ? FileType.image
-                        : FileType.video,
-                  );
+                  String? sourcePath;
+                  String? sourceName;
 
-                  if (pickedFile == null || !context.mounted) {
-                    return;
-                  }
-
-                  if (pickedFile.path == null) {
-                    if (!context.mounted) return;
-
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      const SnackBar(
-                        content: Text('Could not access that file.'),
-                      ),
+                  if (Platform.isLinux) {
+                    final testDirectory = Directory(
+                      mediaType == 'image'
+                          ? '/sdcard/InkdFramesTestMedia/images'
+                          : '/sdcard/InkdFramesTestMedia/videos',
                     );
-                    return;
+
+                    final files = testDirectory.existsSync()
+                        ? testDirectory.listSync().whereType<File>().toList()
+                        : <File>[];
+
+                    if (files.isEmpty) {
+                      if (!context.mounted) return;
+
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        SnackBar(
+                          content: Text(
+                            mediaType == 'image'
+                                ? 'No test images found in InkdFramesTestMedia/images.'
+                                : 'No test videos found in InkdFramesTestMedia/videos.',
+                          ),
+                        ),
+                      );
+                      return;
+                    }
+
+                    final selectedFile = await showDialog<File>(
+                      context: context,
+                      builder: (dialogContext) {
+                        return AlertDialog(
+                          title: Text(
+                            mediaType == 'image'
+                                ? 'Choose Test Image'
+                                : 'Choose Test Video',
+                          ),
+                          content: SizedBox(
+                            width: 420,
+                            height: 320,
+                            child: ListView.separated(
+                              itemCount: files.length,
+                              separatorBuilder: (_, _) =>
+                                  const Divider(height: 1),
+                              itemBuilder: (context, index) {
+                                final file = files[index];
+                                final name = file.uri.pathSegments.last;
+
+                                return ListTile(
+                                  leading: Icon(
+                                    mediaType == 'image'
+                                        ? Icons.image_outlined
+                                        : Icons.movie_outlined,
+                                  ),
+                                  title: Text(name),
+                                  onTap: () {
+                                    Navigator.pop(dialogContext, file);
+                                  },
+                                );
+                              },
+                            ),
+                          ),
+                          actions: [
+                            TextButton(
+                              onPressed: () => Navigator.pop(dialogContext),
+                              child: const Text('Cancel'),
+                            ),
+                          ],
+                        );
+                      },
+                    );
+
+                    if (selectedFile == null || !context.mounted) {
+                      return;
+                    }
+
+                    sourcePath = selectedFile.path;
+                    sourceName = selectedFile.uri.pathSegments.last;
+                  } else {
+                    final pickedFile = await FilePicker.pickFile(
+                      type: mediaType == 'image'
+                          ? FileType.image
+                          : FileType.video,
+                    );
+
+                    if (pickedFile == null || !context.mounted) {
+                      return;
+                    }
+
+                    if (pickedFile.path == null) {
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        const SnackBar(
+                          content: Text('Could not access that file.'),
+                        ),
+                      );
+                      return;
+                    }
+
+                    sourcePath = pickedFile.path!;
+                    sourceName = pickedFile.name;
                   }
 
                   final screenSize = MediaQuery.sizeOf(context);
@@ -98,7 +180,7 @@ class HomeScreen extends StatelessWidget {
                             title: mediaType == 'image'
                                 ? 'Create from image'
                                 : 'Create from video',
-                            initialName: pickedFile.name.replaceFirst(
+                            initialName: sourceName!.replaceFirst(
                               RegExp(r'\.[^.]+$'),
                               '',
                             ),
@@ -111,23 +193,25 @@ class HomeScreen extends StatelessWidget {
 
                   if (result == null || !context.mounted) return;
 
-                  final referenceDirectory = Directory(
-                    '/data/user/0/com.inkdframes.app/files/reference_media',
-                  );
+                  final referenceDirectory = Platform.isLinux
+                      ? Directory('/tmp/inkdframes_reference_media')
+                      : Directory(
+                          '/data/user/0/com.inkdframes.app/files/reference_media',
+                        );
 
                   if (!await referenceDirectory.exists()) {
                     await referenceDirectory.create(recursive: true);
                   }
 
-                  final extension = pickedFile.name.contains('.')
-                      ? '.${pickedFile.name.split('.').last}'
+                  final extension = sourceName.contains('.')
+                      ? '.${sourceName.split('.').last}'
                       : '';
 
                   final storedPath =
                       '${referenceDirectory.path}/'
                       '${DateTime.now().microsecondsSinceEpoch}$extension';
 
-                  await File(pickedFile.path!).copy(storedPath);
+                  await File(sourcePath).copy(storedPath);
 
                   if (!context.mounted) return;
 
@@ -140,7 +224,6 @@ class HomeScreen extends StatelessWidget {
                         initialReferenceMediaPath: storedPath,
                         initialReferenceMediaType: mediaType,
                         initialFps: result.fps,
-                        initialGenerateVideoTimeline: mediaType == 'video',
                       ),
                     ),
                   );
