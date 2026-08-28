@@ -67,78 +67,159 @@ class _BagScreenState extends State<BagScreen> {
     await _loadItems();
   }
 
+  Future<void> _showTemporaryInventory() async {
+    if (_loading) {
+      return;
+    }
+
+    await showModalBottomSheet<void>(
+      context: context,
+      backgroundColor: const Color(0xFF21160F),
+      showDragHandle: true,
+      builder: (sheetContext) {
+        if (_items.isEmpty) {
+          return const SafeArea(
+            child: Padding(
+              padding: EdgeInsets.all(32),
+              child: Center(
+                child: Text(
+                  'Your Bag is empty.',
+                  style: TextStyle(color: Color(0xFFF1D3A2), fontSize: 16),
+                ),
+              ),
+            ),
+          );
+        }
+
+        return SafeArea(
+          child: ListView.separated(
+            shrinkWrap: true,
+            padding: const EdgeInsets.fromLTRB(16, 8, 16, 24),
+            itemCount: _items.length,
+            separatorBuilder: (_, _) => const Divider(color: Colors.white12),
+            itemBuilder: (context, index) {
+              final item = _items[index];
+
+              final strokeCount = item.layers.fold<int>(
+                0,
+                (total, layer) => total + layer.strokes.length,
+              );
+
+              return ListTile(
+                leading: const Icon(
+                  Icons.inventory_2_outlined,
+                  color: Color(0xFFF1D3A2),
+                ),
+                title: Text(
+                  item.name,
+                  style: const TextStyle(color: Color(0xFFF4E5CF)),
+                ),
+                subtitle: Text(
+                  '${item.layers.length} layers · $strokeCount strokes',
+                  style: const TextStyle(color: Colors.white54),
+                ),
+                trailing: IconButton(
+                  tooltip: 'Delete from Bag',
+                  icon: const Icon(Icons.delete_outline, color: Colors.white54),
+                  onPressed: () async {
+                    Navigator.pop(sheetContext);
+                    await _deleteItem(item);
+                  },
+                ),
+                onTap: () {
+                  Navigator.pop(sheetContext);
+                  Navigator.pop(context, item);
+                },
+              );
+            },
+          ),
+        );
+      },
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(
-        leading: IconButton(
-          tooltip: 'Close Bag',
-          icon: const Icon(Icons.arrow_back),
-          onPressed: () => Navigator.pop(context),
-        ),
-        title: const Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Icon(Icons.backpack_outlined),
-            SizedBox(width: 10),
-            Text('Bag'),
-          ],
-        ),
-      ),
-      body: _loading
-          ? const Center(child: CircularProgressIndicator())
-          : _items.isEmpty
-          ? const Center(
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Icon(
-                    Icons.backpack_outlined,
-                    size: 48,
-                    color: Colors.white38,
-                  ),
-                  SizedBox(height: 12),
-                  Text(
-                    'Your Bag is empty.',
-                    style: TextStyle(color: Colors.white70),
-                  ),
-                  SizedBox(height: 6),
-                  Text(
-                    'Add a layer group to start your inventory.',
-                    textAlign: TextAlign.center,
-                    style: TextStyle(fontSize: 12, color: Colors.white54),
-                  ),
-                ],
+      backgroundColor: Colors.black,
+      body: LayoutBuilder(
+        builder: (context, constraints) {
+          final width = constraints.maxWidth;
+          final height = constraints.maxHeight;
+
+          return Stack(
+            fit: StackFit.expand,
+            children: [
+              Image.asset(
+                'assets/images/inkdframes_bag_open_v1.png',
+                fit: BoxFit.cover,
+                alignment: Alignment.center,
               ),
-            )
-          : ListView.separated(
-              padding: const EdgeInsets.all(16),
-              itemCount: _items.length,
-              separatorBuilder: (_, _) => const Divider(height: 1),
-              itemBuilder: (context, index) {
-                final item = _items[index];
 
-                final strokeCount = item.layers.fold<int>(
-                  0,
-                  (total, layer) => total + layer.strokes.length,
-                );
+              // Painted BACK sign in the lower-right corner.
+              Positioned(
+                left: width * 0.765,
+                top: height * 0.905,
+                width: width * 0.145,
+                height: height * 0.075,
+                child: Semantics(
+                  button: true,
+                  label: 'Return to workspace',
+                  child: GestureDetector(
+                    behavior: HitTestBehavior.opaque,
+                    onTap: () => Navigator.pop(context),
+                    child: const SizedBox.expand(),
+                  ),
+                ),
+              ),
 
-                return ListTile(
-                  leading: const Icon(Icons.inventory_2_outlined),
-                  title: Text(item.name),
-                  subtitle: Text(
-                    '${item.layers.length} layers · '
-                    '$strokeCount strokes',
+              // Temporary inventory access while the physical Pocket
+              // interactions are being built.
+              Positioned(
+                right: 18,
+                top: 18,
+                child: SafeArea(
+                  child: Material(
+                    color: const Color(0xCC21160F),
+                    borderRadius: BorderRadius.circular(14),
+                    elevation: 6,
+                    child: InkWell(
+                      borderRadius: BorderRadius.circular(14),
+                      onTap: _showTemporaryInventory,
+                      child: Padding(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 14,
+                          vertical: 10,
+                        ),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            const Icon(
+                              Icons.inventory_2_outlined,
+                              size: 18,
+                              color: Color(0xFFF1D3A2),
+                            ),
+                            const SizedBox(width: 8),
+                            Text(
+                              _loading
+                                  ? 'Loading...'
+                                  : 'Items ${_items.length}',
+                              style: const TextStyle(
+                                color: Color(0xFFF1D3A2),
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
                   ),
-                  trailing: IconButton(
-                    tooltip: 'Delete from Bag',
-                    icon: const Icon(Icons.delete_outline),
-                    onPressed: () => _deleteItem(item),
-                  ),
-                  onTap: () => Navigator.pop(context, item),
-                );
-              },
-            ),
+                ),
+              ),
+            ],
+          );
+        },
+      ),
     );
   }
 }
