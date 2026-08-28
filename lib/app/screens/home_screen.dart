@@ -4,6 +4,7 @@ import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 
 import 'project_library_screen.dart';
+import 'welcome_home_screen.dart';
 import 'workspace_screen.dart';
 
 class HomeScreen extends StatelessWidget {
@@ -289,6 +290,34 @@ class HomeScreen extends StatelessWidget {
                       'assets/images/inkdframes_home_room_v1.png',
                       fit: BoxFit.cover,
                       alignment: Alignment.center,
+                    ),
+                  ),
+
+                  // DEVELOPMENT: RETURN TO HOME EXTERIOR
+                  Positioned(
+                    right: roomWidth * 0.025,
+                    top: roomHeight * 0.035,
+                    child: Tooltip(
+                      message: 'Go outside',
+                      child: Material(
+                        color: const Color(0xCC1A1720),
+                        shape: const CircleBorder(),
+                        elevation: 6,
+                        child: IconButton(
+                          tooltip: 'Go outside',
+                          icon: const Icon(
+                            Icons.door_front_door_outlined,
+                            color: Colors.white,
+                          ),
+                          onPressed: () {
+                            Navigator.of(context).pushReplacement(
+                              MaterialPageRoute<void>(
+                                builder: (_) => const WelcomeHomeScreen(),
+                              ),
+                            );
+                          },
+                        ),
+                      ),
                     ),
                   ),
 
