@@ -1367,7 +1367,7 @@ class _BagItemViewerState extends State<_BagItemViewer> {
             GestureDetector(
               behavior: HitTestBehavior.opaque,
               onTap: () => Navigator.pop(context),
-              child: Container(color: Colors.black.withValues(alpha: 0.55)),
+              child: Container(color: Colors.black.withValues(alpha: 0.42)),
             ),
             Center(
               child: GestureDetector(
