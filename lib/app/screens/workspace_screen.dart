@@ -19,6 +19,7 @@ import '../painters/frame_thumbnail_painter.dart';
 import '../services/animation_export_service.dart';
 import '../services/brush_preset_service.dart';
 import '../services/bag_service.dart';
+import 'bag_screen.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 enum _ShapeToolType { line, rectangle, square, circle }
@@ -746,152 +747,15 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
   }
 
   Future<void> _openBag() async {
-    final items = await BagService().loadItems();
+    final item = await Navigator.of(context).push<BagItem>(
+      MaterialPageRoute<BagItem>(builder: (_) => const BagScreen()),
+    );
 
-    if (!mounted) {
+    if (!mounted || item == null) {
       return;
     }
 
-    await showDialog<void>(
-      context: context,
-      builder: (dialogContext) {
-        return AlertDialog(
-          title: const Row(
-            children: [
-              Icon(Icons.backpack_outlined),
-              SizedBox(width: 10),
-              Text('Bag'),
-            ],
-          ),
-          content: SizedBox(
-            width: 420,
-            height: 420,
-            child: items.isEmpty
-                ? const Center(
-                    child: Column(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Icon(
-                          Icons.backpack_outlined,
-                          size: 48,
-                          color: Colors.white38,
-                        ),
-                        SizedBox(height: 12),
-                        Text(
-                          'Your Bag is empty.',
-                          style: TextStyle(color: Colors.white70),
-                        ),
-                        SizedBox(height: 6),
-                        Text(
-                          'Add a layer group to start your inventory.',
-                          textAlign: TextAlign.center,
-                          style: TextStyle(fontSize: 12, color: Colors.white54),
-                        ),
-                      ],
-                    ),
-                  )
-                : ListView.separated(
-                    itemCount: items.length,
-                    separatorBuilder: (_, _) => const Divider(height: 1),
-                    itemBuilder: (context, index) {
-                      final item = items[index];
-
-                      final strokeCount = item.layers.fold<int>(
-                        0,
-                        (total, layer) => total + layer.strokes.length,
-                      );
-
-                      return ListTile(
-                        leading: const Icon(Icons.inventory_2_outlined),
-                        title: Text(item.name),
-                        subtitle: Text(
-                          '${item.layers.length} layers · '
-                          '$strokeCount strokes',
-                        ),
-                        trailing: Row(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            IconButton(
-                              tooltip: 'Delete from Bag',
-                              icon: const Icon(Icons.delete_outline),
-                              onPressed: () async {
-                                final bagNavigator = Navigator.of(
-                                  dialogContext,
-                                );
-                                final messenger = ScaffoldMessenger.of(context);
-
-                                final confirmed = await showDialog<bool>(
-                                  context: dialogContext,
-                                  builder: (confirmContext) {
-                                    return AlertDialog(
-                                      title: const Text('Delete Bag item?'),
-                                      content: Text(
-                                        'Remove "${item.name}" from your Bag?',
-                                      ),
-                                      actions: [
-                                        TextButton(
-                                          onPressed: () => Navigator.pop(
-                                            confirmContext,
-                                            false,
-                                          ),
-                                          child: const Text('Cancel'),
-                                        ),
-                                        FilledButton(
-                                          onPressed: () => Navigator.pop(
-                                            confirmContext,
-                                            true,
-                                          ),
-                                          child: const Text('Delete'),
-                                        ),
-                                      ],
-                                    );
-                                  },
-                                );
-
-                                if (confirmed != true) {
-                                  return;
-                                }
-
-                                bagNavigator.pop();
-
-                                await BagService().deleteItem(item.id);
-
-                                if (!mounted) {
-                                  return;
-                                }
-
-                                messenger.showSnackBar(
-                                  SnackBar(
-                                    content: Text(
-                                      '${item.name} removed from your Bag',
-                                    ),
-                                  ),
-                                );
-
-                                _openBag();
-                              },
-                            ),
-                            const Icon(Icons.add_circle_outline),
-                          ],
-                        ),
-                        onTap: () {
-                          Navigator.pop(dialogContext);
-
-                          _insertBagItem(item);
-                        },
-                      );
-                    },
-                  ),
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(dialogContext),
-              child: const Text('Close'),
-            ),
-          ],
-        );
-      },
-    );
+    _insertBagItem(item);
   }
 
   Future<void> _exportLayerGroupPng(String groupId) async {
