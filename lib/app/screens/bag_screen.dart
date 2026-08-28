@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import '../models/bag_item.dart';
 import '../services/bag_service.dart';
@@ -138,6 +139,123 @@ class _BagScreenState extends State<BagScreen> {
     );
   }
 
+  Future<void> _openNotes() async {
+    final prefs = await SharedPreferences.getInstance();
+
+    if (!mounted) {
+      return;
+    }
+
+    const notesKey = 'inkdframes_bag_notes_v1';
+    final savedText = prefs.getString(notesKey) ?? '';
+    var draftText = savedText;
+
+    final result = await showDialog<String>(
+      context: context,
+      barrierColor: Colors.black54,
+      builder: (dialogContext) {
+        return Dialog(
+          backgroundColor: Colors.transparent,
+          insetPadding: const EdgeInsets.all(24),
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 560, maxHeight: 620),
+            child: Container(
+              decoration: BoxDecoration(
+                color: const Color(0xFFF0D9AD),
+                borderRadius: BorderRadius.circular(18),
+                border: Border.all(color: const Color(0xFF795232), width: 3),
+                boxShadow: const [
+                  BoxShadow(
+                    color: Colors.black54,
+                    blurRadius: 24,
+                    offset: Offset(0, 12),
+                  ),
+                ],
+              ),
+              padding: const EdgeInsets.fromLTRB(24, 20, 24, 18),
+              child: Column(
+                children: [
+                  Row(
+                    children: [
+                      const Icon(
+                        Icons.menu_book_rounded,
+                        color: Color(0xFF5A3924),
+                      ),
+                      const SizedBox(width: 10),
+                      const Expanded(
+                        child: Text(
+                          'NOTES',
+                          style: TextStyle(
+                            color: Color(0xFF4A2E1E),
+                            fontSize: 22,
+                            fontWeight: FontWeight.w800,
+                            letterSpacing: 1.5,
+                          ),
+                        ),
+                      ),
+                      IconButton(
+                        tooltip: 'Close',
+                        onPressed: () => Navigator.pop(dialogContext),
+                        icon: const Icon(Icons.close, color: Color(0xFF5A3924)),
+                      ),
+                    ],
+                  ),
+                  const Divider(color: Color(0x80795232)),
+                  const SizedBox(height: 8),
+                  Expanded(
+                    child: TextFormField(
+                      initialValue: savedText,
+                      autofocus: true,
+                      maxLines: null,
+                      expands: true,
+                      textAlignVertical: TextAlignVertical.top,
+                      onChanged: (value) {
+                        draftText = value;
+                      },
+                      style: const TextStyle(
+                        color: Color(0xFF3E2A1D),
+                        fontSize: 17,
+                        height: 1.45,
+                      ),
+                      cursorColor: const Color(0xFF5A3924),
+                      decoration: const InputDecoration(
+                        border: InputBorder.none,
+                        hintText:
+                            'Ideas, reminders, strange little thoughts...',
+                        hintStyle: TextStyle(color: Color(0x885A3924)),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  Align(
+                    alignment: Alignment.centerRight,
+                    child: FilledButton.icon(
+                      style: FilledButton.styleFrom(
+                        backgroundColor: const Color(0xFF5A3924),
+                        foregroundColor: const Color(0xFFF7E8C8),
+                      ),
+                      onPressed: () {
+                        Navigator.pop(dialogContext, draftText);
+                      },
+                      icon: const Icon(Icons.check),
+                      label: const Text('Done'),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        );
+      },
+    );
+
+    if (result == null) {
+      return;
+    }
+
+    await prefs.setString(notesKey, result);
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -154,6 +272,23 @@ class _BagScreenState extends State<BagScreen> {
                 'assets/images/inkdframes_bag_open_v1.png',
                 fit: BoxFit.cover,
                 alignment: Alignment.center,
+              ),
+
+              // Painted NOTES notebook on the left-hand table.
+              Positioned(
+                left: width * 0.005,
+                top: height * 0.615,
+                width: width * 0.185,
+                height: height * 0.34,
+                child: Semantics(
+                  button: true,
+                  label: 'Open Bag notes',
+                  child: GestureDetector(
+                    behavior: HitTestBehavior.opaque,
+                    onTap: _openNotes,
+                    child: const SizedBox.expand(),
+                  ),
+                ),
               ),
 
               // Painted BACK sign in the lower-right corner.
