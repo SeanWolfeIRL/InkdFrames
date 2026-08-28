@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../models/inkdframes_project.dart';
+import '../models/vector_stroke.dart';
 import '../painters/frame_thumbnail_painter.dart';
 import 'workspace_screen.dart';
 
@@ -286,7 +287,23 @@ class _ProjectLibraryScreenState extends State<ProjectLibraryScreen> {
     );
   }
 
+  List<VectorStroke> _projectThumbnailStrokes(InkdFramesProject project) {
+    final strokes = <VectorStroke>[];
+
+    for (final layer in project.layers) {
+      if (layer.frames.isEmpty) {
+        continue;
+      }
+
+      strokes.addAll(layer.frames.first);
+    }
+
+    return strokes;
+  }
+
   Widget _buildProjectCard(InkdFramesProject project, int index) {
+    final thumbnailStrokes = _projectThumbnailStrokes(project);
+
     return GestureDetector(
       behavior: HitTestBehavior.opaque,
       onTap: () => _showProjectSheet(project, index),
@@ -308,10 +325,10 @@ class _ProjectLibraryScreenState extends State<ProjectLibraryScreen> {
               ),
               padding: const EdgeInsets.all(6),
               child: CustomPaint(
-                painter: project.frames.isNotEmpty
-                    ? FrameThumbnailPainter(strokes: project.frames.first)
+                painter: thumbnailStrokes.isNotEmpty
+                    ? FrameThumbnailPainter(strokes: thumbnailStrokes)
                     : null,
-                child: project.frames.isEmpty
+                child: thumbnailStrokes.isEmpty
                     ? const Center(
                         child: Icon(
                           Icons.movie_outlined,

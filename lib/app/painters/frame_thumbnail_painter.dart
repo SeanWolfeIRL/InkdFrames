@@ -114,7 +114,9 @@ class FrameThumbnailPainter extends CustomPainter {
             ? 1
             : stroke.strokeWidth * scale
         ..strokeCap = StrokeCap.round
-        ..style = PaintingStyle.stroke;
+        ..strokeJoin = StrokeJoin.round
+        ..style = stroke.filled ? PaintingStyle.fill : PaintingStyle.stroke
+        ..isAntiAlias = true;
 
       final path = Path();
 
@@ -138,6 +140,10 @@ class FrameThumbnailPainter extends CustomPainter {
         final midpointY = (previousY + currentY) / 2;
 
         path.quadraticBezierTo(previousX, previousY, midpointX, midpointY);
+      }
+
+      if (stroke.filled) {
+        path.close();
       }
 
       canvas.drawPath(path, paint);
