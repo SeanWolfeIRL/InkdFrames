@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -17,13 +19,53 @@ class _BagScreenState extends State<BagScreen> {
   List<BagItem> _items = <BagItem>[];
   bool _loading = true;
 
+  Map<String, String> _pocketAssignments = {};
+
   @override
   void initState() {
     super.initState();
     _loadItems();
   }
 
+  static const String _pocketAssignmentsKey =
+      'inkdframes_bag_pocket_assignments_v1';
+
+  Future<void> _loadPocketAssignments() async {
+    final prefs = await SharedPreferences.getInstance();
+    final raw = prefs.getString(_pocketAssignmentsKey);
+
+    if (raw == null || raw.isEmpty) {
+      _pocketAssignments = {};
+      return;
+    }
+
+    try {
+      final decoded = jsonDecode(raw);
+
+      if (decoded is! Map) {
+        _pocketAssignments = {};
+        return;
+      }
+
+      _pocketAssignments = decoded.map<String, String>(
+        (key, value) => MapEntry(key.toString(), value.toString()),
+      );
+    } catch (_) {
+      _pocketAssignments = {};
+    }
+  }
+
+  Future<void> _savePocketAssignments() async {
+    final prefs = await SharedPreferences.getInstance();
+
+    await prefs.setString(
+      _pocketAssignmentsKey,
+      jsonEncode(_pocketAssignments),
+    );
+  }
+
   Future<void> _loadItems() async {
+    await _loadPocketAssignments();
     final items = await _bagService.loadItems();
 
     if (!mounted) return;
@@ -59,6 +101,9 @@ class _BagScreenState extends State<BagScreen> {
 
     await _bagService.deleteItem(item.id);
 
+    _pocketAssignments.remove(item.id);
+    await _savePocketAssignments();
+
     if (!mounted) return;
 
     ScaffoldMessenger.of(context).showSnackBar(
@@ -66,6 +111,71 @@ class _BagScreenState extends State<BagScreen> {
     );
 
     await _loadItems();
+  }
+
+  Future<void> _assignItemToPocket(BagItem item) async {
+    const pockets = <String>[
+      'Sketches',
+      'Characters',
+      'Textures',
+      'Props',
+      'Brushes',
+      'Misc.',
+    ];
+
+    final selectedPocket = await showModalBottomSheet<String>(
+      context: context,
+      backgroundColor: const Color(0xFF21160F),
+      showDragHandle: true,
+      builder: (sheetContext) {
+        return SafeArea(
+          child: ListView(
+            shrinkWrap: true,
+            padding: const EdgeInsets.fromLTRB(16, 8, 16, 24),
+            children: [
+              Padding(
+                padding: const EdgeInsets.fromLTRB(8, 4, 8, 12),
+                child: Text(
+                  'Put "${item.name}" in which Pocket?',
+                  style: const TextStyle(
+                    color: Color(0xFFF1D3A2),
+                    fontSize: 18,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+              ),
+              for (final pocket in pockets)
+                ListTile(
+                  leading: const Icon(
+                    Icons.inventory_2_outlined,
+                    color: Color(0xFFF1D3A2),
+                  ),
+                  title: Text(
+                    pocket,
+                    style: const TextStyle(color: Color(0xFFF4E5CF)),
+                  ),
+                  trailing: _pocketAssignments[item.id] == pocket
+                      ? const Icon(Icons.check, color: Color(0xFFF1D3A2))
+                      : null,
+                  onTap: () {
+                    Navigator.pop(sheetContext, pocket);
+                  },
+                ),
+            ],
+          ),
+        );
+      },
+    );
+
+    if (selectedPocket == null || !mounted) {
+      return;
+    }
+
+    setState(() {
+      _pocketAssignments[item.id] = selectedPocket;
+    });
+
+    await _savePocketAssignments();
   }
 
   Future<void> _showTemporaryInventory() async {
@@ -119,13 +229,32 @@ class _BagScreenState extends State<BagScreen> {
                   '${item.layers.length} layers · $strokeCount strokes',
                   style: const TextStyle(color: Colors.white54),
                 ),
-                trailing: IconButton(
-                  tooltip: 'Delete from Bag',
-                  icon: const Icon(Icons.delete_outline, color: Colors.white54),
-                  onPressed: () async {
-                    Navigator.pop(sheetContext);
-                    await _deleteItem(item);
-                  },
+                trailing: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    IconButton(
+                      tooltip: 'Choose Pocket',
+                      icon: const Icon(
+                        Icons.drive_file_move_outline,
+                        color: Color(0xFFF1D3A2),
+                      ),
+                      onPressed: () async {
+                        Navigator.pop(sheetContext);
+                        await _assignItemToPocket(item);
+                      },
+                    ),
+                    IconButton(
+                      tooltip: 'Delete from Bag',
+                      icon: const Icon(
+                        Icons.delete_outline,
+                        color: Colors.white54,
+                      ),
+                      onPressed: () async {
+                        Navigator.pop(sheetContext);
+                        await _deleteItem(item);
+                      },
+                    ),
+                  ],
                 ),
                 onTap: () {
                   Navigator.pop(sheetContext);
@@ -140,6 +269,10 @@ class _BagScreenState extends State<BagScreen> {
   }
 
   Future<void> _openPocket(String pocketName) async {
+    final pocketItems = _items
+        .where((item) => _pocketAssignments[item.id] == pocketName)
+        .toList();
+
     await showModalBottomSheet<void>(
       context: context,
       backgroundColor: const Color(0xFF21160F),
@@ -147,7 +280,7 @@ class _BagScreenState extends State<BagScreen> {
       builder: (sheetContext) {
         return SafeArea(
           child: Padding(
-            padding: const EdgeInsets.fromLTRB(24, 8, 24, 32),
+            padding: const EdgeInsets.fromLTRB(20, 8, 20, 28),
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
@@ -160,17 +293,47 @@ class _BagScreenState extends State<BagScreen> {
                     letterSpacing: 1.4,
                   ),
                 ),
-                const SizedBox(height: 8),
-                const Text(
-                  'This Pocket is empty for now.',
-                  style: TextStyle(color: Color(0xFFCFB997), fontSize: 15),
-                ),
-                const SizedBox(height: 6),
-                const Text(
-                  'Soon you’ll be able to place Bag items here.',
-                  textAlign: TextAlign.center,
-                  style: TextStyle(color: Colors.white54, fontSize: 13),
-                ),
+                const SizedBox(height: 12),
+                if (pocketItems.isEmpty)
+                  const Padding(
+                    padding: EdgeInsets.symmetric(vertical: 28),
+                    child: Text(
+                      'This Pocket is empty.',
+                      style: TextStyle(color: Color(0xFFCFB997), fontSize: 15),
+                    ),
+                  )
+                else
+                  ConstrainedBox(
+                    constraints: const BoxConstraints(maxHeight: 420),
+                    child: ListView.separated(
+                      shrinkWrap: true,
+                      itemCount: pocketItems.length,
+                      separatorBuilder: (_, _) =>
+                          const Divider(color: Colors.white12),
+                      itemBuilder: (context, index) {
+                        final item = pocketItems[index];
+
+                        return ListTile(
+                          leading: const Icon(
+                            Icons.inventory_2_outlined,
+                            color: Color(0xFFF1D3A2),
+                          ),
+                          title: Text(
+                            item.name,
+                            style: const TextStyle(color: Color(0xFFF4E5CF)),
+                          ),
+                          subtitle: const Text(
+                            'Tap to use in Workspace',
+                            style: TextStyle(color: Colors.white54),
+                          ),
+                          onTap: () {
+                            Navigator.pop(sheetContext);
+                            Navigator.pop(context, item);
+                          },
+                        );
+                      },
+                    ),
+                  ),
               ],
             ),
           ),
