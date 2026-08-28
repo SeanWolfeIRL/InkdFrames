@@ -4,6 +4,8 @@ import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../models/bag_item.dart';
+import '../models/vector_stroke.dart';
+import '../painters/frame_thumbnail_painter.dart';
 import '../services/bag_service.dart';
 
 class BagScreen extends StatefulWidget {
@@ -178,93 +180,73 @@ class _BagScreenState extends State<BagScreen> {
     await _savePocketAssignments();
   }
 
-  Future<void> _showTemporaryInventory() async {
-    if (_loading) {
+  List<VectorStroke> _bagItemPreviewStrokes(BagItem item) {
+    final strokes = <VectorStroke>[];
+
+    for (final layer in item.layers) {
+      if (!layer.visible) {
+        continue;
+      }
+
+      for (final stroke in layer.strokes) {
+        strokes.add(
+          VectorStroke(
+            points: stroke.points.map((point) => point.copy()).toList(),
+            strokeWidth: stroke.strokeWidth,
+            color: stroke.color.withValues(
+              alpha: stroke.color.a * layer.opacity,
+            ),
+            filled: stroke.filled,
+            brushType: stroke.brushType,
+          ),
+        );
+      }
+    }
+
+    return strokes;
+  }
+
+  Widget _bagItemThumbnail(BagItem item) {
+    final strokes = _bagItemPreviewStrokes(item);
+
+    return SizedBox(
+      width: 64,
+      height: 64,
+      child: CustomPaint(
+        painter: strokes.isEmpty
+            ? null
+            : FrameThumbnailPainter(strokes: strokes),
+        child: strokes.isEmpty
+            ? const Center(
+                child: Icon(
+                  Icons.image_not_supported_outlined,
+                  color: Colors.white38,
+                ),
+              )
+            : const SizedBox.expand(),
+      ),
+    );
+  }
+
+  Future<void> _viewBagItem(BagItem item) async {
+    final strokes = _bagItemPreviewStrokes(item);
+
+    if (strokes.isEmpty) {
       return;
     }
 
-    await showModalBottomSheet<void>(
-      context: context,
-      backgroundColor: const Color(0xFF21160F),
-      showDragHandle: true,
-      builder: (sheetContext) {
-        if (_items.isEmpty) {
-          return const SafeArea(
-            child: Padding(
-              padding: EdgeInsets.all(32),
-              child: Center(
-                child: Text(
-                  'Your Bag is empty.',
-                  style: TextStyle(color: Color(0xFFF1D3A2), fontSize: 16),
-                ),
-              ),
-            ),
-          );
-        }
-
-        return SafeArea(
-          child: ListView.separated(
-            shrinkWrap: true,
-            padding: const EdgeInsets.fromLTRB(16, 8, 16, 24),
-            itemCount: _items.length,
-            separatorBuilder: (_, _) => const Divider(color: Colors.white12),
-            itemBuilder: (context, index) {
-              final item = _items[index];
-
-              final strokeCount = item.layers.fold<int>(
-                0,
-                (total, layer) => total + layer.strokes.length,
-              );
-
-              return ListTile(
-                leading: const Icon(
-                  Icons.inventory_2_outlined,
-                  color: Color(0xFFF1D3A2),
-                ),
-                title: Text(
-                  item.name,
-                  style: const TextStyle(color: Color(0xFFF4E5CF)),
-                ),
-                subtitle: Text(
-                  '${item.layers.length} layers · $strokeCount strokes',
-                  style: const TextStyle(color: Colors.white54),
-                ),
-                trailing: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    IconButton(
-                      tooltip: 'Choose Pocket',
-                      icon: const Icon(
-                        Icons.drive_file_move_outline,
-                        color: Color(0xFFF1D3A2),
-                      ),
-                      onPressed: () async {
-                        Navigator.pop(sheetContext);
-                        await _assignItemToPocket(item);
-                      },
-                    ),
-                    IconButton(
-                      tooltip: 'Delete from Bag',
-                      icon: const Icon(
-                        Icons.delete_outline,
-                        color: Colors.white54,
-                      ),
-                      onPressed: () async {
-                        Navigator.pop(sheetContext);
-                        await _deleteItem(item);
-                      },
-                    ),
-                  ],
-                ),
-                onTap: () {
-                  Navigator.pop(sheetContext);
-                  Navigator.pop(context, item);
-                },
-              );
-            },
-          ),
-        );
-      },
+    await Navigator.of(context).push(
+      PageRouteBuilder<void>(
+        opaque: false,
+        barrierColor: Colors.transparent,
+        barrierDismissible: true,
+        pageBuilder: (viewerContext, animation, secondaryAnimation) {
+          return _BagItemViewer(item: item, strokes: strokes);
+        },
+        transitionsBuilder: (context, animation, secondaryAnimation, child) {
+          return FadeTransition(opacity: animation, child: child);
+        },
+      ),
     );
   }
 
@@ -314,10 +296,11 @@ class _BagScreenState extends State<BagScreen> {
                         final item = pocketItems[index];
 
                         return ListTile(
-                          leading: const Icon(
-                            Icons.inventory_2_outlined,
-                            color: Color(0xFFF1D3A2),
+                          contentPadding: const EdgeInsets.symmetric(
+                            horizontal: 4,
+                            vertical: 4,
                           ),
+                          leading: _bagItemThumbnail(item),
                           title: Text(
                             item.name,
                             style: const TextStyle(color: Color(0xFFF4E5CF)),
@@ -325,6 +308,44 @@ class _BagScreenState extends State<BagScreen> {
                           subtitle: const Text(
                             'Tap to use in Workspace',
                             style: TextStyle(color: Colors.white54),
+                          ),
+                          trailing: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              IconButton(
+                                tooltip: 'View item',
+                                icon: const Icon(
+                                  Icons.zoom_in_rounded,
+                                  color: Color(0xFFF1D3A2),
+                                ),
+                                onPressed: () async {
+                                  Navigator.pop(sheetContext);
+                                  await _viewBagItem(item);
+                                },
+                              ),
+                              IconButton(
+                                tooltip: 'Move to another Pocket',
+                                icon: const Icon(
+                                  Icons.drive_file_move_outline,
+                                  color: Color(0xFFF1D3A2),
+                                ),
+                                onPressed: () async {
+                                  Navigator.pop(sheetContext);
+                                  await _assignItemToPocket(item);
+                                },
+                              ),
+                              IconButton(
+                                tooltip: 'Delete from Bag',
+                                icon: const Icon(
+                                  Icons.delete_outline,
+                                  color: Colors.white54,
+                                ),
+                                onPressed: () async {
+                                  Navigator.pop(sheetContext);
+                                  await _deleteItem(item);
+                                },
+                              ),
+                            ],
                           ),
                           onTap: () {
                             Navigator.pop(sheetContext);
@@ -624,48 +645,128 @@ class _BagScreenState extends State<BagScreen> {
               ),
             ),
           ),
+        ],
+      ),
+    );
+  }
+}
 
-          // Temporary escape hatch until items physically live in Pockets.
-          Positioned(
-            right: 18,
-            top: 18,
-            child: SafeArea(
-              child: Material(
-                color: const Color(0xCC21160F),
-                borderRadius: BorderRadius.circular(14),
-                elevation: 6,
-                child: InkWell(
-                  borderRadius: BorderRadius.circular(14),
-                  onTap: _showTemporaryInventory,
-                  child: Padding(
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 14,
-                      vertical: 10,
-                    ),
-                    child: Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        const Icon(
-                          Icons.inventory_2_outlined,
-                          size: 18,
-                          color: Color(0xFFF1D3A2),
-                        ),
-                        const SizedBox(width: 8),
-                        Text(
-                          _loading ? 'Loading...' : 'Items ${_items.length}',
-                          style: const TextStyle(
-                            color: Color(0xFFF1D3A2),
-                            fontWeight: FontWeight.w600,
+class _BagItemViewer extends StatefulWidget {
+  const _BagItemViewer({required this.item, required this.strokes});
+
+  final BagItem item;
+  final List<VectorStroke> strokes;
+
+  @override
+  State<_BagItemViewer> createState() => _BagItemViewerState();
+}
+
+class _BagItemViewerState extends State<_BagItemViewer> {
+  double _scale = 1.0;
+  double _rotation = 0.0;
+  Offset _position = Offset.zero;
+
+  double _startScale = 1.0;
+  double _startRotation = 0.0;
+  Offset _startPosition = Offset.zero;
+  Offset _startFocalPoint = Offset.zero;
+
+  void _reset() {
+    setState(() {
+      _scale = 1.0;
+      _rotation = 0.0;
+      _position = Offset.zero;
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      color: Colors.transparent,
+      child: SafeArea(
+        child: Stack(
+          fit: StackFit.expand,
+          children: [
+            GestureDetector(
+              behavior: HitTestBehavior.opaque,
+              onTap: () => Navigator.pop(context),
+              child: Container(color: Colors.black.withValues(alpha: 0.55)),
+            ),
+            Center(
+              child: GestureDetector(
+                behavior: HitTestBehavior.translucent,
+                onScaleStart: (details) {
+                  _startScale = _scale;
+                  _startRotation = _rotation;
+                  _startPosition = _position;
+                  _startFocalPoint = details.focalPoint;
+                },
+                onScaleUpdate: (details) {
+                  setState(() {
+                    _scale = (_startScale * details.scale).clamp(0.35, 6.0);
+                    _rotation = _startRotation + details.rotation;
+
+                    final movement = details.focalPoint - _startFocalPoint;
+
+                    _position = _startPosition + movement;
+                  });
+                },
+                child: Transform.translate(
+                  offset: _position,
+                  child: Transform.rotate(
+                    angle: _rotation,
+                    child: Transform.scale(
+                      scale: _scale,
+                      child: SizedBox(
+                        width: MediaQuery.sizeOf(context).width * 0.65,
+                        height: MediaQuery.sizeOf(context).height * 0.65,
+                        child: CustomPaint(
+                          painter: FrameThumbnailPainter(
+                            strokes: widget.strokes,
                           ),
+                          child: const SizedBox.expand(),
                         ),
-                      ],
+                      ),
                     ),
                   ),
                 ),
               ),
             ),
-          ),
-        ],
+            Positioned(
+              left: 20,
+              top: 16,
+              child: Text(
+                widget.item.name,
+                style: const TextStyle(
+                  color: Colors.white,
+                  fontSize: 18,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+            ),
+            Positioned(
+              right: 16,
+              top: 8,
+              child: Row(
+                children: [
+                  IconButton(
+                    tooltip: 'Reset view',
+                    onPressed: _reset,
+                    icon: const Icon(
+                      Icons.refresh_rounded,
+                      color: Colors.white,
+                    ),
+                  ),
+                  IconButton(
+                    tooltip: 'Close',
+                    onPressed: () => Navigator.pop(context),
+                    icon: const Icon(Icons.close_rounded, color: Colors.white),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }
