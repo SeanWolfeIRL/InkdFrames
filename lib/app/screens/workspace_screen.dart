@@ -920,6 +920,58 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
       return;
     }
 
+    const pockets = <String>[
+      'Sketches',
+      'Characters',
+      'Textures',
+      'Props',
+      'Brushes',
+      'Misc.',
+    ];
+
+    final selectedPocket = await showModalBottomSheet<String>(
+      context: context,
+      backgroundColor: const Color(0xFF21160F),
+      showDragHandle: true,
+      builder: (sheetContext) {
+        return SafeArea(
+          child: ListView(
+            shrinkWrap: true,
+            padding: const EdgeInsets.fromLTRB(16, 8, 16, 24),
+            children: [
+              Padding(
+                padding: const EdgeInsets.fromLTRB(8, 4, 8, 12),
+                child: Text(
+                  'Put "$result" in which Pocket?',
+                  style: const TextStyle(
+                    color: Color(0xFFF1D3A2),
+                    fontSize: 18,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+              ),
+              for (final pocket in pockets)
+                ListTile(
+                  leading: const Icon(
+                    Icons.inventory_2_outlined,
+                    color: Color(0xFFF1D3A2),
+                  ),
+                  title: Text(
+                    pocket,
+                    style: const TextStyle(color: Color(0xFFF4E5CF)),
+                  ),
+                  onTap: () => Navigator.pop(sheetContext, pocket),
+                ),
+            ],
+          ),
+        );
+      },
+    );
+
+    if (selectedPocket == null || !mounted) {
+      return;
+    }
+
     final item = BagItem(
       id: 'bag_${DateTime.now().microsecondsSinceEpoch}',
       name: result,
@@ -930,12 +982,38 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
 
     await BagService().addItem(item);
 
+    final prefs = await SharedPreferences.getInstance();
+
+    const pocketAssignmentsKey = 'inkdframes_bag_pocket_assignments_v1';
+
+    Map<String, String> pocketAssignments = <String, String>{};
+
+    final rawAssignments = prefs.getString(pocketAssignmentsKey);
+
+    if (rawAssignments != null && rawAssignments.isNotEmpty) {
+      try {
+        final decoded = jsonDecode(rawAssignments);
+
+        if (decoded is Map) {
+          pocketAssignments = decoded.map<String, String>(
+            (key, value) => MapEntry(key.toString(), value.toString()),
+          );
+        }
+      } catch (_) {
+        pocketAssignments = <String, String>{};
+      }
+    }
+
+    pocketAssignments[item.id] = selectedPocket;
+
+    await prefs.setString(pocketAssignmentsKey, jsonEncode(pocketAssignments));
+
     if (!mounted) {
       return;
     }
 
     ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text('${item.name} added to your Bag 🎒')),
+      SnackBar(content: Text('${item.name} tucked into $selectedPocket 🎒')),
     );
   }
 
