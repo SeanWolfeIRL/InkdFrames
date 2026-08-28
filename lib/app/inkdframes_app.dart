@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 
-import 'screens/home_screen.dart';
+import 'screens/welcome_home_screen.dart';
 import 'screens/workspace_screen.dart';
 
 class InkdFramesApp extends StatelessWidget {
@@ -43,7 +43,7 @@ class InkdFramesApp extends StatelessWidget {
           ),
         ),
       ),
-      home: const HomeScreen(),
+      home: const WelcomeHomeScreen(),
       routes: {WorkspaceScreen.routeName: (context) => const WorkspaceScreen()},
     );
   }
