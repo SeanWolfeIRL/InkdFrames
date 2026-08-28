@@ -8,6 +8,30 @@ import '../models/vector_stroke.dart';
 import '../painters/frame_thumbnail_painter.dart';
 import '../services/bag_service.dart';
 
+class _BagPocket {
+  const _BagPocket({
+    required this.id,
+    required this.name,
+    required this.isBuiltIn,
+  });
+
+  final String id;
+  final String name;
+  final bool isBuiltIn;
+
+  Map<String, dynamic> toJson() {
+    return <String, dynamic>{'id': id, 'name': name, 'isBuiltIn': isBuiltIn};
+  }
+
+  factory _BagPocket.fromJson(Map<String, dynamic> json) {
+    return _BagPocket(
+      id: json['id']?.toString() ?? '',
+      name: json['name']?.toString() ?? 'Pocket',
+      isBuiltIn: json['isBuiltIn'] == true,
+    );
+  }
+}
+
 class BagScreen extends StatefulWidget {
   const BagScreen({super.key});
 
@@ -22,6 +46,23 @@ class _BagScreenState extends State<BagScreen> {
   bool _loading = true;
 
   Map<String, String> _pocketAssignments = {};
+  List<_BagPocket> _customPockets = <_BagPocket>[];
+
+  static const String _customPocketsKey = 'inkdframes_bag_custom_pockets_v1';
+
+  List<_BagPocket> get _allPockets => <_BagPocket>[
+    ..._builtInPockets,
+    ..._customPockets,
+  ];
+
+  static const List<_BagPocket> _builtInPockets = <_BagPocket>[
+    _BagPocket(id: 'built_in_sketches', name: 'Sketches', isBuiltIn: true),
+    _BagPocket(id: 'built_in_characters', name: 'Characters', isBuiltIn: true),
+    _BagPocket(id: 'built_in_textures', name: 'Textures', isBuiltIn: true),
+    _BagPocket(id: 'built_in_props', name: 'Props', isBuiltIn: true),
+    _BagPocket(id: 'built_in_brushes', name: 'Brushes', isBuiltIn: true),
+    _BagPocket(id: 'built_in_misc', name: 'Misc.', isBuiltIn: true),
+  ];
 
   @override
   void initState() {
@@ -31,6 +72,342 @@ class _BagScreenState extends State<BagScreen> {
 
   static const String _pocketAssignmentsKey =
       'inkdframes_bag_pocket_assignments_v1';
+
+  Future<void> _loadCustomPockets() async {
+    final prefs = await SharedPreferences.getInstance();
+    final raw = prefs.getString(_customPocketsKey);
+
+    if (raw == null || raw.isEmpty) {
+      _customPockets = <_BagPocket>[];
+      return;
+    }
+
+    try {
+      final decoded = jsonDecode(raw);
+
+      if (decoded is! List) {
+        _customPockets = <_BagPocket>[];
+        return;
+      }
+
+      _customPockets = decoded
+          .whereType<Map>()
+          .map(
+            (entry) => _BagPocket.fromJson(
+              entry.map<String, dynamic>(
+                (key, value) => MapEntry(key.toString(), value),
+              ),
+            ),
+          )
+          .where((pocket) => pocket.id.isNotEmpty)
+          .toList();
+    } catch (_) {
+      _customPockets = <_BagPocket>[];
+    }
+  }
+
+  Future<void> _saveCustomPockets() async {
+    final prefs = await SharedPreferences.getInstance();
+
+    await prefs.setString(
+      _customPocketsKey,
+      jsonEncode(_customPockets.map((pocket) => pocket.toJson()).toList()),
+    );
+  }
+
+  bool _pocketNameExists(String name, {String? excludingId}) {
+    final normalized = name.trim().toLowerCase();
+
+    return _allPockets.any(
+      (pocket) =>
+          pocket.id != excludingId &&
+          pocket.name.trim().toLowerCase() == normalized,
+    );
+  }
+
+  Future<bool> _createCustomPocket() async {
+    var draftName = '';
+
+    final result = await showDialog<String>(
+      context: context,
+      barrierColor: Colors.black54,
+      builder: (dialogContext) {
+        String? errorText;
+
+        return StatefulBuilder(
+          builder: (context, setDialogState) {
+            return AlertDialog(
+              backgroundColor: const Color(0xFFF0D9AD),
+              title: const Text(
+                'CREATE A POCKET',
+                style: TextStyle(
+                  color: Color(0xFF4A2E1E),
+                  fontWeight: FontWeight.w800,
+                  letterSpacing: 1.2,
+                ),
+              ),
+              content: TextField(
+                autofocus: true,
+                maxLength: 32,
+                style: const TextStyle(color: Color(0xFF3E2A1D)),
+                cursorColor: const Color(0xFF5A3924),
+                decoration: InputDecoration(
+                  labelText: 'Pocket name',
+                  hintText: 'Outfits',
+                  errorText: errorText,
+                  labelStyle: const TextStyle(color: Color(0xFF795232)),
+                  enabledBorder: const UnderlineInputBorder(
+                    borderSide: BorderSide(color: Color(0x80795232)),
+                  ),
+                  focusedBorder: const UnderlineInputBorder(
+                    borderSide: BorderSide(color: Color(0xFF5A3924), width: 2),
+                  ),
+                ),
+                onChanged: (value) {
+                  draftName = value;
+                },
+                onSubmitted: (_) {
+                  final name = draftName.trim();
+
+                  if (name.isEmpty) {
+                    setDialogState(() {
+                      errorText = 'Give your Pocket a name.';
+                    });
+                    return;
+                  }
+
+                  if (_pocketNameExists(name)) {
+                    setDialogState(() {
+                      errorText = 'A Pocket with that name already exists.';
+                    });
+                    return;
+                  }
+
+                  Navigator.pop(dialogContext, name);
+                },
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.pop(dialogContext),
+                  child: const Text(
+                    'Cancel',
+                    style: TextStyle(color: Color(0xFF795232)),
+                  ),
+                ),
+                FilledButton(
+                  style: FilledButton.styleFrom(
+                    backgroundColor: const Color(0xFF5A3924),
+                    foregroundColor: const Color(0xFFF7E8C8),
+                  ),
+                  onPressed: () {
+                    final name = draftName.trim();
+
+                    if (name.isEmpty) {
+                      setDialogState(() {
+                        errorText = 'Give your Pocket a name.';
+                      });
+                      return;
+                    }
+
+                    if (_pocketNameExists(name)) {
+                      setDialogState(() {
+                        errorText = 'A Pocket with that name already exists.';
+                      });
+                      return;
+                    }
+
+                    Navigator.pop(dialogContext, name);
+                  },
+                  child: const Text('Create'),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
+
+    if (result == null || !mounted) {
+      return false;
+    }
+
+    final pocket = _BagPocket(
+      id: 'custom_${DateTime.now().microsecondsSinceEpoch}',
+      name: result.trim(),
+      isBuiltIn: false,
+    );
+
+    setState(() {
+      _customPockets.add(pocket);
+    });
+
+    await _saveCustomPockets();
+
+    return true;
+  }
+
+  Future<bool> _renameCustomPocket(_BagPocket pocket) async {
+    var draftName = pocket.name;
+
+    final result = await showDialog<String>(
+      context: context,
+      barrierColor: Colors.black54,
+      builder: (dialogContext) {
+        String? errorText;
+
+        return StatefulBuilder(
+          builder: (context, setDialogState) {
+            return AlertDialog(
+              backgroundColor: const Color(0xFFF0D9AD),
+              title: const Text(
+                'RENAME POCKET',
+                style: TextStyle(
+                  color: Color(0xFF4A2E1E),
+                  fontWeight: FontWeight.w800,
+                  letterSpacing: 1.2,
+                ),
+              ),
+              content: TextFormField(
+                initialValue: pocket.name,
+                autofocus: true,
+                maxLength: 32,
+                style: const TextStyle(color: Color(0xFF3E2A1D)),
+                cursorColor: const Color(0xFF5A3924),
+                decoration: InputDecoration(
+                  labelText: 'Pocket name',
+                  errorText: errorText,
+                  labelStyle: const TextStyle(color: Color(0xFF795232)),
+                ),
+                onChanged: (value) {
+                  draftName = value;
+                },
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.pop(dialogContext),
+                  child: const Text(
+                    'Cancel',
+                    style: TextStyle(color: Color(0xFF795232)),
+                  ),
+                ),
+                FilledButton(
+                  style: FilledButton.styleFrom(
+                    backgroundColor: const Color(0xFF5A3924),
+                    foregroundColor: const Color(0xFFF7E8C8),
+                  ),
+                  onPressed: () {
+                    final name = draftName.trim();
+
+                    if (name.isEmpty) {
+                      setDialogState(() {
+                        errorText = 'Give your Pocket a name.';
+                      });
+                      return;
+                    }
+
+                    if (_pocketNameExists(name, excludingId: pocket.id)) {
+                      setDialogState(() {
+                        errorText = 'A Pocket with that name already exists.';
+                      });
+                      return;
+                    }
+
+                    Navigator.pop(dialogContext, name);
+                  },
+                  child: const Text('Rename'),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
+
+    if (result == null || !mounted) {
+      return false;
+    }
+
+    final index = _customPockets.indexWhere(
+      (candidate) => candidate.id == pocket.id,
+    );
+
+    if (index == -1) {
+      return false;
+    }
+
+    setState(() {
+      _customPockets[index] = _BagPocket(
+        id: pocket.id,
+        name: result.trim(),
+        isBuiltIn: false,
+      );
+    });
+
+    await _saveCustomPockets();
+
+    return true;
+  }
+
+  Future<bool> _deleteCustomPocket(_BagPocket pocket) async {
+    final itemCount = _pocketAssignments.values
+        .where((pocketId) => pocketId == pocket.id)
+        .length;
+
+    final confirmed = await showDialog<bool>(
+      context: context,
+      barrierColor: Colors.black54,
+      builder: (dialogContext) {
+        return AlertDialog(
+          backgroundColor: const Color(0xFFF0D9AD),
+          title: Text(
+            'Delete "${pocket.name}"?',
+            style: const TextStyle(
+              color: Color(0xFF4A2E1E),
+              fontWeight: FontWeight.w800,
+            ),
+          ),
+          content: Text(
+            itemCount == 0
+                ? 'This removes the Pocket. No Bag items will be deleted.'
+                : '$itemCount ${itemCount == 1 ? 'item' : 'items'} will become Unsorted. The items themselves will remain safely in your Bag.',
+            style: const TextStyle(color: Color(0xFF5A3924), height: 1.4),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(dialogContext, false),
+              child: const Text(
+                'Cancel',
+                style: TextStyle(color: Color(0xFF795232)),
+              ),
+            ),
+            FilledButton(
+              style: FilledButton.styleFrom(
+                backgroundColor: const Color(0xFF6B3027),
+                foregroundColor: Colors.white,
+              ),
+              onPressed: () => Navigator.pop(dialogContext, true),
+              child: const Text('Delete Pocket'),
+            ),
+          ],
+        );
+      },
+    );
+
+    if (confirmed != true || !mounted) {
+      return false;
+    }
+
+    setState(() {
+      _customPockets.removeWhere((candidate) => candidate.id == pocket.id);
+
+      _pocketAssignments.removeWhere((_, pocketId) => pocketId == pocket.id);
+    });
+
+    await _saveCustomPockets();
+    await _savePocketAssignments();
+
+    return true;
+  }
 
   Future<void> _loadPocketAssignments() async {
     final prefs = await SharedPreferences.getInstance();
@@ -52,6 +429,34 @@ class _BagScreenState extends State<BagScreen> {
       _pocketAssignments = decoded.map<String, String>(
         (key, value) => MapEntry(key.toString(), value.toString()),
       );
+
+      // Migrate the original name-based assignments to stable Pocket IDs.
+      final legacyPocketIds = <String, String>{
+        'Sketches': 'built_in_sketches',
+        'Characters': 'built_in_characters',
+        'Textures': 'built_in_textures',
+        'Props': 'built_in_props',
+        'Brushes': 'built_in_brushes',
+        'Misc.': 'built_in_misc',
+      };
+
+      var migrated = false;
+
+      for (final entry in _pocketAssignments.entries.toList()) {
+        final stableId = legacyPocketIds[entry.value];
+
+        if (stableId != null) {
+          _pocketAssignments[entry.key] = stableId;
+          migrated = true;
+        }
+      }
+
+      if (migrated) {
+        await prefs.setString(
+          _pocketAssignmentsKey,
+          jsonEncode(_pocketAssignments),
+        );
+      }
     } catch (_) {
       _pocketAssignments = {};
     }
@@ -67,6 +472,7 @@ class _BagScreenState extends State<BagScreen> {
   }
 
   Future<void> _loadItems() async {
+    await _loadCustomPockets();
     await _loadPocketAssignments();
     final items = await _bagService.loadItems();
 
@@ -116,16 +522,9 @@ class _BagScreenState extends State<BagScreen> {
   }
 
   Future<void> _assignItemToPocket(BagItem item) async {
-    const pockets = <String>[
-      'Sketches',
-      'Characters',
-      'Textures',
-      'Props',
-      'Brushes',
-      'Misc.',
-    ];
+    const unsortedValue = '__unsorted__';
 
-    final selectedPocket = await showModalBottomSheet<String>(
+    final selectedPocketId = await showModalBottomSheet<String>(
       context: context,
       backgroundColor: const Color(0xFF21160F),
       showDragHandle: true,
@@ -138,7 +537,7 @@ class _BagScreenState extends State<BagScreen> {
               Padding(
                 padding: const EdgeInsets.fromLTRB(8, 4, 8, 12),
                 child: Text(
-                  'Put "${item.name}" in which Pocket?',
+                  'Move "${item.name}" to which Pocket?',
                   style: const TextStyle(
                     color: Color(0xFFF1D3A2),
                     fontSize: 18,
@@ -146,35 +545,56 @@ class _BagScreenState extends State<BagScreen> {
                   ),
                 ),
               ),
-              for (final pocket in pockets)
+              for (final pocket in _allPockets)
                 ListTile(
                   leading: const Icon(
                     Icons.inventory_2_outlined,
                     color: Color(0xFFF1D3A2),
                   ),
                   title: Text(
-                    pocket,
+                    pocket.name,
                     style: const TextStyle(color: Color(0xFFF4E5CF)),
                   ),
-                  trailing: _pocketAssignments[item.id] == pocket
+                  trailing: _pocketAssignments[item.id] == pocket.id
                       ? const Icon(Icons.check, color: Color(0xFFF1D3A2))
                       : null,
                   onTap: () {
-                    Navigator.pop(sheetContext, pocket);
+                    Navigator.pop(sheetContext, pocket.id);
                   },
                 ),
+              const Divider(color: Colors.white12),
+              ListTile(
+                leading: const Icon(
+                  Icons.inbox_outlined,
+                  color: Colors.white54,
+                ),
+                title: const Text(
+                  'Unsorted',
+                  style: TextStyle(color: Color(0xFFCFB997)),
+                ),
+                trailing: !_pocketAssignments.containsKey(item.id)
+                    ? const Icon(Icons.check, color: Color(0xFFF1D3A2))
+                    : null,
+                onTap: () {
+                  Navigator.pop(sheetContext, unsortedValue);
+                },
+              ),
             ],
           ),
         );
       },
     );
 
-    if (selectedPocket == null || !mounted) {
+    if (selectedPocketId == null || !mounted) {
       return;
     }
 
     setState(() {
-      _pocketAssignments[item.id] = selectedPocket;
+      if (selectedPocketId == unsortedValue) {
+        _pocketAssignments.remove(item.id);
+      } else {
+        _pocketAssignments[item.id] = selectedPocketId;
+      }
     });
 
     await _savePocketAssignments();
@@ -250,11 +670,18 @@ class _BagScreenState extends State<BagScreen> {
     );
   }
 
-  Future<void> _openPocket(String pocketName) async {
-    final pocketItems = _items
-        .where((item) => _pocketAssignments[item.id] == pocketName)
+  Future<void> _openUnsorted() async {
+    final unsortedItems = _items
+        .where((item) => !_pocketAssignments.containsKey(item.id))
         .toList();
 
+    await _showPocketItems(title: 'Unsorted', items: unsortedItems);
+  }
+
+  Future<void> _showPocketItems({
+    required String title,
+    required List<BagItem> items,
+  }) async {
     await showModalBottomSheet<void>(
       context: context,
       backgroundColor: const Color(0xFF21160F),
@@ -267,7 +694,7 @@ class _BagScreenState extends State<BagScreen> {
               mainAxisSize: MainAxisSize.min,
               children: [
                 Text(
-                  pocketName.toUpperCase(),
+                  title.toUpperCase(),
                   style: const TextStyle(
                     color: Color(0xFFF1D3A2),
                     fontSize: 22,
@@ -276,7 +703,7 @@ class _BagScreenState extends State<BagScreen> {
                   ),
                 ),
                 const SizedBox(height: 12),
-                if (pocketItems.isEmpty)
+                if (items.isEmpty)
                   const Padding(
                     padding: EdgeInsets.symmetric(vertical: 28),
                     child: Text(
@@ -289,11 +716,11 @@ class _BagScreenState extends State<BagScreen> {
                     constraints: const BoxConstraints(maxHeight: 420),
                     child: ListView.separated(
                       shrinkWrap: true,
-                      itemCount: pocketItems.length,
+                      itemCount: items.length,
                       separatorBuilder: (_, _) =>
                           const Divider(color: Colors.white12),
                       itemBuilder: (context, index) {
-                        final item = pocketItems[index];
+                        final item = items[index];
 
                         return ListTile(
                           contentPadding: const EdgeInsets.symmetric(
@@ -358,6 +785,239 @@ class _BagScreenState extends State<BagScreen> {
               ],
             ),
           ),
+        );
+      },
+    );
+  }
+
+  Future<void> _openPocket(String pocketId) async {
+    final pocket = _allPockets.firstWhere(
+      (candidate) => candidate.id == pocketId,
+    );
+
+    final pocketItems = _items
+        .where((item) => _pocketAssignments[item.id] == pocket.id)
+        .toList();
+
+    await _showPocketItems(title: pocket.name, items: pocketItems);
+  }
+
+  Future<void> _openPocketIndex() async {
+    await showModalBottomSheet<void>(
+      context: context,
+      backgroundColor: const Color(0xFF21160F),
+      showDragHandle: true,
+      isScrollControlled: true,
+      builder: (sheetContext) {
+        return StatefulBuilder(
+          builder: (context, setSheetState) {
+            return SafeArea(
+              child: ConstrainedBox(
+                constraints: BoxConstraints(
+                  maxHeight: MediaQuery.sizeOf(context).height * 0.78,
+                ),
+                child: Padding(
+                  padding: const EdgeInsets.fromLTRB(20, 4, 20, 28),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Row(
+                        children: [
+                          const Expanded(
+                            child: Text(
+                              'YOUR POCKETS',
+                              style: TextStyle(
+                                color: Color(0xFFF1D3A2),
+                                fontSize: 22,
+                                fontWeight: FontWeight.w800,
+                                letterSpacing: 1.4,
+                              ),
+                            ),
+                          ),
+                          FilledButton.icon(
+                            style: FilledButton.styleFrom(
+                              backgroundColor: const Color(0xFF6D482C),
+                              foregroundColor: const Color(0xFFF7E8C8),
+                            ),
+                            onPressed: () async {
+                              final created = await _createCustomPocket();
+
+                              if (created && sheetContext.mounted) {
+                                setSheetState(() {});
+                              }
+                            },
+                            icon: const Icon(Icons.add),
+                            label: const Text('Create Pocket'),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 12),
+                      const Divider(color: Colors.white12),
+                      Flexible(
+                        child: ListView(
+                          shrinkWrap: true,
+                          children: [
+                            const Padding(
+                              padding: EdgeInsets.fromLTRB(8, 8, 8, 6),
+                              child: Text(
+                                'BUILT-IN',
+                                style: TextStyle(
+                                  color: Colors.white38,
+                                  fontSize: 12,
+                                  fontWeight: FontWeight.w700,
+                                  letterSpacing: 1.2,
+                                ),
+                              ),
+                            ),
+                            for (final pocket in _builtInPockets)
+                              ListTile(
+                                leading: const Icon(
+                                  Icons.inventory_2_outlined,
+                                  color: Color(0xFFF1D3A2),
+                                ),
+                                title: Text(
+                                  pocket.name,
+                                  style: const TextStyle(
+                                    color: Color(0xFFF4E5CF),
+                                  ),
+                                ),
+                                trailing: Text(
+                                  '${_pocketAssignments.values.where((id) => id == pocket.id).length}',
+                                  style: const TextStyle(color: Colors.white54),
+                                ),
+                                onTap: () {
+                                  Navigator.pop(sheetContext);
+                                  _openPocket(pocket.id);
+                                },
+                              ),
+                            const Padding(
+                              padding: EdgeInsets.fromLTRB(8, 18, 8, 6),
+                              child: Text(
+                                'CUSTOM',
+                                style: TextStyle(
+                                  color: Colors.white38,
+                                  fontSize: 12,
+                                  fontWeight: FontWeight.w700,
+                                  letterSpacing: 1.2,
+                                ),
+                              ),
+                            ),
+                            if (_customPockets.isEmpty)
+                              const Padding(
+                                padding: EdgeInsets.symmetric(
+                                  horizontal: 8,
+                                  vertical: 18,
+                                ),
+                                child: Text(
+                                  'No custom Pockets yet. Create one and make the Bag your own.',
+                                  style: TextStyle(
+                                    color: Color(0xFFCFB997),
+                                    height: 1.4,
+                                  ),
+                                ),
+                              )
+                            else
+                              for (final pocket in _customPockets)
+                                ListTile(
+                                  leading: const Icon(
+                                    Icons.folder_outlined,
+                                    color: Color(0xFFF1D3A2),
+                                  ),
+                                  title: Text(
+                                    pocket.name,
+                                    style: const TextStyle(
+                                      color: Color(0xFFF4E5CF),
+                                    ),
+                                  ),
+                                  subtitle: Text(
+                                    '${_pocketAssignments.values.where((id) => id == pocket.id).length} items',
+                                    style: const TextStyle(
+                                      color: Colors.white54,
+                                    ),
+                                  ),
+                                  trailing: Row(
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
+                                      IconButton(
+                                        tooltip: 'Rename Pocket',
+                                        onPressed: () async {
+                                          final renamed =
+                                              await _renameCustomPocket(pocket);
+
+                                          if (renamed && sheetContext.mounted) {
+                                            setSheetState(() {});
+                                          }
+                                        },
+                                        icon: const Icon(
+                                          Icons.edit_outlined,
+                                          color: Color(0xFFF1D3A2),
+                                        ),
+                                      ),
+                                      IconButton(
+                                        tooltip: 'Delete Pocket',
+                                        onPressed: () async {
+                                          final deleted =
+                                              await _deleteCustomPocket(pocket);
+
+                                          if (deleted && sheetContext.mounted) {
+                                            setSheetState(() {});
+                                          }
+                                        },
+                                        icon: const Icon(
+                                          Icons.delete_outline,
+                                          color: Colors.white54,
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                  onTap: () {
+                                    Navigator.pop(sheetContext);
+                                    _openPocket(pocket.id);
+                                  },
+                                ),
+                            const Padding(
+                              padding: EdgeInsets.fromLTRB(8, 18, 8, 6),
+                              child: Text(
+                                'UNSORTED',
+                                style: TextStyle(
+                                  color: Colors.white38,
+                                  fontSize: 12,
+                                  fontWeight: FontWeight.w700,
+                                  letterSpacing: 1.2,
+                                ),
+                              ),
+                            ),
+                            ListTile(
+                              leading: const Icon(
+                                Icons.inbox_outlined,
+                                color: Color(0xFFCFB997),
+                              ),
+                              title: const Text(
+                                'Unsorted',
+                                style: TextStyle(color: Color(0xFFF4E5CF)),
+                              ),
+                              subtitle: const Text(
+                                'Items not currently assigned to a Pocket',
+                                style: TextStyle(color: Colors.white54),
+                              ),
+                              trailing: Text(
+                                '${_items.where((item) => !_pocketAssignments.containsKey(item.id)).length}',
+                                style: const TextStyle(color: Colors.white54),
+                              ),
+                              onTap: () {
+                                Navigator.pop(sheetContext);
+                                _openUnsorted();
+                              },
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            );
+          },
         );
       },
     );
@@ -505,6 +1165,23 @@ class _BagScreenState extends State<BagScreen> {
                       ),
                     ),
 
+                    // Painted CREATE POCKET + card.
+                    Positioned(
+                      left: 1235,
+                      top: 50,
+                      width: 250,
+                      height: 215,
+                      child: Semantics(
+                        button: true,
+                        label: 'Open Pocket Index',
+                        child: GestureDetector(
+                          behavior: HitTestBehavior.opaque,
+                          onTap: _openPocketIndex,
+                          child: const SizedBox.expand(),
+                        ),
+                      ),
+                    ),
+
                     // SKETCHES
                     Positioned(
                       left: 435,
@@ -513,7 +1190,7 @@ class _BagScreenState extends State<BagScreen> {
                       height: 70,
                       child: GestureDetector(
                         behavior: HitTestBehavior.opaque,
-                        onTap: () => _openPocket('Sketches'),
+                        onTap: () => _openPocket('built_in_sketches'),
                         child: Semantics(
                           button: true,
                           label: 'Open Sketches Pocket',
@@ -530,7 +1207,7 @@ class _BagScreenState extends State<BagScreen> {
                       height: 75,
                       child: GestureDetector(
                         behavior: HitTestBehavior.opaque,
-                        onTap: () => _openPocket('Characters'),
+                        onTap: () => _openPocket('built_in_characters'),
                         child: Semantics(
                           button: true,
                           label: 'Open Characters Pocket',
@@ -547,7 +1224,7 @@ class _BagScreenState extends State<BagScreen> {
                       height: 75,
                       child: GestureDetector(
                         behavior: HitTestBehavior.opaque,
-                        onTap: () => _openPocket('Textures'),
+                        onTap: () => _openPocket('built_in_textures'),
                         child: Semantics(
                           button: true,
                           label: 'Open Textures Pocket',
@@ -564,7 +1241,7 @@ class _BagScreenState extends State<BagScreen> {
                       height: 70,
                       child: GestureDetector(
                         behavior: HitTestBehavior.opaque,
-                        onTap: () => _openPocket('Props'),
+                        onTap: () => _openPocket('built_in_props'),
                         child: Semantics(
                           button: true,
                           label: 'Open Props Pocket',
@@ -581,7 +1258,7 @@ class _BagScreenState extends State<BagScreen> {
                       height: 75,
                       child: GestureDetector(
                         behavior: HitTestBehavior.opaque,
-                        onTap: () => _openPocket('Brushes'),
+                        onTap: () => _openPocket('built_in_brushes'),
                         child: Semantics(
                           button: true,
                           label: 'Open Brushes Pocket',
@@ -598,7 +1275,7 @@ class _BagScreenState extends State<BagScreen> {
                       height: 70,
                       child: GestureDetector(
                         behavior: HitTestBehavior.opaque,
-                        onTap: () => _openPocket('Misc.'),
+                        onTap: () => _openPocket('built_in_misc'),
                         child: Semantics(
                           button: true,
                           label: 'Open Misc Pocket',
