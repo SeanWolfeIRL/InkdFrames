@@ -139,6 +139,46 @@ class _BagScreenState extends State<BagScreen> {
     );
   }
 
+  Future<void> _openPocket(String pocketName) async {
+    await showModalBottomSheet<void>(
+      context: context,
+      backgroundColor: const Color(0xFF21160F),
+      showDragHandle: true,
+      builder: (sheetContext) {
+        return SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(24, 8, 24, 32),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(
+                  pocketName.toUpperCase(),
+                  style: const TextStyle(
+                    color: Color(0xFFF1D3A2),
+                    fontSize: 22,
+                    fontWeight: FontWeight.w800,
+                    letterSpacing: 1.4,
+                  ),
+                ),
+                const SizedBox(height: 8),
+                const Text(
+                  'This Pocket is empty for now.',
+                  style: TextStyle(color: Color(0xFFCFB997), fontSize: 15),
+                ),
+                const SizedBox(height: 6),
+                const Text(
+                  'Soon you’ll be able to place Bag items here.',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(color: Colors.white54, fontSize: 13),
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+
   Future<void> _openNotes() async {
     final prefs = await SharedPreferences.getInstance();
 
@@ -260,100 +300,209 @@ class _BagScreenState extends State<BagScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: Colors.black,
-      body: LayoutBuilder(
-        builder: (context, constraints) {
-          final width = constraints.maxWidth;
-          final height = constraints.maxHeight;
+      body: Stack(
+        fit: StackFit.expand,
+        children: [
+          // The entire Bag environment lives in the artwork's native
+          // 1536 x 1024 coordinate space. Artwork and hotspots therefore
+          // scale together on every screen.
+          Center(
+            child: FittedBox(
+              fit: BoxFit.contain,
+              child: SizedBox(
+                width: 1536,
+                height: 1024,
+                child: Stack(
+                  children: [
+                    Positioned.fill(
+                      child: Image.asset(
+                        'assets/images/inkdframes_bag_open_v1.png',
+                        fit: BoxFit.fill,
+                      ),
+                    ),
 
-          return Stack(
-            fit: StackFit.expand,
-            children: [
-              Image.asset(
-                'assets/images/inkdframes_bag_open_v1.png',
-                fit: BoxFit.cover,
-                alignment: Alignment.center,
-              ),
-
-              // Painted NOTES notebook on the left-hand table.
-              Positioned(
-                left: width * 0.005,
-                top: height * 0.615,
-                width: width * 0.185,
-                height: height * 0.34,
-                child: Semantics(
-                  button: true,
-                  label: 'Open Bag notes',
-                  child: GestureDetector(
-                    behavior: HitTestBehavior.opaque,
-                    onTap: _openNotes,
-                    child: const SizedBox.expand(),
-                  ),
-                ),
-              ),
-
-              // Painted BACK sign in the lower-right corner.
-              Positioned(
-                left: width * 0.765,
-                top: height * 0.905,
-                width: width * 0.145,
-                height: height * 0.075,
-                child: Semantics(
-                  button: true,
-                  label: 'Return to workspace',
-                  child: GestureDetector(
-                    behavior: HitTestBehavior.opaque,
-                    onTap: () => Navigator.pop(context),
-                    child: const SizedBox.expand(),
-                  ),
-                ),
-              ),
-
-              // Temporary inventory access while the physical Pocket
-              // interactions are being built.
-              Positioned(
-                right: 18,
-                top: 18,
-                child: SafeArea(
-                  child: Material(
-                    color: const Color(0xCC21160F),
-                    borderRadius: BorderRadius.circular(14),
-                    elevation: 6,
-                    child: InkWell(
-                      borderRadius: BorderRadius.circular(14),
-                      onTap: _showTemporaryInventory,
-                      child: Padding(
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 14,
-                          vertical: 10,
-                        ),
-                        child: Row(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            const Icon(
-                              Icons.inventory_2_outlined,
-                              size: 18,
-                              color: Color(0xFFF1D3A2),
-                            ),
-                            const SizedBox(width: 8),
-                            Text(
-                              _loading
-                                  ? 'Loading...'
-                                  : 'Items ${_items.length}',
-                              style: const TextStyle(
-                                color: Color(0xFFF1D3A2),
-                                fontWeight: FontWeight.w600,
-                              ),
-                            ),
-                          ],
+                    // SKETCHES
+                    Positioned(
+                      left: 435,
+                      top: 385,
+                      width: 145,
+                      height: 70,
+                      child: GestureDetector(
+                        behavior: HitTestBehavior.opaque,
+                        onTap: () => _openPocket('Sketches'),
+                        child: Semantics(
+                          button: true,
+                          label: 'Open Sketches Pocket',
+                          child: const SizedBox.expand(),
                         ),
                       ),
+                    ),
+
+                    // CHARACTERS
+                    Positioned(
+                      left: 725,
+                      top: 380,
+                      width: 160,
+                      height: 75,
+                      child: GestureDetector(
+                        behavior: HitTestBehavior.opaque,
+                        onTap: () => _openPocket('Characters'),
+                        child: Semantics(
+                          button: true,
+                          label: 'Open Characters Pocket',
+                          child: const SizedBox.expand(),
+                        ),
+                      ),
+                    ),
+
+                    // TEXTURES
+                    Positioned(
+                      left: 1010,
+                      top: 380,
+                      width: 155,
+                      height: 75,
+                      child: GestureDetector(
+                        behavior: HitTestBehavior.opaque,
+                        onTap: () => _openPocket('Textures'),
+                        child: Semantics(
+                          button: true,
+                          label: 'Open Textures Pocket',
+                          child: const SizedBox.expand(),
+                        ),
+                      ),
+                    ),
+
+                    // PROPS
+                    Positioned(
+                      left: 1010,
+                      top: 570,
+                      width: 140,
+                      height: 70,
+                      child: GestureDetector(
+                        behavior: HitTestBehavior.opaque,
+                        onTap: () => _openPocket('Props'),
+                        child: Semantics(
+                          button: true,
+                          label: 'Open Props Pocket',
+                          child: const SizedBox.expand(),
+                        ),
+                      ),
+                    ),
+
+                    // BRUSHES
+                    Positioned(
+                      left: 730,
+                      top: 670,
+                      width: 135,
+                      height: 75,
+                      child: GestureDetector(
+                        behavior: HitTestBehavior.opaque,
+                        onTap: () => _openPocket('Brushes'),
+                        child: Semantics(
+                          button: true,
+                          label: 'Open Brushes Pocket',
+                          child: const SizedBox.expand(),
+                        ),
+                      ),
+                    ),
+
+                    // MISC.
+                    Positioned(
+                      left: 975,
+                      top: 745,
+                      width: 130,
+                      height: 70,
+                      child: GestureDetector(
+                        behavior: HitTestBehavior.opaque,
+                        onTap: () => _openPocket('Misc.'),
+                        child: Semantics(
+                          button: true,
+                          label: 'Open Misc Pocket',
+                          child: const SizedBox.expand(),
+                        ),
+                      ),
+                    ),
+
+                    // Painted NOTES notebook.
+                    Positioned(
+                      left: 20,
+                      top: 600,
+                      width: 260,
+                      height: 270,
+                      child: Semantics(
+                        button: true,
+                        label: 'Open Bag notes',
+                        child: GestureDetector(
+                          behavior: HitTestBehavior.opaque,
+                          onTap: _openNotes,
+                          child: const SizedBox.expand(),
+                        ),
+                      ),
+                    ),
+
+                    // Painted BACK control.
+                    Positioned(
+                      left: 1280,
+                      top: 905,
+                      width: 220,
+                      height: 90,
+                      child: Semantics(
+                        button: true,
+                        label: 'Return to workspace',
+                        child: GestureDetector(
+                          behavior: HitTestBehavior.opaque,
+                          onTap: () => Navigator.pop(context),
+                          child: const SizedBox.expand(),
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+
+          // Temporary escape hatch until items physically live in Pockets.
+          Positioned(
+            right: 18,
+            top: 18,
+            child: SafeArea(
+              child: Material(
+                color: const Color(0xCC21160F),
+                borderRadius: BorderRadius.circular(14),
+                elevation: 6,
+                child: InkWell(
+                  borderRadius: BorderRadius.circular(14),
+                  onTap: _showTemporaryInventory,
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 14,
+                      vertical: 10,
+                    ),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        const Icon(
+                          Icons.inventory_2_outlined,
+                          size: 18,
+                          color: Color(0xFFF1D3A2),
+                        ),
+                        const SizedBox(width: 8),
+                        Text(
+                          _loading ? 'Loading...' : 'Items ${_items.length}',
+                          style: const TextStyle(
+                            color: Color(0xFFF1D3A2),
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                      ],
                     ),
                   ),
                 ),
               ),
-            ],
-          );
-        },
+            ),
+          ),
+        ],
       ),
     );
   }
