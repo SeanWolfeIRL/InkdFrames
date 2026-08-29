@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 import 'project_library_screen.dart';
 import 'welcome_home_screen.dart';
 import 'workspace_screen.dart';
+import 'bag_screen.dart';
 
 class HomeScreen extends StatelessWidget {
   const HomeScreen({super.key});
@@ -275,7 +276,7 @@ class HomeScreen extends StatelessWidget {
           // Portrait keeps the room at a readable landscape scale.
           // The phone becomes a horizontal viewport into the room.
           final roomWidth = isPortrait
-              ? roomHeight * (16 / 9)
+              ? roomHeight * (3 / 2)
               : constraints.maxWidth;
 
           Widget buildRoom() {
@@ -414,11 +415,9 @@ class HomeScreen extends StatelessWidget {
                     child: _roomHotspot(
                       tooltip: 'The Bag',
                       onTap: () {
-                        ScaffoldMessenger.of(context).showSnackBar(
-                          const SnackBar(
-                            content: Text(
-                              'The Bag room entrance is ready for wiring next 🎒',
-                            ),
+                        Navigator.of(context).push(
+                          MaterialPageRoute<void>(
+                            builder: (_) => const BagScreen(),
                           ),
                         );
                       },

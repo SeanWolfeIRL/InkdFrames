@@ -5,6 +5,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import '../models/bag_item.dart';
 import '../models/vector_stroke.dart';
+import '../painters/bag_item_preview_painter.dart';
 import '../painters/frame_thumbnail_painter.dart';
 import '../services/bag_service.dart';
 
@@ -137,6 +138,11 @@ class _BagScreenState extends State<BagScreen> {
         return StatefulBuilder(
           builder: (context, setDialogState) {
             return AlertDialog(
+              scrollable: true,
+              insetPadding: const EdgeInsets.symmetric(
+                horizontal: 24,
+                vertical: 16,
+              ),
               backgroundColor: const Color(0xFFF0D9AD),
               title: const Text(
                 'CREATE A POCKET',
@@ -258,6 +264,11 @@ class _BagScreenState extends State<BagScreen> {
         return StatefulBuilder(
           builder: (context, setDialogState) {
             return AlertDialog(
+              scrollable: true,
+              insetPadding: const EdgeInsets.symmetric(
+                horizontal: 24,
+                vertical: 16,
+              ),
               backgroundColor: const Color(0xFFF0D9AD),
               title: const Text(
                 'RENAME POCKET',
@@ -603,7 +614,9 @@ class _BagScreenState extends State<BagScreen> {
   List<VectorStroke> _bagItemPreviewStrokes(BagItem item) {
     final strokes = <VectorStroke>[];
 
-    for (final layer in item.layers) {
+    // Match Workspace composition order:
+    // the layer list is top-to-bottom, so paint bottom layers first.
+    for (final layer in item.layers.reversed) {
       if (!layer.visible) {
         continue;
       }
@@ -1038,11 +1051,25 @@ class _BagScreenState extends State<BagScreen> {
       context: context,
       barrierColor: Colors.black54,
       builder: (dialogContext) {
+        final screenHeight = MediaQuery.sizeOf(dialogContext).height;
+        final keyboardHeight = MediaQuery.viewInsetsOf(dialogContext).bottom;
+
+        final availableHeight = screenHeight - keyboardHeight - 48;
+
+        final dialogMaxHeight = availableHeight < 220
+            ? 220.0
+            : availableHeight > 620
+            ? 620.0
+            : availableHeight;
+
         return Dialog(
           backgroundColor: Colors.transparent,
           insetPadding: const EdgeInsets.all(24),
           child: ConstrainedBox(
-            constraints: const BoxConstraints(maxWidth: 560, maxHeight: 620),
+            constraints: BoxConstraints(
+              maxWidth: 560,
+              maxHeight: dialogMaxHeight,
+            ),
             child: Container(
               decoration: BoxDecoration(
                 color: const Color(0xFFF0D9AD),
@@ -1144,185 +1171,209 @@ class _BagScreenState extends State<BagScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: Colors.black,
-      body: Stack(
-        fit: StackFit.expand,
-        children: [
-          // The entire Bag environment lives in the artwork's native
-          // 1536 x 1024 coordinate space. Artwork and hotspots therefore
-          // scale together on every screen.
-          Center(
-            child: FittedBox(
-              fit: BoxFit.contain,
-              child: SizedBox(
-                width: 1536,
-                height: 1024,
-                child: Stack(
-                  children: [
-                    Positioned.fill(
-                      child: Image.asset(
-                        'assets/images/inkdframes_bag_open_v1.png',
-                        fit: BoxFit.fill,
+      body: LayoutBuilder(
+        builder: (context, constraints) {
+          final isPortrait = constraints.maxHeight > constraints.maxWidth;
+
+          // The Bag always exists in its native 1536 x 1024 world.
+          // All painted hotspots remain attached to these coordinates.
+          Widget buildBagWorld() {
+            return SizedBox(
+              width: 1536,
+              height: 1024,
+              child: Stack(
+                children: [
+                  Positioned.fill(
+                    child: Image.asset(
+                      'assets/images/inkdframes_bag_open_v1.png',
+                      fit: BoxFit.fill,
+                    ),
+                  ),
+
+                  // Painted CREATE POCKET + card.
+                  Positioned(
+                    left: 1235,
+                    top: 50,
+                    width: 250,
+                    height: 215,
+                    child: Semantics(
+                      button: true,
+                      label: 'Open Pocket Index',
+                      child: GestureDetector(
+                        behavior: HitTestBehavior.opaque,
+                        onTap: _openPocketIndex,
+                        child: const SizedBox.expand(),
                       ),
                     ),
+                  ),
 
-                    // Painted CREATE POCKET + card.
-                    Positioned(
-                      left: 1235,
-                      top: 50,
-                      width: 250,
-                      height: 215,
+                  // SKETCHES
+                  Positioned(
+                    left: 435,
+                    top: 385,
+                    width: 145,
+                    height: 70,
+                    child: GestureDetector(
+                      behavior: HitTestBehavior.opaque,
+                      onTap: () => _openPocket('built_in_sketches'),
                       child: Semantics(
                         button: true,
-                        label: 'Open Pocket Index',
-                        child: GestureDetector(
-                          behavior: HitTestBehavior.opaque,
-                          onTap: _openPocketIndex,
-                          child: const SizedBox.expand(),
-                        ),
+                        label: 'Open Sketches Pocket',
+                        child: const SizedBox.expand(),
                       ),
                     ),
+                  ),
 
-                    // SKETCHES
-                    Positioned(
-                      left: 435,
-                      top: 385,
-                      width: 145,
-                      height: 70,
-                      child: GestureDetector(
-                        behavior: HitTestBehavior.opaque,
-                        onTap: () => _openPocket('built_in_sketches'),
-                        child: Semantics(
-                          button: true,
-                          label: 'Open Sketches Pocket',
-                          child: const SizedBox.expand(),
-                        ),
-                      ),
-                    ),
-
-                    // CHARACTERS
-                    Positioned(
-                      left: 725,
-                      top: 380,
-                      width: 160,
-                      height: 75,
-                      child: GestureDetector(
-                        behavior: HitTestBehavior.opaque,
-                        onTap: () => _openPocket('built_in_characters'),
-                        child: Semantics(
-                          button: true,
-                          label: 'Open Characters Pocket',
-                          child: const SizedBox.expand(),
-                        ),
-                      ),
-                    ),
-
-                    // TEXTURES
-                    Positioned(
-                      left: 1010,
-                      top: 380,
-                      width: 155,
-                      height: 75,
-                      child: GestureDetector(
-                        behavior: HitTestBehavior.opaque,
-                        onTap: () => _openPocket('built_in_textures'),
-                        child: Semantics(
-                          button: true,
-                          label: 'Open Textures Pocket',
-                          child: const SizedBox.expand(),
-                        ),
-                      ),
-                    ),
-
-                    // PROPS
-                    Positioned(
-                      left: 1010,
-                      top: 570,
-                      width: 140,
-                      height: 70,
-                      child: GestureDetector(
-                        behavior: HitTestBehavior.opaque,
-                        onTap: () => _openPocket('built_in_props'),
-                        child: Semantics(
-                          button: true,
-                          label: 'Open Props Pocket',
-                          child: const SizedBox.expand(),
-                        ),
-                      ),
-                    ),
-
-                    // BRUSHES
-                    Positioned(
-                      left: 730,
-                      top: 670,
-                      width: 135,
-                      height: 75,
-                      child: GestureDetector(
-                        behavior: HitTestBehavior.opaque,
-                        onTap: () => _openPocket('built_in_brushes'),
-                        child: Semantics(
-                          button: true,
-                          label: 'Open Brushes Pocket',
-                          child: const SizedBox.expand(),
-                        ),
-                      ),
-                    ),
-
-                    // MISC.
-                    Positioned(
-                      left: 975,
-                      top: 745,
-                      width: 130,
-                      height: 70,
-                      child: GestureDetector(
-                        behavior: HitTestBehavior.opaque,
-                        onTap: () => _openPocket('built_in_misc'),
-                        child: Semantics(
-                          button: true,
-                          label: 'Open Misc Pocket',
-                          child: const SizedBox.expand(),
-                        ),
-                      ),
-                    ),
-
-                    // Painted NOTES notebook.
-                    Positioned(
-                      left: 20,
-                      top: 600,
-                      width: 260,
-                      height: 270,
+                  // CHARACTERS
+                  Positioned(
+                    left: 725,
+                    top: 380,
+                    width: 160,
+                    height: 75,
+                    child: GestureDetector(
+                      behavior: HitTestBehavior.opaque,
+                      onTap: () => _openPocket('built_in_characters'),
                       child: Semantics(
                         button: true,
-                        label: 'Open Bag notes',
-                        child: GestureDetector(
-                          behavior: HitTestBehavior.opaque,
-                          onTap: _openNotes,
-                          child: const SizedBox.expand(),
-                        ),
+                        label: 'Open Characters Pocket',
+                        child: const SizedBox.expand(),
                       ),
                     ),
+                  ),
 
-                    // Painted BACK control.
-                    Positioned(
-                      left: 1280,
-                      top: 905,
-                      width: 220,
-                      height: 90,
+                  // TEXTURES
+                  Positioned(
+                    left: 1010,
+                    top: 380,
+                    width: 155,
+                    height: 75,
+                    child: GestureDetector(
+                      behavior: HitTestBehavior.opaque,
+                      onTap: () => _openPocket('built_in_textures'),
                       child: Semantics(
                         button: true,
-                        label: 'Return to workspace',
-                        child: GestureDetector(
-                          behavior: HitTestBehavior.opaque,
-                          onTap: () => Navigator.pop(context),
-                          child: const SizedBox.expand(),
-                        ),
+                        label: 'Open Textures Pocket',
+                        child: const SizedBox.expand(),
                       ),
                     ),
-                  ],
-                ),
+                  ),
+
+                  // PROPS
+                  Positioned(
+                    left: 1010,
+                    top: 570,
+                    width: 140,
+                    height: 70,
+                    child: GestureDetector(
+                      behavior: HitTestBehavior.opaque,
+                      onTap: () => _openPocket('built_in_props'),
+                      child: Semantics(
+                        button: true,
+                        label: 'Open Props Pocket',
+                        child: const SizedBox.expand(),
+                      ),
+                    ),
+                  ),
+
+                  // BRUSHES
+                  Positioned(
+                    left: 730,
+                    top: 670,
+                    width: 135,
+                    height: 75,
+                    child: GestureDetector(
+                      behavior: HitTestBehavior.opaque,
+                      onTap: () => _openPocket('built_in_brushes'),
+                      child: Semantics(
+                        button: true,
+                        label: 'Open Brushes Pocket',
+                        child: const SizedBox.expand(),
+                      ),
+                    ),
+                  ),
+
+                  // MISC.
+                  Positioned(
+                    left: 975,
+                    top: 745,
+                    width: 130,
+                    height: 70,
+                    child: GestureDetector(
+                      behavior: HitTestBehavior.opaque,
+                      onTap: () => _openPocket('built_in_misc'),
+                      child: Semantics(
+                        button: true,
+                        label: 'Open Misc Pocket',
+                        child: const SizedBox.expand(),
+                      ),
+                    ),
+                  ),
+
+                  // Painted NOTES notebook.
+                  Positioned(
+                    left: 20,
+                    top: 600,
+                    width: 260,
+                    height: 270,
+                    child: Semantics(
+                      button: true,
+                      label: 'Open Bag notes',
+                      child: GestureDetector(
+                        behavior: HitTestBehavior.opaque,
+                        onTap: _openNotes,
+                        child: const SizedBox.expand(),
+                      ),
+                    ),
+                  ),
+
+                  // Painted BACK control.
+                  Positioned(
+                    left: 1280,
+                    top: 905,
+                    width: 220,
+                    height: 90,
+                    child: Semantics(
+                      button: true,
+                      label: 'Return to workspace',
+                      child: GestureDetector(
+                        behavior: HitTestBehavior.opaque,
+                        onTap: () => Navigator.pop(context),
+                        child: const SizedBox.expand(),
+                      ),
+                    ),
+                  ),
+                ],
               ),
+            );
+          }
+
+          // Wide screens keep the full satchel visible as before.
+          if (!isPortrait) {
+            return Center(
+              child: FittedBox(fit: BoxFit.contain, child: buildBagWorld()),
+            );
+          }
+
+          // Portrait becomes a camera looking into the Bag.
+          // Fill the screen vertically, then pan horizontally through
+          // the wider 3:2 environment instead of shrinking it down.
+          final cameraHeight = constraints.maxHeight;
+          final cameraWidth = cameraHeight * (1536 / 1024);
+
+          return InteractiveViewer(
+            constrained: false,
+            panEnabled: true,
+            scaleEnabled: false,
+            boundaryMargin: EdgeInsets.zero,
+            clipBehavior: Clip.hardEdge,
+            alignment: Alignment.center,
+            child: SizedBox(
+              width: cameraWidth,
+              height: cameraHeight,
+              child: FittedBox(fit: BoxFit.fill, child: buildBagWorld()),
             ),
-          ),
-        ],
+          );
+        },
       ),
     );
   }
@@ -1398,7 +1449,7 @@ class _BagItemViewerState extends State<_BagItemViewer> {
                         width: MediaQuery.sizeOf(context).width * 0.65,
                         height: MediaQuery.sizeOf(context).height * 0.65,
                         child: CustomPaint(
-                          painter: FrameThumbnailPainter(
+                          painter: BagItemPreviewPainter(
                             strokes: widget.strokes,
                           ),
                           child: const SizedBox.expand(),

@@ -87,6 +87,11 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
   bool _isTransformDragging = false;
   bool _isTransformScaling = false;
   bool _isTransformRotating = false;
+  bool _isTransformPivotDragging = false;
+  bool _transformScaleHorizontalOnly = false;
+  bool _transformScaleVerticalOnly = false;
+
+  Offset? _transformPivot;
 
   List<VectorPoint> _lassoPoints = const <VectorPoint>[];
   Map<String, Set<int>> _selectedTransformStrokes = <String, Set<int>>{};
@@ -2323,6 +2328,16 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     return (position - _transformRotationHandle(bounds)).distance <= hitRadius;
   }
 
+  Offset _effectiveTransformPivot(Rect bounds) {
+    return _transformPivot ?? bounds.center;
+  }
+
+  bool _transformPivotHit(Offset position, Rect bounds) {
+    const hitRadius = 24.0;
+
+    return (position - _effectiveTransformPivot(bounds)).distance <= hitRadius;
+  }
+
   double _angleFromCenter(Offset point, Offset center) {
     return math.atan2(point.dy - center.dy, point.dx - center.dx);
   }
@@ -2419,6 +2434,43 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     }
 
     return bounds.topLeft;
+  }
+
+  Offset? _transformEdgeHandleHit(Offset position, Rect bounds) {
+    const hitRadius = 22.0;
+
+    for (final handle in <Offset>[
+      bounds.centerLeft,
+      bounds.centerRight,
+      bounds.topCenter,
+      bounds.bottomCenter,
+    ]) {
+      if ((position - handle).distance <= hitRadius) {
+        return handle;
+      }
+    }
+
+    return null;
+  }
+
+  bool _transformHandleIsHorizontal(Offset handle, Rect bounds) {
+    return handle == bounds.centerLeft || handle == bounds.centerRight;
+  }
+
+  Offset _oppositeTransformEdge(Offset handle, Rect bounds) {
+    if (handle == bounds.centerLeft) {
+      return bounds.centerRight;
+    }
+
+    if (handle == bounds.centerRight) {
+      return bounds.centerLeft;
+    }
+
+    if (handle == bounds.topCenter) {
+      return bounds.bottomCenter;
+    }
+
+    return bounds.topCenter;
   }
 
   void _copySelectedStrokes() {
@@ -2582,13 +2634,18 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
   }
 
   void _scaleSelectedStrokes(
-    double scale,
+    double scaleX,
+    double scaleY,
     Offset anchor,
     Map<String, List<VectorStroke>> snapshot,
   ) {
     if (_selectedTransformStrokes.isEmpty) return;
 
-    final safeScale = scale.clamp(0.05, 20.0);
+    final safeScaleX = scaleX.clamp(0.05, 20.0);
+    final safeScaleY = scaleY.clamp(0.05, 20.0);
+
+    final nonUniformScale =
+        _transformScaleHorizontalOnly || _transformScaleVerticalOnly;
 
     for (final entry in _selectedTransformStrokes.entries) {
       final layerIndex = _layerIndexForId(entry.key);
@@ -2616,15 +2673,15 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
           points: source.points
               .map(
                 (point) => VectorPoint(
-                  dx: anchor.dx + ((point.dx - anchor.dx) * safeScale),
-                  dy: anchor.dy + ((point.dy - anchor.dy) * safeScale),
+                  dx: anchor.dx + ((point.dx - anchor.dx) * safeScaleX),
+                  dy: anchor.dy + ((point.dy - anchor.dy) * safeScaleY),
                   pressure: point.pressure,
                 ),
               )
               .toList(),
-          strokeWidth: source.filled
+          strokeWidth: source.filled || nonUniformScale
               ? source.strokeWidth
-              : (source.strokeWidth * safeScale).clamp(0.25, 500.0),
+              : (source.strokeWidth * safeScaleX).clamp(0.25, 500.0),
           color: source.color,
           filled: source.filled,
           brushType: source.brushType,
@@ -3555,6 +3612,18 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
       final bounds = _selectedStrokeBounds();
 
       if (bounds != null) {
+        if (_transformPivotHit(canvasPosition, bounds)) {
+          setState(() {
+            _transformPivot = _effectiveTransformPivot(bounds);
+            _isTransformPivotDragging = true;
+            _isTransformRotating = false;
+            _isTransformScaling = false;
+            _isTransformDragging = false;
+          });
+
+          return;
+        }
+
         if (_transformRotationHandleHit(canvasPosition, bounds)) {
           if (_activeLayerGroup == null) {
             _saveUndoState();
@@ -3562,16 +3631,18 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
             _saveGroupUndoState();
           }
 
-          final center = bounds.center;
+          final pivot = _effectiveTransformPivot(bounds);
 
           setState(() {
+            _transformPivot = pivot;
             _isTransformRotating = true;
             _isTransformScaling = false;
             _isTransformDragging = false;
-            _transformRotationCenter = center;
+            _isTransformPivotDragging = false;
+            _transformRotationCenter = pivot;
             _transformRotationStartAngle = _angleFromCenter(
               canvasPosition,
-              center,
+              pivot,
             );
             _transformRotationSnapshot = _selectedTransformSnapshot();
           });
@@ -3596,10 +3667,47 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
             _isTransformScaling = true;
             _isTransformDragging = false;
             _isTransformRotating = false;
+            _transformScaleHorizontalOnly = false;
+            _transformScaleVerticalOnly = false;
             _transformScaleAnchor = anchor;
             _transformScaleStartDistance = startDistance < 0.001
                 ? 0.001
                 : startDistance;
+            _transformScaleSnapshot = _selectedTransformSnapshot();
+          });
+
+          return;
+        }
+
+        final edgeHandle = _transformEdgeHandleHit(canvasPosition, bounds);
+
+        if (edgeHandle != null) {
+          if (_activeLayerGroup == null) {
+            _saveUndoState();
+          } else {
+            _saveGroupUndoState();
+          }
+
+          final anchor = _oppositeTransformEdge(edgeHandle, bounds);
+          final horizontal = _transformHandleIsHorizontal(edgeHandle, bounds);
+
+          final startDistance = horizontal
+              ? (edgeHandle.dx - anchor.dx).abs()
+              : (edgeHandle.dy - anchor.dy).abs();
+
+          setState(() {
+            _isTransformScaling = true;
+            _isTransformDragging = false;
+            _isTransformRotating = false;
+
+            _transformScaleHorizontalOnly = horizontal;
+            _transformScaleVerticalOnly = !horizontal;
+
+            _transformScaleAnchor = anchor;
+            _transformScaleStartDistance = startDistance < 0.001
+                ? 0.001
+                : startDistance;
+
             _transformScaleSnapshot = _selectedTransformSnapshot();
           });
 
@@ -3623,6 +3731,8 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
       } else {
         setState(() {
           _selectedTransformStrokes = <String, Set<int>>{};
+          _transformPivot = null;
+          _isTransformPivotDragging = false;
           _lassoPoints = <VectorPoint>[
             VectorPoint(
               dx: canvasPosition.dx,
@@ -3709,6 +3819,14 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     }
 
     if (_isTransformActive) {
+      if (_isTransformPivotDragging) {
+        setState(() {
+          _transformPivot = canvasPosition;
+        });
+
+        return;
+      }
+
       if (_isTransformRotating &&
           _transformRotationCenter != null &&
           _transformRotationStartAngle != null &&
@@ -3735,14 +3853,33 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
           _transformScaleAnchor != null &&
           _transformScaleStartDistance != null &&
           _transformScaleSnapshot != null) {
-        final currentDistance =
-            (canvasPosition - _transformScaleAnchor!).distance;
+        double scaleX = 1.0;
+        double scaleY = 1.0;
 
-        final scale = currentDistance / _transformScaleStartDistance!;
+        if (_transformScaleHorizontalOnly) {
+          final currentDistance =
+              (canvasPosition.dx - _transformScaleAnchor!.dx).abs();
+
+          scaleX = currentDistance / _transformScaleStartDistance!;
+        } else if (_transformScaleVerticalOnly) {
+          final currentDistance =
+              (canvasPosition.dy - _transformScaleAnchor!.dy).abs();
+
+          scaleY = currentDistance / _transformScaleStartDistance!;
+        } else {
+          final currentDistance =
+              (canvasPosition - _transformScaleAnchor!).distance;
+
+          final scale = currentDistance / _transformScaleStartDistance!;
+
+          scaleX = scale;
+          scaleY = scale;
+        }
 
         setState(() {
           _scaleSelectedStrokes(
-            scale,
+            scaleX,
+            scaleY,
             _transformScaleAnchor!,
             _transformScaleSnapshot!,
           );
@@ -3756,6 +3893,11 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
 
         setState(() {
           _moveSelectedStrokes(delta);
+
+          if (_transformPivot != null) {
+            _transformPivot = _transformPivot! + delta;
+          }
+
           _transformLastPosition = canvasPosition;
         });
 
@@ -3936,7 +4078,9 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
 
     if (_isTransformActive) {
       setState(() {
-        if (_isTransformRotating) {
+        if (_isTransformPivotDragging) {
+          _isTransformPivotDragging = false;
+        } else if (_isTransformRotating) {
           _isTransformRotating = false;
           _transformRotationCenter = null;
           _transformRotationStartAngle = null;
@@ -3946,6 +4090,8 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
           _transformScaleAnchor = null;
           _transformScaleStartDistance = null;
           _transformScaleSnapshot = null;
+          _transformScaleHorizontalOnly = false;
+          _transformScaleVerticalOnly = false;
         } else if (_isTransformDragging) {
           _isTransformDragging = false;
           _transformLastPosition = null;
@@ -4970,6 +5116,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                                                   lassoPoints: _lassoPoints,
                                                   selectionBounds:
                                                       _selectedStrokeBounds(),
+                                                  pivot: _transformPivot,
                                                 ),
                                                 child: const SizedBox.expand(),
                                               ),
@@ -7904,10 +8051,12 @@ class _TransformOverlayPainter extends CustomPainter {
   const _TransformOverlayPainter({
     required this.lassoPoints,
     required this.selectionBounds,
+    required this.pivot,
   });
 
   final List<VectorPoint> lassoPoints;
   final Rect? selectionBounds;
+  final Offset? pivot;
 
   @override
   void paint(Canvas canvas, Size size) {
@@ -7937,14 +8086,49 @@ class _TransformOverlayPainter extends CustomPainter {
       canvas.drawRect(bounds.inflate(6), boxPaint);
 
       final rotationHandle = bounds.topCenter + const Offset(0, -34);
+      final effectivePivot = pivot ?? bounds.center;
 
+      final guidePaint = Paint()
+        ..color = Colors.cyanAccent.withValues(alpha: 0.45)
+        ..strokeWidth = 1.5
+        ..style = PaintingStyle.stroke;
+
+      // Rotation handle remains above the selection.
       canvas.drawLine(bounds.topCenter, rotationHandle, boxPaint);
+
+      // A faint guide shows the active rotation relationship.
+      canvas.drawLine(rotationHandle, effectivePivot, guidePaint);
 
       final rotationHandlePaint = Paint()
         ..color = Colors.cyanAccent
         ..style = PaintingStyle.fill;
 
       canvas.drawCircle(rotationHandle, 7, rotationHandlePaint);
+
+      // Draggable pivot / anchor.
+      final pivotOuterPaint = Paint()
+        ..color = Colors.black
+        ..style = PaintingStyle.fill;
+
+      final pivotInnerPaint = Paint()
+        ..color = Colors.cyanAccent
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 2;
+
+      canvas.drawCircle(effectivePivot, 9, pivotOuterPaint);
+      canvas.drawCircle(effectivePivot, 8, pivotInnerPaint);
+
+      canvas.drawLine(
+        effectivePivot + const Offset(-11, 0),
+        effectivePivot + const Offset(11, 0),
+        pivotInnerPaint,
+      );
+
+      canvas.drawLine(
+        effectivePivot + const Offset(0, -11),
+        effectivePivot + const Offset(0, 11),
+        pivotInnerPaint,
+      );
 
       final handlePaint = Paint()
         ..color = Colors.cyanAccent
@@ -7957,6 +8141,19 @@ class _TransformOverlayPainter extends CustomPainter {
         bounds.bottomRight,
       ]) {
         canvas.drawCircle(point, 6, handlePaint);
+      }
+
+      // Midpoint handles provide non-uniform squash/stretch.
+      for (final point in [
+        bounds.centerLeft,
+        bounds.centerRight,
+        bounds.topCenter,
+        bounds.bottomCenter,
+      ]) {
+        canvas.drawRect(
+          Rect.fromCenter(center: point, width: 12, height: 12),
+          handlePaint,
+        );
       }
     }
   }
