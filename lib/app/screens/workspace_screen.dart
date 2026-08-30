@@ -77,6 +77,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
   bool _isEraserActive = false;
   bool _isFillToolActive = false;
   List<VectorPoint> _fillLassoPoints = const <VectorPoint>[];
+  Offset? _fillStabilizerTrailingPosition;
 
   bool _isShapeToolActive = false;
   _ShapeToolType _shapeToolType = _ShapeToolType.line;
@@ -2180,6 +2181,103 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     return _layers.indexWhere((layer) => layer.id == layerId);
   }
 
+  void _enterTransformForLayerIndices(
+    List<int> layerIndices, {
+    String? groupId,
+  }) {
+    final selected = <String, Set<int>>{};
+
+    for (final layerIndex in layerIndices) {
+      if (layerIndex < 0 || layerIndex >= _layers.length) {
+        continue;
+      }
+
+      final layer = _layers[layerIndex];
+
+      if (_selectedFrameIndex < 0 ||
+          _selectedFrameIndex >= layer.frames.length) {
+        continue;
+      }
+
+      final strokes = layer.frames[_selectedFrameIndex];
+
+      if (strokes.isEmpty) {
+        continue;
+      }
+
+      selected[layer.id] = Set<int>.from(
+        List<int>.generate(strokes.length, (index) => index),
+      );
+    }
+
+    if (selected.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Nothing to transform on this frame')),
+      );
+      return;
+    }
+
+    setState(() {
+      if (groupId != null) {
+        _activeLayerGroupId = groupId;
+      } else {
+        _activeLayerGroupId = null;
+
+        if (layerIndices.isNotEmpty) {
+          _activeLayerIndex = layerIndices.first;
+        }
+      }
+
+      _draftStroke = const <VectorPoint>[];
+      _draftTextureStrokes = <VectorStroke>[];
+      _draftStampStrokes = <VectorStroke>[];
+
+      _clearFillLasso();
+      _clearShapeDraft();
+      _clearTransformSelection();
+
+      _isEraserActive = false;
+      _isFillToolActive = false;
+      _isShapeToolActive = false;
+
+      _stampBrushActive = false;
+      _stampBrushItem = null;
+
+      _isTransformActive = true;
+      _transformToolbarExpanded = true;
+
+      _transformPivot = null;
+      _isTransformPivotDragging = false;
+
+      _selectedTransformStrokes = selected;
+    });
+
+    HapticFeedback.mediumImpact();
+  }
+
+  void _enterLayerTransform(int layerIndex) {
+    _enterTransformForLayerIndices(<int>[layerIndex]);
+  }
+
+  void _enterLayerGroupTransform(String groupId) {
+    final groupIndex = _layerGroups.indexWhere((group) => group.id == groupId);
+
+    if (groupIndex == -1) {
+      return;
+    }
+
+    final group = _layerGroups[groupIndex];
+    final layerIndices = <int>[];
+
+    for (var index = 0; index < _layers.length; index++) {
+      if (group.childLayerIds.contains(_layers[index].id)) {
+        layerIndices.add(index);
+      }
+    }
+
+    _enterTransformForLayerIndices(layerIndices, groupId: group.id);
+  }
+
   void _finishLassoSelection() {
     if (_lassoPoints.length < 3) {
       _clearTransformSelection();
@@ -2316,6 +2414,78 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     }
 
     _rebuildCompositeFrames();
+  }
+
+  void _flipSelectedStrokesHorizontally() {
+    if (_selectedTransformStrokes.isEmpty) {
+      return;
+    }
+
+    final bounds = _selectedStrokeBounds();
+
+    if (bounds == null) {
+      return;
+    }
+
+    if (_activeLayerGroup == null) {
+      _saveUndoState();
+    } else {
+      _saveGroupUndoState();
+    }
+
+    final pivot = _effectiveTransformPivot(bounds);
+    final mirrorX = pivot.dx;
+
+    setState(() {
+      for (final entry in _selectedTransformStrokes.entries) {
+        final layerIndex = _layerIndexForId(entry.key);
+
+        if (layerIndex == -1) {
+          continue;
+        }
+
+        final layer = _layers[layerIndex];
+
+        if (_selectedFrameIndex < 0 ||
+            _selectedFrameIndex >= layer.frames.length) {
+          continue;
+        }
+
+        final frames = _copyLayerFrames(layer.frames);
+        final strokes = frames[_selectedFrameIndex];
+
+        for (final strokeIndex in entry.value) {
+          if (strokeIndex < 0 || strokeIndex >= strokes.length) {
+            continue;
+          }
+
+          final source = strokes[strokeIndex];
+
+          strokes[strokeIndex] = VectorStroke(
+            points: source.points
+                .map(
+                  (point) => VectorPoint(
+                    dx: mirrorX - (point.dx - mirrorX),
+                    dy: point.dy,
+                    pressure: point.pressure,
+                  ),
+                )
+                .toList(),
+            strokeWidth: source.strokeWidth,
+            color: source.color,
+            filled: source.filled,
+            brushType: source.brushType,
+          );
+        }
+
+        _layers[layerIndex] = layer.copyWith(frames: frames);
+      }
+
+      _rebuildCompositeFrames();
+    });
+
+    _scheduleAutosave();
+    HapticFeedback.lightImpact();
   }
 
   Offset _transformRotationHandle(Rect bounds) {
@@ -2696,6 +2866,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
 
   void _clearFillLasso() {
     _fillLassoPoints = const <VectorPoint>[];
+    _fillStabilizerTrailingPosition = null;
   }
 
   void _commitFillLasso() {
@@ -2942,6 +3113,42 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     _layers[_activeLayerIndex] = layer.copyWith(frames: frames);
 
     _rebuildCompositeFrames();
+  }
+
+  Offset _stabilizeFillPosition(Offset rawPosition) {
+    if (_stabilizerStrength <= 0 || _fillLassoPoints.isEmpty) {
+      _fillStabilizerTrailingPosition = rawPosition;
+      return rawPosition;
+    }
+
+    final previous =
+        _fillStabilizerTrailingPosition ??
+        Offset(_fillLassoPoints.last.dx, _fillLassoPoints.last.dy);
+
+    final delta = rawPosition - previous;
+    final distance = delta.distance;
+
+    if (distance <= 0.001) {
+      return previous;
+    }
+
+    final pullDistance = _stabilizerPullDistance.clamp(0.0, 120.0);
+
+    final allowedDistance = math.max(0.0, distance - pullDistance);
+
+    final target = allowedDistance <= 0
+        ? previous
+        : previous + (delta / distance) * allowedDistance;
+
+    final response = (1.0 - _stabilizerStrength).clamp(0.08, 1.0);
+
+    final stabilized = Offset(
+      previous.dx + ((target.dx - previous.dx) * response),
+      previous.dy + ((target.dy - previous.dy) * response),
+    );
+
+    _fillStabilizerTrailingPosition = stabilized;
+    return stabilized;
   }
 
   Offset _stabilizePosition(Offset rawPosition) {
@@ -3747,6 +3954,8 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     }
 
     if (_isFillToolActive) {
+      _fillStabilizerTrailingPosition = canvasPosition;
+
       setState(() {
         _fillLassoPoints = <VectorPoint>[
           VectorPoint(
@@ -3926,16 +4135,20 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     }
 
     if (_isFillToolActive && _fillLassoPoints.isNotEmpty) {
-      final last = _fillLassoPoints.last;
-      final dx = canvasPosition.dx - last.dx;
-      final dy = canvasPosition.dy - last.dy;
+      final stabilizedPosition = _stabilizeFillPosition(canvasPosition);
 
-      if ((dx * dx) + (dy * dy) >= 4) {
+      final last = _fillLassoPoints.last;
+      final dx = stabilizedPosition.dx - last.dx;
+      final dy = stabilizedPosition.dy - last.dy;
+
+      const minimumDistanceSquared = 2.25;
+
+      if ((dx * dx) + (dy * dy) >= minimumDistanceSquared) {
         setState(() {
           _fillLassoPoints.add(
             VectorPoint(
-              dx: canvasPosition.dx,
-              dy: canvasPosition.dy,
+              dx: stabilizedPosition.dx,
+              dy: stabilizedPosition.dy,
               pressure: 1,
             ),
           );
@@ -4611,6 +4824,9 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
           InkWell(
             borderRadius: BorderRadius.circular(10),
             onTap: () => _selectLayerGroup(group.id),
+            onLongPress: _isPlaying
+                ? null
+                : () => _enterLayerGroupTransform(group.id),
             onDoubleTap: _isPlaying ? null : () => _renameLayerGroup(group.id),
             child: Row(
               children: [
@@ -4724,6 +4940,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
           InkWell(
             borderRadius: BorderRadius.circular(10),
             onTap: () => _selectLayer(index),
+            onLongPress: _isPlaying ? null : () => _enterLayerTransform(index),
             onDoubleTap: _isPlaying ? null : () => _renameDrawingLayer(index),
             child: Padding(
               padding: const EdgeInsets.symmetric(horizontal: 4),
@@ -7315,6 +7532,16 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                                         ? Colors.deepPurpleAccent
                                         : Colors.white70,
                                   ),
+                                ),
+                                IconButton(
+                                  tooltip: 'Flip Horizontal',
+                                  visualDensity: VisualDensity.compact,
+                                  onPressed:
+                                      _isPlaying ||
+                                          _selectedTransformStrokes.isEmpty
+                                      ? null
+                                      : _flipSelectedStrokesHorizontally,
+                                  icon: const Icon(Icons.flip),
                                 ),
                                 IconButton(
                                   tooltip: 'Copy Selection',
