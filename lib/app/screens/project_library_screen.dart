@@ -260,9 +260,18 @@ class _ProjectLibraryScreenState extends State<ProjectLibraryScreen> {
                     'Rename',
                     style: TextStyle(color: Colors.white),
                   ),
-                  onTap: () {
+                  onTap: () async {
                     Navigator.pop(sheetContext);
-                    _renameProject(project, index);
+
+                    // Allow the modal bottom sheet to finish tearing down
+                    // before mounting the rename dialog.
+                    await Future<void>.delayed(
+                      const Duration(milliseconds: 250),
+                    );
+
+                    if (!mounted) return;
+
+                    await _renameProject(project, index);
                   },
                 ),
                 ListTile(
@@ -274,9 +283,16 @@ class _ProjectLibraryScreenState extends State<ProjectLibraryScreen> {
                     'Delete',
                     style: TextStyle(color: Color(0xFFE3A29A)),
                   ),
-                  onTap: () {
+                  onTap: () async {
                     Navigator.pop(sheetContext);
-                    _deleteProject(project, index);
+
+                    await Future<void>.delayed(
+                      const Duration(milliseconds: 250),
+                    );
+
+                    if (!mounted) return;
+
+                    await _deleteProject(project, index);
                   },
                 ),
               ],
@@ -310,33 +326,42 @@ class _ProjectLibraryScreenState extends State<ProjectLibraryScreen> {
       child: Column(
         children: [
           Expanded(
-            child: Container(
-              width: double.infinity,
-              decoration: BoxDecoration(
-                color: const Color(0xFFF1E5CB),
-                border: Border.all(color: const Color(0xFFC9AD7E), width: 1.5),
-                boxShadow: const [
-                  BoxShadow(
-                    color: Colors.black38,
-                    blurRadius: 6,
-                    offset: Offset(2, 4),
+            child: Center(
+              child: AspectRatio(
+                aspectRatio: 1,
+                child: Container(
+                  decoration: BoxDecoration(
+                    color: const Color(0xFFF1E5CB),
+                    border: Border.all(
+                      color: const Color(0xFFC9AD7E),
+                      width: 1.5,
+                    ),
+                    boxShadow: const [
+                      BoxShadow(
+                        color: Colors.black38,
+                        blurRadius: 6,
+                        offset: Offset(2, 4),
+                      ),
+                    ],
                   ),
-                ],
-              ),
-              padding: const EdgeInsets.all(6),
-              child: CustomPaint(
-                painter: thumbnailStrokes.isNotEmpty
-                    ? FrameThumbnailPainter(strokes: thumbnailStrokes)
-                    : null,
-                child: thumbnailStrokes.isEmpty
-                    ? const Center(
-                        child: Icon(
-                          Icons.movie_outlined,
-                          size: 34,
-                          color: Color(0xFF70543C),
-                        ),
-                      )
-                    : const SizedBox.expand(),
+                  padding: const EdgeInsets.all(6),
+                  child: ClipRect(
+                    child: CustomPaint(
+                      painter: thumbnailStrokes.isNotEmpty
+                          ? FrameThumbnailPainter(strokes: thumbnailStrokes)
+                          : null,
+                      child: thumbnailStrokes.isEmpty
+                          ? const Center(
+                              child: Icon(
+                                Icons.movie_outlined,
+                                size: 34,
+                                color: Color(0xFF70543C),
+                              ),
+                            )
+                          : const SizedBox.expand(),
+                    ),
+                  ),
+                ),
               ),
             ),
           ),
@@ -421,79 +446,129 @@ class _ProjectLibraryScreenState extends State<ProjectLibraryScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: const Color(0xFF17110D),
-      body: Stack(
-        fit: StackFit.expand,
-        children: [
-          FittedBox(
-            fit: BoxFit.cover,
-            alignment: Alignment.center,
-            child: Image.asset('assets/images/inkdframes_project_wall_v1.png'),
-          ),
+      body: LayoutBuilder(
+        builder: (context, constraints) {
+          // Native Project Wall artwork:
+          // 1536 x 1024 = 3:2 landscape.
+          const artworkAspect = 1536 / 1024;
 
-          // Slight shading helps dynamic project cards sit naturally
-          // against the illustrated room.
-          Container(color: Colors.black.withValues(alpha: 0.05)),
+          final viewportWidth = constraints.maxWidth;
+          final viewportHeight = constraints.maxHeight;
+          final isPortrait = viewportHeight > viewportWidth;
 
-          SafeArea(
-            child: LayoutBuilder(
-              builder: (context, constraints) {
-                return Stack(
-                  children: [
-                    Positioned(
-                      left: 16,
-                      top: 18,
-                      width: 120,
-                      height: 70,
-                      child: GestureDetector(
-                        behavior: HitTestBehavior.opaque,
-                        onTap: () => Navigator.pop(context),
-                        child: const SizedBox.expand(),
+          // Portrait:
+          // Fill the screen height. The 3:2 scene becomes wider than the
+          // phone and is explored horizontally.
+          //
+          // Landscape:
+          // Fill the available width while preserving the exact same
+          // authored 3:2 scene.
+          final sceneHeight = isPortrait
+              ? viewportHeight
+              : viewportWidth / artworkAspect;
+
+          final sceneWidth = isPortrait
+              ? sceneHeight * artworkAspect
+              : viewportWidth;
+
+          Widget buildWallScene() {
+            return SizedBox(
+              width: sceneWidth,
+              height: sceneHeight,
+              child: Stack(
+                children: [
+                  Positioned.fill(
+                    child: Image.asset(
+                      'assets/images/inkdframes_project_wall_v1.png',
+                      fit: BoxFit.fill,
+                    ),
+                  ),
+
+                  Positioned.fill(
+                    child: IgnorePointer(
+                      child: ColoredBox(
+                        color: Colors.black.withValues(alpha: 0.05),
                       ),
                     ),
+                  ),
 
-                    // Projects occupy the eight physical mounting
-                    // positions painted into the Project Wall.
-                    if (_projects.isEmpty)
-                      Positioned(
-                        left: constraints.maxWidth * 0.39,
-                        top: constraints.maxHeight * 0.43,
-                        width: constraints.maxWidth * 0.22,
-                        child: _buildEmptyState(),
-                      )
-                    else
-                      ...List.generate(
-                        _projects.length > 8 ? 8 : _projects.length,
-                        (index) {
-                          const slots = <Offset>[
-                            Offset(0.250, 0.260),
-                            Offset(0.365, 0.260),
-                            Offset(0.486, 0.260),
-                            Offset(0.595, 0.260),
-                            Offset(0.250, 0.530),
-                            Offset(0.365, 0.530),
-                            Offset(0.480, 0.530),
-                            Offset(0.595, 0.530),
-                          ];
+                  if (_projects.isEmpty)
+                    Positioned(
+                      left: sceneWidth * 0.39,
+                      top: sceneHeight * 0.43,
+                      width: sceneWidth * 0.22,
+                      child: _buildEmptyState(),
+                    )
+                  else
+                    ...List.generate(
+                      _projects.length > 8 ? 8 : _projects.length,
+                      (index) {
+                        // -------------------------------------------------
+                        // PROJECT WALL GRID
+                        //
+                        // These four values control the entire canvas grid.
+                        //
+                        // gridLeft   = move whole grid left/right
+                        // gridTop    = move whole grid up/down
+                        // columnGap  = horizontal distance between canvases
+                        // rowGap     = vertical distance between rows
+                        // -------------------------------------------------
+                        const gridLeft = 0.240;
+                        const gridTop = 0.245;
+                        const columnGap = 0.135;
+                        const rowGap = 0.265;
 
-                          final slot = slots[index];
-                          final cardWidth = constraints.maxWidth * 0.100;
-                          final cardHeight = constraints.maxHeight * 0.165;
+                        final column = index % 4;
+                        final row = index ~/ 4;
 
-                          return Positioned(
-                            left: constraints.maxWidth * slot.dx,
-                            top: constraints.maxHeight * slot.dy,
-                            width: cardWidth,
-                            height: cardHeight,
-                            child: _buildProjectCard(_projects[index], index),
-                          );
-                        },
-                      ),
-                  ],
-                );
-              },
+                        final slot = Offset(
+                          gridLeft + (column * columnGap),
+                          gridTop + (row * rowGap),
+                        );
+
+                        final cardWidth = sceneWidth * 0.100;
+                        final cardHeight = sceneHeight * 0.165;
+
+                        return Positioned(
+                          left: sceneWidth * slot.dx,
+                          top: sceneHeight * slot.dy,
+                          width: cardWidth,
+                          height: cardHeight,
+                          child: _buildProjectCard(_projects[index], index),
+                        );
+                      },
+                    ),
+
+                  Positioned(
+                    left: sceneWidth * 0.02,
+                    top: sceneHeight * 0.02,
+                    width: sceneWidth * 0.18,
+                    height: sceneHeight * 0.08,
+                    child: GestureDetector(
+                      behavior: HitTestBehavior.opaque,
+                      onTap: () => Navigator.pop(context),
+                      child: const SizedBox.expand(),
+                    ),
+                  ),
+                ],
+              ),
+            );
+          }
+
+          return ClipRect(
+            child: SingleChildScrollView(
+              scrollDirection: Axis.horizontal,
+              physics: const BouncingScrollPhysics(),
+              child: ConstrainedBox(
+                constraints: BoxConstraints(minWidth: viewportWidth),
+                child: Align(
+                  alignment: isPortrait ? Alignment.topLeft : Alignment.center,
+                  child: buildWallScene(),
+                ),
+              ),
             ),
-          ),
-        ],
+          );
+        },
       ),
     );
   }
