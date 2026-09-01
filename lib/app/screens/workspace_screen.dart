@@ -65,6 +65,12 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
   final List<LayerGroup> _layerGroups = <LayerGroup>[];
   String? _activeLayerGroupId;
 
+  // Group context used when creating new drawing layers.
+  String? _layerInsertionGroupId;
+
+  // Drawing layers currently marked for a merge operation.
+  final Set<String> _mergeSelectedLayerIds = <String>{};
+
   final List<int> _frameDurations = [1];
   final List<int> _referenceFrameTimesMs = <int>[];
   int _selectedFrameIndex = 0;
@@ -610,9 +616,12 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
   void _selectLayer(int index) {
     if (index < 0 || index >= _layers.length) return;
 
+    final containingGroup = _groupContainingLayer(_layers[index].id);
+
     setState(() {
       _activeLayerIndex = index;
       _activeLayerGroupId = null;
+      _layerInsertionGroupId = containingGroup?.id;
       _draftStroke = const <VectorPoint>[];
       _clearTransformSelection();
     });
@@ -655,6 +664,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
 
     setState(() {
       _activeLayerGroupId = groupId;
+      _layerInsertionGroupId = groupId;
       _draftStroke = const <VectorPoint>[];
       _clearTransformSelection();
     });
@@ -1032,6 +1042,443 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     );
   }
 
+  Future<void> _exportDrawingLayerPng(int index) async {
+    if (index < 0 || index >= _layers.length) {
+      return;
+    }
+
+    final layer = _layers[index];
+
+    if (!layer.visible ||
+        _selectedFrameIndex < 0 ||
+        _selectedFrameIndex >= layer.frames.length) {
+      if (!mounted) return;
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('This layer has no visible artwork to export.'),
+        ),
+      );
+      return;
+    }
+
+    final exportStrokes = layer.frames[_selectedFrameIndex]
+        .map((stroke) => _strokeWithOpacity(stroke, layer.opacity))
+        .toList();
+
+    if (exportStrokes.isEmpty) {
+      if (!mounted) return;
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('This layer has no artwork to export.')),
+      );
+      return;
+    }
+
+    try {
+      final outputPath = await const AnimationExportService().exportPngAsset(
+        assetName: layer.name,
+        strokes: exportStrokes,
+        canvasWidth: _canvasWidth,
+        canvasHeight: _canvasHeight,
+      );
+
+      if (!mounted) return;
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('${layer.name} exported as PNG\n$outputPath'),
+          duration: const Duration(seconds: 6),
+        ),
+      );
+    } on UnsupportedError catch (error) {
+      if (!mounted) return;
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(error.message ?? error.toString())),
+      );
+    } catch (error) {
+      if (!mounted) return;
+
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('PNG export failed: $error')));
+    }
+  }
+
+  Future<void> _addDrawingLayerToBag(int index) async {
+    if (index < 0 || index >= _layers.length) {
+      return;
+    }
+
+    final layer = _layers[index];
+
+    if (_selectedFrameIndex < 0 ||
+        _selectedFrameIndex >= layer.frames.length ||
+        layer.frames[_selectedFrameIndex].isEmpty) {
+      if (!mounted) return;
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('This layer has nothing to add to the Bag.'),
+        ),
+      );
+      return;
+    }
+
+    var itemName = layer.name;
+
+    final result = await showDialog<String>(
+      context: context,
+      builder: (dialogContext) {
+        return AlertDialog(
+          title: const Text('Add to Bag'),
+          content: TextFormField(
+            initialValue: itemName,
+            autofocus: true,
+            onChanged: (value) => itemName = value,
+            decoration: const InputDecoration(labelText: 'Item name'),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(dialogContext),
+              child: const Text('Cancel'),
+            ),
+            FilledButton.icon(
+              onPressed: () {
+                final trimmed = itemName.trim();
+
+                if (trimmed.isNotEmpty) {
+                  Navigator.pop(dialogContext, trimmed);
+                }
+              },
+              icon: const Icon(Icons.backpack_outlined),
+              label: const Text('Add to Bag'),
+            ),
+          ],
+        );
+      },
+    );
+
+    if (result == null || !mounted) {
+      return;
+    }
+
+    const pockets = <String>[
+      'Sketches',
+      'Characters',
+      'Textures',
+      'Props',
+      'Brushes',
+      'Misc.',
+    ];
+
+    final selectedPocket = await showModalBottomSheet<String>(
+      context: context,
+      backgroundColor: const Color(0xFF21160F),
+      showDragHandle: true,
+      builder: (sheetContext) {
+        return SafeArea(
+          child: ListView(
+            shrinkWrap: true,
+            padding: const EdgeInsets.fromLTRB(16, 8, 16, 24),
+            children: [
+              Padding(
+                padding: const EdgeInsets.fromLTRB(8, 4, 8, 12),
+                child: Text(
+                  'Put "$result" in which Pocket?',
+                  style: const TextStyle(
+                    color: Color(0xFFF1D3A2),
+                    fontSize: 18,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+              ),
+              for (final pocket in pockets)
+                ListTile(
+                  leading: const Icon(
+                    Icons.inventory_2_outlined,
+                    color: Color(0xFFF1D3A2),
+                  ),
+                  title: Text(
+                    pocket,
+                    style: const TextStyle(color: Color(0xFFF4E5CF)),
+                  ),
+                  onTap: () => Navigator.pop(sheetContext, pocket),
+                ),
+            ],
+          ),
+        );
+      },
+    );
+
+    if (selectedPocket == null || !mounted) {
+      return;
+    }
+
+    final item = BagItem(
+      id: 'bag_${DateTime.now().microsecondsSinceEpoch}',
+      name: result,
+      sourceGroupName: layer.name,
+      layers: [
+        BagLayer(
+          name: layer.name,
+          opacity: layer.opacity,
+          visible: layer.visible,
+          strokes: layer.frames[_selectedFrameIndex]
+              .map((stroke) => stroke.copy())
+              .toList(),
+        ),
+      ],
+      createdAt: DateTime.now(),
+    );
+
+    await BagService().addItem(item);
+
+    final prefs = await SharedPreferences.getInstance();
+    const pocketAssignmentsKey = 'inkdframes_bag_pocket_assignments_v1';
+
+    Map<String, String> pocketAssignments = <String, String>{};
+    final rawAssignments = prefs.getString(pocketAssignmentsKey);
+
+    if (rawAssignments != null && rawAssignments.isNotEmpty) {
+      try {
+        final decoded = jsonDecode(rawAssignments);
+
+        if (decoded is Map) {
+          pocketAssignments = decoded.map<String, String>(
+            (key, value) => MapEntry(key.toString(), value.toString()),
+          );
+        }
+      } catch (_) {
+        pocketAssignments = <String, String>{};
+      }
+    }
+
+    pocketAssignments[item.id] = selectedPocket;
+
+    await prefs.setString(pocketAssignmentsKey, jsonEncode(pocketAssignments));
+
+    if (!mounted) return;
+
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text('${item.name} tucked into $selectedPocket 🎒')),
+    );
+  }
+
+  void _toggleLayerMergeSelection(int index) {
+    if (index < 0 || index >= _layers.length) {
+      return;
+    }
+
+    final layerId = _layers[index].id;
+
+    setState(() {
+      if (_mergeSelectedLayerIds.contains(layerId)) {
+        _mergeSelectedLayerIds.remove(layerId);
+      } else {
+        _mergeSelectedLayerIds.add(layerId);
+      }
+    });
+  }
+
+  Future<void> _mergeSelectedDrawingLayers() async {
+    if (_mergeSelectedLayerIds.length < 2) {
+      return;
+    }
+
+    final selectedIndices = <int>[];
+
+    for (var index = 0; index < _layers.length; index++) {
+      if (_mergeSelectedLayerIds.contains(_layers[index].id)) {
+        selectedIndices.add(index);
+      }
+    }
+
+    if (selectedIndices.length < 2) {
+      setState(() {
+        _mergeSelectedLayerIds.clear();
+      });
+      return;
+    }
+
+    selectedIndices.sort();
+
+    final firstLayer = _layers[selectedIndices.first];
+    final firstGroup = _groupContainingLayer(firstLayer.id);
+
+    // V1 guardrail: every merged layer must live in the same stack context.
+    for (final index in selectedIndices) {
+      final layer = _layers[index];
+      final group = _groupContainingLayer(layer.id);
+
+      if (group?.id != firstGroup?.id) {
+        if (!mounted) return;
+
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text(
+              'Merge layers must all be inside the same group or all be root layers.',
+            ),
+          ),
+        );
+        return;
+      }
+
+      if (!layer.visible) {
+        if (!mounted) return;
+
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Show all selected layers before merging them.'),
+          ),
+        );
+        return;
+      }
+    }
+
+    // Merging non-adjacent layers can change the visual stacking around layers
+    // left between them, so keep V1 merges contiguous.
+    for (var i = 1; i < selectedIndices.length; i++) {
+      if (selectedIndices[i] != selectedIndices[i - 1] + 1) {
+        if (!mounted) return;
+
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text(
+              'Selected layers must be adjacent before they can be merged.',
+            ),
+          ),
+        );
+        return;
+      }
+    }
+
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) {
+        return AlertDialog(
+          title: const Text('Merge selected layers?'),
+          content: Text(
+            'Combine ${selectedIndices.length} layers into one drawing layer?\n\n'
+            'Their current appearance and opacity will be baked into the merged layer.',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(dialogContext, false),
+              child: const Text('Cancel'),
+            ),
+            FilledButton.icon(
+              onPressed: () => Navigator.pop(dialogContext, true),
+              icon: const Icon(Icons.merge_type),
+              label: const Text('Merge Layers'),
+            ),
+          ],
+        );
+      },
+    );
+
+    if (confirmed != true || !mounted) {
+      return;
+    }
+
+    final frameCount = _frameDurations.length;
+
+    final mergedFrames = List.generate(frameCount, (_) => <VectorStroke>[]);
+
+    // _layers is top-to-bottom. Build the merged layer bottom-to-top so its
+    // internal stroke order reproduces the same visual stack.
+    for (final index in selectedIndices.reversed) {
+      final layer = _layers[index];
+
+      for (var frameIndex = 0; frameIndex < frameCount; frameIndex++) {
+        if (frameIndex >= layer.frames.length) {
+          continue;
+        }
+
+        mergedFrames[frameIndex].addAll(
+          layer.frames[frameIndex].map(
+            (stroke) => _strokeWithOpacity(stroke, layer.opacity),
+          ),
+        );
+      }
+    }
+
+    final topIndex = selectedIndices.first;
+
+    final selectedIds = selectedIndices
+        .map((index) => _layers[index].id)
+        .toSet();
+
+    final mergedLayer = DrawingLayer(
+      id: 'merged_${DateTime.now().microsecondsSinceEpoch}',
+      name: 'Merged Layer',
+      visible: true,
+      opacity: 1.0,
+      frames: mergedFrames,
+    );
+
+    setState(() {
+      _layers.removeWhere((layer) => selectedIds.contains(layer.id));
+
+      _layers.insert(topIndex, mergedLayer);
+
+      if (firstGroup != null) {
+        final groupIndex = _layerGroups.indexWhere(
+          (group) => group.id == firstGroup.id,
+        );
+
+        if (groupIndex != -1) {
+          final group = _layerGroups[groupIndex];
+
+          final updatedIds = <String>[];
+          var mergedInserted = false;
+
+          for (final id in group.childLayerIds) {
+            if (selectedIds.contains(id)) {
+              if (!mergedInserted) {
+                updatedIds.add(mergedLayer.id);
+                mergedInserted = true;
+              }
+              continue;
+            }
+
+            updatedIds.add(id);
+          }
+
+          if (!mergedInserted) {
+            updatedIds.insert(0, mergedLayer.id);
+          }
+
+          _layerGroups[groupIndex] = group.copyWith(childLayerIds: updatedIds);
+
+          _layerInsertionGroupId = firstGroup.id;
+        }
+      } else {
+        _layerInsertionGroupId = null;
+      }
+
+      _activeLayerGroupId = null;
+      _activeLayerIndex = _layers.indexWhere(
+        (layer) => layer.id == mergedLayer.id,
+      );
+
+      _mergeSelectedLayerIds.clear();
+
+      _clearTransformSelection();
+      _resetUndoRedo();
+      _rebuildCompositeFrames();
+    });
+
+    _scheduleAutosave();
+
+    if (!mounted) return;
+
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('Layers merged into Merged Layer 🎨')),
+    );
+  }
+
   void _addLayerGroup() {
     setState(() {
       final group = LayerGroup(
@@ -1042,6 +1489,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
 
       _layerGroups.add(group);
       _activeLayerGroupId = group.id;
+      _layerInsertionGroupId = group.id;
       _clearTransformSelection();
     });
 
@@ -1230,18 +1678,41 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
 
   void _addDrawingLayer() {
     final frameCount = _frameDurations.length;
+    final newLayerId = 'layer_${DateTime.now().microsecondsSinceEpoch}';
 
     setState(() {
       _layers.insert(
         0,
         DrawingLayer(
-          id: 'layer_${DateTime.now().microsecondsSinceEpoch}',
+          id: newLayerId,
           name: 'Layer ${_layers.length + 1}',
           frames: List.generate(frameCount, (_) => <VectorStroke>[]),
         ),
       );
 
+      final insertionGroupId = _layerInsertionGroupId;
+
+      if (insertionGroupId != null) {
+        final groupIndex = _layerGroups.indexWhere(
+          (group) => group.id == insertionGroupId,
+        );
+
+        if (groupIndex != -1) {
+          final group = _layerGroups[groupIndex];
+          final ids = List<String>.from(group.childLayerIds)
+            ..remove(newLayerId)
+            ..insert(0, newLayerId);
+
+          _layerGroups[groupIndex] = group.copyWith(childLayerIds: ids);
+        } else {
+          _layerInsertionGroupId = null;
+        }
+      }
+
       _activeLayerIndex = 0;
+      _activeLayerGroupId = null;
+      _mergeSelectedLayerIds.clear();
+
       _resetUndoRedo();
       _rebuildCompositeFrames();
     });
@@ -5001,18 +5472,25 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
   Widget _buildDrawingLayerCard(int index, {required bool indented}) {
     final layer = _layers[index];
     final selected = _activeLayerGroupId == null && index == _activeLayerIndex;
+    final selectedForMerge = _mergeSelectedLayerIds.contains(layer.id);
 
     final currentGroup = _groupContainingLayer(layer.id);
 
     return Container(
       margin: EdgeInsets.fromLTRB(indented ? 22 : 6, 4, 6, 0),
       decoration: BoxDecoration(
-        color: selected
+        color: selectedForMerge
+            ? Colors.tealAccent.withValues(alpha: 0.12)
+            : selected
             ? Colors.deepPurpleAccent.withValues(alpha: 0.14)
             : Colors.transparent,
         borderRadius: BorderRadius.circular(10),
         border: Border.all(
-          color: selected ? Colors.deepPurpleAccent : Colors.white12,
+          color: selectedForMerge
+              ? Colors.tealAccent
+              : selected
+              ? Colors.deepPurpleAccent
+              : Colors.white12,
         ),
       ),
       child: Column(
@@ -5077,7 +5555,13 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                   PopupMenuButton<String>(
                     tooltip: 'Layer Options',
                     onSelected: (value) {
-                      if (value == 'rename') {
+                      if (value == 'bag') {
+                        _addDrawingLayerToBag(index);
+                      } else if (value == 'png') {
+                        _exportDrawingLayerPng(index);
+                      } else if (value == 'merge-select') {
+                        _toggleLayerMergeSelection(index);
+                      } else if (value == 'rename') {
                         _renameDrawingLayer(index);
                       } else if (value == 'delete') {
                         _deleteDrawingLayer(index);
@@ -5089,6 +5573,36 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                     },
                     itemBuilder: (context) {
                       return [
+                        const PopupMenuItem(
+                          value: 'bag',
+                          child: ListTile(
+                            leading: Icon(Icons.backpack_outlined),
+                            title: Text('Add to Bag'),
+                          ),
+                        ),
+                        const PopupMenuItem(
+                          value: 'png',
+                          child: ListTile(
+                            leading: Icon(Icons.image_outlined),
+                            title: Text('Export PNG'),
+                          ),
+                        ),
+                        PopupMenuItem(
+                          value: 'merge-select',
+                          child: ListTile(
+                            leading: Icon(
+                              selectedForMerge
+                                  ? Icons.check_box
+                                  : Icons.check_box_outline_blank,
+                            ),
+                            title: Text(
+                              selectedForMerge
+                                  ? 'Remove from Merge'
+                                  : 'Select for Merge',
+                            ),
+                          ),
+                        ),
+                        const PopupMenuDivider(),
                         const PopupMenuItem(
                           value: 'rename',
                           child: Text('Rename'),
@@ -6935,6 +7449,33 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                                               'Layers',
                                               style: TextStyle(
                                                 fontWeight: FontWeight.w600,
+                                              ),
+                                            ),
+                                          ),
+                                          IconButton(
+                                            tooltip:
+                                                _mergeSelectedLayerIds.length >=
+                                                    2
+                                                ? 'Merge Selected Layers'
+                                                : 'Select 2+ layers to merge',
+                                            visualDensity:
+                                                VisualDensity.compact,
+                                            onPressed:
+                                                _isPlaying ||
+                                                    _mergeSelectedLayerIds
+                                                            .length <
+                                                        2
+                                                ? null
+                                                : _mergeSelectedDrawingLayers,
+                                            icon: Badge(
+                                              isLabelVisible:
+                                                  _mergeSelectedLayerIds
+                                                      .isNotEmpty,
+                                              label: Text(
+                                                '${_mergeSelectedLayerIds.length}',
+                                              ),
+                                              child: const Icon(
+                                                Icons.merge_type,
                                               ),
                                             ),
                                           ),
