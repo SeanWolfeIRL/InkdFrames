@@ -162,6 +162,15 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
   final TransformationController _transformationController =
       TransformationController();
 
+  // View-only canvas rotation.
+  //
+  // This never changes stroke/frame coordinates. Two touch pointers rotate
+  // the visual canvas while drawing/export data remains untouched.
+  double _canvasRotation = 0.0;
+  final Map<int, Offset> _canvasTouchPointers = <int, Offset>{};
+  double? _canvasRotationGestureStartAngle;
+  double _canvasRotationGestureStartValue = 0.0;
+
   final ScrollController _timelineScrollController = ScrollController();
   final LayerLink _timingButtonLink = LayerLink();
 
@@ -1561,6 +1570,13 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
 
   void _resetCanvasView() {
     _transformationController.value = Matrix4.identity();
+
+    setState(() {
+      _canvasRotation = 0.0;
+      _canvasTouchPointers.clear();
+      _canvasRotationGestureStartAngle = null;
+      _canvasRotationGestureStartValue = 0.0;
+    });
   }
 
   void _findNextReferencePose() {
@@ -3765,7 +3781,66 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     _scheduleAutosave();
   }
 
+  double _canvasTouchAngle() {
+    if (_canvasTouchPointers.length < 2) {
+      return 0.0;
+    }
+
+    final points = _canvasTouchPointers.values.take(2).toList();
+    final delta = points[1] - points[0];
+
+    return math.atan2(delta.dy, delta.dx);
+  }
+
+  void _updateCanvasRotationPointerDown(PointerDownEvent event) {
+    if (event.kind != ui.PointerDeviceKind.touch) {
+      return;
+    }
+
+    _canvasTouchPointers[event.pointer] = event.position;
+
+    if (_canvasTouchPointers.length == 2) {
+      _canvasRotationGestureStartAngle = _canvasTouchAngle();
+      _canvasRotationGestureStartValue = _canvasRotation;
+    }
+  }
+
+  void _updateCanvasRotationPointerMove(PointerMoveEvent event) {
+    if (event.kind != ui.PointerDeviceKind.touch ||
+        !_canvasTouchPointers.containsKey(event.pointer)) {
+      return;
+    }
+
+    _canvasTouchPointers[event.pointer] = event.position;
+
+    if (_canvasTouchPointers.length < 2 ||
+        _canvasRotationGestureStartAngle == null) {
+      return;
+    }
+
+    final currentAngle = _canvasTouchAngle();
+    final angleDelta = currentAngle - _canvasRotationGestureStartAngle!;
+
+    setState(() {
+      _canvasRotation = _canvasRotationGestureStartValue + angleDelta;
+    });
+  }
+
+  void _updateCanvasRotationPointerEnd(PointerEvent event) {
+    if (event.kind != ui.PointerDeviceKind.touch) {
+      return;
+    }
+
+    _canvasTouchPointers.remove(event.pointer);
+
+    if (_canvasTouchPointers.length < 2) {
+      _canvasRotationGestureStartAngle = null;
+      _canvasRotationGestureStartValue = _canvasRotation;
+    }
+  }
+
   void _handlePointerDown(PointerDownEvent event, BuildContext canvasContext) {
+    _updateCanvasRotationPointerDown(event);
     _activePointerCount += 1;
     if (_activePointerCount > 1) {
       setState(() {
@@ -4000,6 +4075,8 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
   }
 
   void _handlePointerMove(PointerMoveEvent event, BuildContext canvasContext) {
+    _updateCanvasRotationPointerMove(event);
+
     if (_isPlaying) {
       return;
     }
@@ -4254,6 +4331,8 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
   }
 
   void _handlePointerUp(PointerUpEvent event) {
+    _updateCanvasRotationPointerEnd(event);
+
     if (_activePointerCount > 0) {
       _activePointerCount -= 1;
     }
@@ -4349,6 +4428,8 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
   }
 
   void _handlePointerCancel(PointerCancelEvent event) {
+    _updateCanvasRotationPointerEnd(event);
+
     if (_activePointerCount > 0) {
       _activePointerCount -= 1;
     }
@@ -5156,189 +5237,202 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                               maxScale: 5.0,
                               panEnabled: false,
                               scaleEnabled: true,
-                              child: Builder(
-                                builder: (canvasContext) => Listener(
-                                  onPointerDown: _isPlaying
-                                      ? null
-                                      : (event) => _handlePointerDown(
-                                          event,
-                                          canvasContext,
-                                        ),
-                                  onPointerMove: _isPlaying
-                                      ? null
-                                      : (event) => _handlePointerMove(
-                                          event,
-                                          canvasContext,
-                                        ),
-                                  onPointerUp: _isPlaying
-                                      ? null
-                                      : _handlePointerUp,
-                                  onPointerCancel: _isPlaying
-                                      ? null
-                                      : _handlePointerCancel,
-                                  child: ClipRRect(
-                                    borderRadius: BorderRadius.circular(24),
-                                    child: RepaintBoundary(
-                                      key: _canvasSampleKey,
-                                      child: Stack(
-                                        fit: StackFit.expand,
-                                        children: [
-                                          ColoredBox(
-                                            color: _canvasBackgroundColor,
+                              child: Transform.rotate(
+                                angle: _canvasRotation,
+                                alignment: Alignment.center,
+                                child: Builder(
+                                  builder: (canvasContext) => Listener(
+                                    onPointerDown: _isPlaying
+                                        ? null
+                                        : (event) => _handlePointerDown(
+                                            event,
+                                            canvasContext,
                                           ),
-                                          if (_referenceVisible &&
-                                              _referenceMediaType == 'video' &&
-                                              _videoReady &&
-                                              _videoController != null)
-                                            Opacity(
-                                              opacity: _referenceOpacity,
-                                              child: FittedBox(
-                                                fit: BoxFit.contain,
-                                                child: SizedBox(
-                                                  width: _videoController!
-                                                      .value
-                                                      .size
-                                                      .width,
-                                                  height: _videoController!
-                                                      .value
-                                                      .size
-                                                      .height,
-                                                  child: VideoPlayer(
-                                                    _videoController!,
+                                    onPointerMove: _isPlaying
+                                        ? null
+                                        : (event) => _handlePointerMove(
+                                            event,
+                                            canvasContext,
+                                          ),
+                                    onPointerUp: _isPlaying
+                                        ? null
+                                        : _handlePointerUp,
+                                    onPointerCancel: _isPlaying
+                                        ? null
+                                        : _handlePointerCancel,
+                                    child: ClipRRect(
+                                      borderRadius: BorderRadius.circular(24),
+                                      child: RepaintBoundary(
+                                        key: _canvasSampleKey,
+                                        child: Stack(
+                                          fit: StackFit.expand,
+                                          children: [
+                                            ColoredBox(
+                                              color: _canvasBackgroundColor,
+                                            ),
+                                            if (_referenceVisible &&
+                                                _referenceMediaType ==
+                                                    'video' &&
+                                                _videoReady &&
+                                                _videoController != null)
+                                              Opacity(
+                                                opacity: _referenceOpacity,
+                                                child: FittedBox(
+                                                  fit: BoxFit.contain,
+                                                  child: SizedBox(
+                                                    width: _videoController!
+                                                        .value
+                                                        .size
+                                                        .width,
+                                                    height: _videoController!
+                                                        .value
+                                                        .size
+                                                        .height,
+                                                    child: VideoPlayer(
+                                                      _videoController!,
+                                                    ),
                                                   ),
                                                 ),
                                               ),
-                                            ),
-                                          if (_referenceVisible &&
-                                              _referenceMediaType == 'image' &&
-                                              _referenceMediaPath != null)
-                                            Opacity(
-                                              opacity: _referenceOpacity,
-                                              child: Image.file(
-                                                File(_referenceMediaPath!),
-                                                fit: BoxFit.contain,
-                                                errorBuilder:
-                                                    (
-                                                      context,
-                                                      error,
-                                                      stackTrace,
-                                                    ) {
-                                                      return const Center(
-                                                        child: Column(
-                                                          mainAxisSize:
-                                                              MainAxisSize.min,
-                                                          children: [
-                                                            Icon(
-                                                              Icons
-                                                                  .broken_image_outlined,
-                                                              size: 48,
-                                                              color: Colors
-                                                                  .white54,
-                                                            ),
-                                                            SizedBox(height: 8),
-                                                            Text(
-                                                              'Reference image unavailable',
-                                                              style: TextStyle(
+                                            if (_referenceVisible &&
+                                                _referenceMediaType ==
+                                                    'image' &&
+                                                _referenceMediaPath != null)
+                                              Opacity(
+                                                opacity: _referenceOpacity,
+                                                child: Image.file(
+                                                  File(_referenceMediaPath!),
+                                                  fit: BoxFit.contain,
+                                                  errorBuilder:
+                                                      (
+                                                        context,
+                                                        error,
+                                                        stackTrace,
+                                                      ) {
+                                                        return const Center(
+                                                          child: Column(
+                                                            mainAxisSize:
+                                                                MainAxisSize
+                                                                    .min,
+                                                            children: [
+                                                              Icon(
+                                                                Icons
+                                                                    .broken_image_outlined,
+                                                                size: 48,
                                                                 color: Colors
                                                                     .white54,
                                                               ),
-                                                            ),
-                                                          ],
-                                                        ),
-                                                      );
-                                                    },
+                                                              SizedBox(
+                                                                height: 8,
+                                                              ),
+                                                              Text(
+                                                                'Reference image unavailable',
+                                                                style: TextStyle(
+                                                                  color: Colors
+                                                                      .white54,
+                                                                ),
+                                                              ),
+                                                            ],
+                                                          ),
+                                                        );
+                                                      },
+                                                ),
                                               ),
+                                            CustomPaint(
+                                              painter: AnimationCanvasPainter(
+                                                strokes: <VectorStroke>[
+                                                  ..._frames[_selectedFrameIndex],
+                                                  ..._draftTextureStrokes,
+                                                  ..._draftStampStrokes,
+                                                ],
+                                                currentStroke:
+                                                    _draftStroke.isEmpty
+                                                    ? null
+                                                    : _draftStroke,
+                                                previousOnionSkinStrokes:
+                                                    _showOnionSkin
+                                                    ? previousFrameStrokes
+                                                    : const <VectorStroke>[],
+                                                nextOnionSkinStrokes:
+                                                    _showOnionSkin
+                                                    ? nextFrameStrokes
+                                                    : const <VectorStroke>[],
+                                                strokeColor: _brushColor
+                                                    .withValues(
+                                                      alpha: _brushOpacity,
+                                                    ),
+                                                strokeWidth: _brushSize,
+                                                brushType: _brushType,
+                                                backgroundColor:
+                                                    _canvasBackgroundColor,
+                                                paintBackground:
+                                                    _referenceMediaPath ==
+                                                        null ||
+                                                    (_referenceMediaType !=
+                                                            'image' &&
+                                                        _referenceMediaType !=
+                                                            'video'),
+                                                previousOnionSkinColor: Colors
+                                                    .redAccent
+                                                    .withValues(alpha: 0.40),
+                                                nextOnionSkinColor: Colors
+                                                    .greenAccent
+                                                    .withValues(alpha: 0.40),
+                                              ),
+                                              child: const SizedBox.expand(),
                                             ),
-                                          CustomPaint(
-                                            painter: AnimationCanvasPainter(
-                                              strokes: <VectorStroke>[
-                                                ..._frames[_selectedFrameIndex],
-                                                ..._draftTextureStrokes,
-                                                ..._draftStampStrokes,
-                                              ],
-                                              currentStroke:
-                                                  _draftStroke.isEmpty
-                                                  ? null
-                                                  : _draftStroke,
-                                              previousOnionSkinStrokes:
-                                                  _showOnionSkin
-                                                  ? previousFrameStrokes
-                                                  : const <VectorStroke>[],
-                                              nextOnionSkinStrokes:
-                                                  _showOnionSkin
-                                                  ? nextFrameStrokes
-                                                  : const <VectorStroke>[],
-                                              strokeColor: _brushColor
-                                                  .withValues(
-                                                    alpha: _brushOpacity,
+                                            if (_fillLassoPoints.length > 1)
+                                              IgnorePointer(
+                                                child: CustomPaint(
+                                                  painter: _FillLassoPainter(
+                                                    points: _fillLassoPoints,
+                                                    color: _brushColor,
                                                   ),
-                                              strokeWidth: _brushSize,
-                                              brushType: _brushType,
-                                              backgroundColor:
-                                                  _canvasBackgroundColor,
-                                              paintBackground:
-                                                  _referenceMediaPath == null ||
-                                                  (_referenceMediaType !=
-                                                          'image' &&
-                                                      _referenceMediaType !=
-                                                          'video'),
-                                              previousOnionSkinColor: Colors
-                                                  .redAccent
-                                                  .withValues(alpha: 0.40),
-                                              nextOnionSkinColor: Colors
-                                                  .greenAccent
-                                                  .withValues(alpha: 0.40),
-                                            ),
-                                            child: const SizedBox.expand(),
-                                          ),
-                                          if (_fillLassoPoints.length > 1)
-                                            IgnorePointer(
-                                              child: CustomPaint(
-                                                painter: _FillLassoPainter(
-                                                  points: _fillLassoPoints,
-                                                  color: _brushColor,
+                                                  child:
+                                                      const SizedBox.expand(),
                                                 ),
-                                                child: const SizedBox.expand(),
                                               ),
-                                            ),
-                                          if (_draftShapeStrokes.isNotEmpty)
-                                            IgnorePointer(
-                                              child: CustomPaint(
-                                                painter: AnimationCanvasPainter(
-                                                  strokes: _draftShapeStrokes,
-                                                  currentStroke: null,
-                                                  previousOnionSkinStrokes:
-                                                      const <VectorStroke>[],
-                                                  nextOnionSkinStrokes:
-                                                      const <VectorStroke>[],
-                                                  strokeColor: _brushColor,
-                                                  previousOnionSkinColor:
-                                                      Colors.transparent,
-                                                  nextOnionSkinColor:
-                                                      Colors.transparent,
-                                                  strokeWidth: _brushSize,
-                                                  brushType:
-                                                      StrokeBrushType.solid,
-                                                  backgroundColor:
-                                                      _canvasBackgroundColor,
-                                                  paintBackground: false,
+                                            if (_draftShapeStrokes.isNotEmpty)
+                                              IgnorePointer(
+                                                child: CustomPaint(
+                                                  painter: AnimationCanvasPainter(
+                                                    strokes: _draftShapeStrokes,
+                                                    currentStroke: null,
+                                                    previousOnionSkinStrokes:
+                                                        const <VectorStroke>[],
+                                                    nextOnionSkinStrokes:
+                                                        const <VectorStroke>[],
+                                                    strokeColor: _brushColor,
+                                                    previousOnionSkinColor:
+                                                        Colors.transparent,
+                                                    nextOnionSkinColor:
+                                                        Colors.transparent,
+                                                    strokeWidth: _brushSize,
+                                                    brushType:
+                                                        StrokeBrushType.solid,
+                                                    backgroundColor:
+                                                        _canvasBackgroundColor,
+                                                    paintBackground: false,
+                                                  ),
+                                                  child:
+                                                      const SizedBox.expand(),
                                                 ),
-                                                child: const SizedBox.expand(),
                                               ),
-                                            ),
-                                          if (_isTransformActive)
-                                            IgnorePointer(
-                                              child: CustomPaint(
-                                                painter: _TransformOverlayPainter(
-                                                  lassoPoints: _lassoPoints,
-                                                  selectionBounds:
-                                                      _selectedStrokeBounds(),
-                                                  pivot: _transformPivot,
+                                            if (_isTransformActive)
+                                              IgnorePointer(
+                                                child: CustomPaint(
+                                                  painter: _TransformOverlayPainter(
+                                                    lassoPoints: _lassoPoints,
+                                                    selectionBounds:
+                                                        _selectedStrokeBounds(),
+                                                    pivot: _transformPivot,
+                                                  ),
+                                                  child:
+                                                      const SizedBox.expand(),
                                                 ),
-                                                child: const SizedBox.expand(),
                                               ),
-                                            ),
-                                        ],
+                                          ],
+                                        ),
                                       ),
                                     ),
                                   ),
