@@ -1,15 +1,591 @@
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:file_picker/file_picker.dart';
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import 'project_library_screen.dart';
 import 'welcome_home_screen.dart';
 import 'workspace_screen.dart';
 import 'bag_screen.dart';
+import '../models/bag_item.dart';
+import '../models/placed_decoration.dart';
+import '../models/vector_stroke.dart';
+import '../painters/bag_item_preview_painter.dart';
+import '../services/bag_service.dart';
 
-class HomeScreen extends StatelessWidget {
+class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
+
+  @override
+  State<HomeScreen> createState() => _HomeScreenState();
+}
+
+class _HomeScreenState extends State<HomeScreen> {
+  static const String _decorationsKey = 'inkdframes_home_decorations_v1';
+
+  final BagService _bagService = BagService();
+
+  List<PlacedDecoration> _decorations = <PlacedDecoration>[];
+
+  Map<String, BagItem> _bagItemsById = <String, BagItem>{};
+
+  bool _decorateMode = false;
+  String? _selectedDecorationId;
+
+  final ScrollController _homeScrollController = ScrollController();
+
+  final Map<int, Offset> _decorateTouchPointers = <int, Offset>{};
+  Offset? _decoratePanCentroid;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadDecorations();
+  }
+
+  @override
+  void dispose() {
+    _homeScrollController.dispose();
+    super.dispose();
+  }
+
+  void _handleDecoratePointerDown(PointerDownEvent event) {
+    if (!_decorateMode || event.kind != PointerDeviceKind.touch) {
+      return;
+    }
+
+    _decorateTouchPointers[event.pointer] = event.position;
+
+    if (_decorateTouchPointers.length >= 2) {
+      _decoratePanCentroid = _touchCentroid();
+    }
+  }
+
+  void _handleDecoratePointerMove(PointerMoveEvent event) {
+    if (!_decorateMode ||
+        event.kind != PointerDeviceKind.touch ||
+        !_decorateTouchPointers.containsKey(event.pointer)) {
+      return;
+    }
+
+    _decorateTouchPointers[event.pointer] = event.position;
+
+    if (_decorateTouchPointers.length < 2) {
+      _decoratePanCentroid = null;
+      return;
+    }
+
+    final centroid = _touchCentroid();
+    final previous = _decoratePanCentroid;
+
+    _decoratePanCentroid = centroid;
+
+    if (previous == null || !_homeScrollController.hasClients) {
+      return;
+    }
+
+    final horizontalDelta = centroid.dx - previous.dx;
+
+    final position = _homeScrollController.position;
+
+    final target = (_homeScrollController.offset - horizontalDelta).clamp(
+      position.minScrollExtent,
+      position.maxScrollExtent,
+    );
+
+    _homeScrollController.jumpTo(target);
+  }
+
+  void _handleDecoratePointerUp(PointerEvent event) {
+    if (event.kind != PointerDeviceKind.touch) {
+      return;
+    }
+
+    _decorateTouchPointers.remove(event.pointer);
+
+    if (_decorateTouchPointers.length >= 2) {
+      _decoratePanCentroid = _touchCentroid();
+    } else {
+      _decoratePanCentroid = null;
+    }
+  }
+
+  Offset _touchCentroid() {
+    if (_decorateTouchPointers.isEmpty) {
+      return Offset.zero;
+    }
+
+    var dx = 0.0;
+    var dy = 0.0;
+
+    for (final point in _decorateTouchPointers.values) {
+      dx += point.dx;
+      dy += point.dy;
+    }
+
+    return Offset(
+      dx / _decorateTouchPointers.length,
+      dy / _decorateTouchPointers.length,
+    );
+  }
+
+  Future<void> _loadDecorations() async {
+    final prefs = await SharedPreferences.getInstance();
+    final items = await _bagService.loadItems();
+
+    final raw = prefs.getString(_decorationsKey);
+
+    final decorations = <PlacedDecoration>[];
+
+    if (raw != null && raw.isNotEmpty) {
+      try {
+        final decoded = jsonDecode(raw);
+
+        if (decoded is List) {
+          decorations.addAll(
+            decoded.whereType<Map>().map(
+              (entry) => PlacedDecoration.fromJson(
+                entry.map<String, dynamic>(
+                  (key, value) => MapEntry(key.toString(), value),
+                ),
+              ),
+            ),
+          );
+        }
+      } catch (_) {}
+    }
+
+    if (!mounted) return;
+
+    setState(() {
+      _decorations = decorations;
+      _bagItemsById = <String, BagItem>{
+        for (final item in items) item.id: item,
+      };
+    });
+  }
+
+  Future<void> _saveDecorations() async {
+    final prefs = await SharedPreferences.getInstance();
+
+    await prefs.setString(
+      _decorationsKey,
+      jsonEncode(
+        _decorations.map((decoration) => decoration.toJson()).toList(),
+      ),
+    );
+  }
+
+  List<VectorStroke> _bagItemStrokes(BagItem item) {
+    return item.layers
+        .where((layer) => layer.visible)
+        .expand((layer) => layer.strokes)
+        .toList();
+  }
+
+  Future<void> _chooseDecoration() async {
+    final prefs = await SharedPreferences.getInstance();
+    final items = await _bagService.loadItems();
+
+    if (!mounted) return;
+
+    // --------------------------------------------------------
+    // Read the exact same Pocket data used by BagScreen.
+    // --------------------------------------------------------
+
+    const customPocketsKey = 'inkdframes_bag_custom_pockets_v1';
+    const pocketAssignmentsKey = 'inkdframes_bag_pocket_assignments_v1';
+
+    final builtInPockets = <Map<String, String>>[
+      <String, String>{'id': 'built_in_sketches', 'name': 'Sketches'},
+      <String, String>{'id': 'built_in_characters', 'name': 'Characters'},
+      <String, String>{'id': 'built_in_textures', 'name': 'Textures'},
+      <String, String>{'id': 'built_in_props', 'name': 'Props'},
+      <String, String>{'id': 'built_in_brushes', 'name': 'Brushes'},
+      <String, String>{'id': 'built_in_misc', 'name': 'Misc.'},
+    ];
+
+    final customPockets = <Map<String, String>>[];
+
+    final rawCustomPockets = prefs.getString(customPocketsKey);
+
+    if (rawCustomPockets != null && rawCustomPockets.isNotEmpty) {
+      try {
+        final decoded = jsonDecode(rawCustomPockets);
+
+        if (decoded is List) {
+          for (final entry in decoded.whereType<Map>()) {
+            final id = entry['id']?.toString() ?? '';
+            final name = entry['name']?.toString() ?? 'Pocket';
+
+            if (id.isNotEmpty) {
+              customPockets.add(<String, String>{'id': id, 'name': name});
+            }
+          }
+        }
+      } catch (_) {}
+    }
+
+    final assignments = <String, String>{};
+
+    final rawAssignments = prefs.getString(pocketAssignmentsKey);
+
+    if (rawAssignments != null && rawAssignments.isNotEmpty) {
+      try {
+        final decoded = jsonDecode(rawAssignments);
+
+        if (decoded is Map) {
+          for (final entry in decoded.entries) {
+            assignments[entry.key.toString()] = entry.value.toString();
+          }
+        }
+      } catch (_) {}
+    }
+
+    if (!mounted) return;
+
+    String? activePocketId;
+    String? activePocketName;
+
+    final selectedItem = await showModalBottomSheet<BagItem>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: const Color(0xFF21160F),
+      barrierColor: Colors.black54,
+      showDragHandle: true,
+      builder: (sheetContext) {
+        return StatefulBuilder(
+          builder: (context, setSheetState) {
+            List<BagItem> activeItems() {
+              if (activePocketId == '__unsorted__') {
+                return items
+                    .where((item) => !assignments.containsKey(item.id))
+                    .toList();
+              }
+
+              return items
+                  .where((item) => assignments[item.id] == activePocketId)
+                  .toList();
+            }
+
+            Widget pocketTile({
+              required String id,
+              required String name,
+              required IconData icon,
+              required int count,
+            }) {
+              return ListTile(
+                leading: Icon(icon, color: const Color(0xFFF1D3A2)),
+                title: Text(
+                  name,
+                  style: const TextStyle(
+                    color: Color(0xFFF4E5CF),
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+                trailing: Text(
+                  '$count',
+                  style: const TextStyle(color: Colors.white54),
+                ),
+                onTap: () {
+                  setSheetState(() {
+                    activePocketId = id;
+                    activePocketName = name;
+                  });
+                },
+              );
+            }
+
+            final pocketItems = activeItems();
+
+            return SafeArea(
+              child: FractionallySizedBox(
+                heightFactor: 0.62,
+                child: Padding(
+                  padding: const EdgeInsets.fromLTRB(20, 0, 20, 20),
+                  child: Column(
+                    children: [
+                      Row(
+                        children: [
+                          if (activePocketId != null)
+                            IconButton(
+                              tooltip: 'Back to Pockets',
+                              onPressed: () {
+                                setSheetState(() {
+                                  activePocketId = null;
+                                  activePocketName = null;
+                                });
+                              },
+                              icon: const Icon(
+                                Icons.arrow_back,
+                                color: Color(0xFFF1D3A2),
+                              ),
+                            ),
+                          Expanded(
+                            child: Text(
+                              activePocketId == null
+                                  ? 'YOUR POCKETS'
+                                  : activePocketName!.toUpperCase(),
+                              textAlign: activePocketId == null
+                                  ? TextAlign.center
+                                  : TextAlign.left,
+                              style: const TextStyle(
+                                color: Color(0xFFF1D3A2),
+                                fontSize: 22,
+                                fontWeight: FontWeight.w800,
+                                letterSpacing: 1.4,
+                              ),
+                            ),
+                          ),
+                          if (activePocketId != null) const SizedBox(width: 48),
+                        ],
+                      ),
+                      const SizedBox(height: 8),
+                      const Divider(color: Colors.white12),
+
+                      Expanded(
+                        child: activePocketId == null
+                            ? ListView(
+                                children: [
+                                  const Padding(
+                                    padding: EdgeInsets.fromLTRB(8, 8, 8, 6),
+                                    child: Text(
+                                      'POCKETS',
+                                      style: TextStyle(
+                                        color: Colors.white38,
+                                        fontSize: 12,
+                                        fontWeight: FontWeight.w700,
+                                        letterSpacing: 1.2,
+                                      ),
+                                    ),
+                                  ),
+
+                                  for (final pocket in builtInPockets)
+                                    pocketTile(
+                                      id: pocket['id']!,
+                                      name: pocket['name']!,
+                                      icon: Icons.inventory_2_outlined,
+                                      count: assignments.values
+                                          .where((id) => id == pocket['id'])
+                                          .length,
+                                    ),
+
+                                  if (customPockets.isNotEmpty) ...[
+                                    const Padding(
+                                      padding: EdgeInsets.fromLTRB(8, 18, 8, 6),
+                                      child: Text(
+                                        'MY POCKETS',
+                                        style: TextStyle(
+                                          color: Colors.white38,
+                                          fontSize: 12,
+                                          fontWeight: FontWeight.w700,
+                                          letterSpacing: 1.2,
+                                        ),
+                                      ),
+                                    ),
+                                    for (final pocket in customPockets)
+                                      pocketTile(
+                                        id: pocket['id']!,
+                                        name: pocket['name']!,
+                                        icon: Icons.folder_outlined,
+                                        count: assignments.values
+                                            .where((id) => id == pocket['id'])
+                                            .length,
+                                      ),
+                                  ],
+
+                                  const Padding(
+                                    padding: EdgeInsets.fromLTRB(8, 18, 8, 6),
+                                    child: Text(
+                                      'UNSORTED',
+                                      style: TextStyle(
+                                        color: Colors.white38,
+                                        fontSize: 12,
+                                        fontWeight: FontWeight.w700,
+                                        letterSpacing: 1.2,
+                                      ),
+                                    ),
+                                  ),
+
+                                  pocketTile(
+                                    id: '__unsorted__',
+                                    name: 'Unsorted',
+                                    icon: Icons.inbox_outlined,
+                                    count: items
+                                        .where(
+                                          (item) =>
+                                              !assignments.containsKey(item.id),
+                                        )
+                                        .length,
+                                  ),
+                                ],
+                              )
+                            : pocketItems.isEmpty
+                            ? const Center(
+                                child: Text(
+                                  'This Pocket is empty.',
+                                  style: TextStyle(
+                                    color: Color(0xFFCFB997),
+                                    fontSize: 15,
+                                  ),
+                                ),
+                              )
+                            : ListView.separated(
+                                itemCount: pocketItems.length,
+                                separatorBuilder: (_, _) =>
+                                    const Divider(color: Colors.white12),
+                                itemBuilder: (context, index) {
+                                  final item = pocketItems[index];
+
+                                  return ListTile(
+                                    contentPadding: const EdgeInsets.symmetric(
+                                      horizontal: 4,
+                                      vertical: 6,
+                                    ),
+                                    leading: SizedBox(
+                                      width: 58,
+                                      height: 58,
+                                      child: DecoratedBox(
+                                        decoration: BoxDecoration(
+                                          color: Colors.black26,
+                                          borderRadius: BorderRadius.circular(
+                                            10,
+                                          ),
+                                          border: Border.all(
+                                            color: Colors.white12,
+                                          ),
+                                        ),
+                                        child: Padding(
+                                          padding: const EdgeInsets.all(4),
+                                          child: CustomPaint(
+                                            painter: BagItemPreviewPainter(
+                                              strokes: _bagItemStrokes(item),
+                                            ),
+                                          ),
+                                        ),
+                                      ),
+                                    ),
+                                    title: Text(
+                                      item.name,
+                                      style: const TextStyle(
+                                        color: Color(0xFFF4E5CF),
+                                        fontWeight: FontWeight.w600,
+                                      ),
+                                    ),
+                                    subtitle: const Text(
+                                      'Tap to place in Home',
+                                      style: TextStyle(color: Colors.white54),
+                                    ),
+                                    trailing: const Icon(
+                                      Icons.add_circle_outline,
+                                      color: Color(0xFFF1D3A2),
+                                    ),
+                                    onTap: () {
+                                      Navigator.pop(sheetContext, item);
+                                    },
+                                  );
+                                },
+                              ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            );
+          },
+        );
+      },
+    );
+
+    if (selectedItem == null || !mounted) {
+      return;
+    }
+
+    setState(() {
+      _bagItemsById[selectedItem.id] = selectedItem;
+
+      final decoration = PlacedDecoration(
+        id: 'decor_${DateTime.now().microsecondsSinceEpoch}',
+        bagItemId: selectedItem.id,
+        name: selectedItem.name,
+        x: 0.5,
+        y: 0.5,
+        scale: 1.0,
+        rotation: 0.0,
+      );
+
+      _decorations.add(decoration);
+      _selectedDecorationId = decoration.id;
+      _decorateMode = true;
+    });
+
+    await _saveDecorations();
+  }
+
+  PlacedDecoration? get _selectedDecoration {
+    final id = _selectedDecorationId;
+
+    if (id == null) return null;
+
+    for (final decoration in _decorations) {
+      if (decoration.id == id) {
+        return decoration;
+      }
+    }
+
+    return null;
+  }
+
+  void _replaceDecoration(PlacedDecoration updated) {
+    final index = _decorations.indexWhere(
+      (decoration) => decoration.id == updated.id,
+    );
+
+    if (index == -1) return;
+
+    _decorations[index] = updated;
+  }
+
+  Future<void> _scaleSelectedDecoration(double factor) async {
+    final selected = _selectedDecoration;
+    if (selected == null) return;
+
+    setState(() {
+      _replaceDecoration(
+        selected.copyWith(scale: (selected.scale * factor).clamp(0.15, 8.0)),
+      );
+    });
+
+    await _saveDecorations();
+  }
+
+  Future<void> _mirrorSelectedDecoration() async {
+    final selected = _selectedDecoration;
+    if (selected == null) return;
+
+    setState(() {
+      _replaceDecoration(selected.copyWith(mirrored: !selected.mirrored));
+    });
+
+    await _saveDecorations();
+  }
+
+  Future<void> _deleteSelectedDecoration() async {
+    final selected = _selectedDecoration;
+
+    if (selected == null) return;
+
+    setState(() {
+      _decorations.removeWhere((decoration) => decoration.id == selected.id);
+
+      _selectedDecorationId = null;
+    });
+
+    await _saveDecorations();
+  }
 
   Future<void> _showComingSoon(BuildContext context, String area) async {
     await showDialog<void>(
@@ -246,17 +822,20 @@ class HomeScreen extends StatelessWidget {
   }
 
   Widget _roomHotspot({required String tooltip, required VoidCallback onTap}) {
-    return Semantics(
-      button: true,
-      label: tooltip,
-      child: Tooltip(
-        message: tooltip,
-        child: Material(
-          color: Colors.transparent,
-          child: InkWell(
-            onTap: onTap,
-            splashColor: Colors.white12,
-            highlightColor: Colors.white10,
+    return IgnorePointer(
+      ignoring: _decorateMode,
+      child: Semantics(
+        button: true,
+        label: tooltip,
+        child: Tooltip(
+          message: tooltip,
+          child: Material(
+            color: Colors.transparent,
+            child: InkWell(
+              onTap: onTap,
+              splashColor: Colors.white12,
+              highlightColor: Colors.white10,
+            ),
           ),
         ),
       ),
@@ -293,6 +872,87 @@ class HomeScreen extends StatelessWidget {
                       alignment: Alignment.center,
                     ),
                   ),
+
+                  for (final decoration in _decorations)
+                    if (_bagItemsById[decoration.bagItemId] != null)
+                      Positioned(
+                        left: (decoration.x * roomWidth) - (roomWidth * 0.09),
+                        top: (decoration.y * roomHeight) - (roomHeight * 0.09),
+                        width: roomWidth * 0.18,
+                        height: roomHeight * 0.18,
+                        child: GestureDetector(
+                          behavior: HitTestBehavior.opaque,
+                          onTap: _decorateMode
+                              ? () {
+                                  setState(() {
+                                    _selectedDecorationId = decoration.id;
+                                  });
+                                }
+                              : null,
+                          onPanStart: !_decorateMode
+                              ? null
+                              : (_) {
+                                  setState(() {
+                                    _selectedDecorationId = decoration.id;
+                                  });
+                                },
+                          onPanUpdate: !_decorateMode
+                              ? null
+                              : (details) {
+                                  if (_decorateTouchPointers.length > 1) {
+                                    return;
+                                  }
+
+                                  setState(() {
+                                    _replaceDecoration(
+                                      decoration.copyWith(
+                                        x:
+                                            (decoration.x +
+                                                    (details.delta.dx /
+                                                        roomWidth))
+                                                .clamp(0.0, 1.0),
+                                        y:
+                                            (decoration.y +
+                                                    (details.delta.dy /
+                                                        roomHeight))
+                                                .clamp(0.0, 1.0),
+                                      ),
+                                    );
+                                  });
+                                },
+                          onPanEnd: !_decorateMode
+                              ? null
+                              : (_) {
+                                  _saveDecorations();
+                                },
+                          child: Transform.scale(
+                            scaleX: decoration.mirrored
+                                ? -decoration.scale
+                                : decoration.scale,
+                            scaleY: decoration.scale,
+                            child: DecoratedBox(
+                              decoration: BoxDecoration(
+                                border:
+                                    _decorateMode &&
+                                        _selectedDecorationId == decoration.id
+                                    ? Border.all(
+                                        color: Colors.cyanAccent,
+                                        width: 2,
+                                      )
+                                    : null,
+                              ),
+                              child: CustomPaint(
+                                painter: BagItemPreviewPainter(
+                                  strokes: _bagItemStrokes(
+                                    _bagItemsById[decoration.bagItemId]!,
+                                  ),
+                                ),
+                                child: const SizedBox.expand(),
+                              ),
+                            ),
+                          ),
+                        ),
+                      ),
 
                   // DEVELOPMENT: RETURN TO HOME EXTERIOR
                   Positioned(
@@ -488,14 +1148,125 @@ class HomeScreen extends StatelessWidget {
             );
           }
 
-          if (!isPortrait) {
-            return buildRoom();
-          }
+          final roomViewport = Listener(
+            behavior: HitTestBehavior.translucent,
+            onPointerDown: _handleDecoratePointerDown,
+            onPointerMove: _handleDecoratePointerMove,
+            onPointerUp: _handleDecoratePointerUp,
+            onPointerCancel: _handleDecoratePointerUp,
+            child: isPortrait
+                ? SingleChildScrollView(
+                    controller: _homeScrollController,
+                    scrollDirection: Axis.horizontal,
+                    physics: _decorateMode
+                        ? const NeverScrollableScrollPhysics()
+                        : const BouncingScrollPhysics(),
+                    child: buildRoom(),
+                  )
+                : buildRoom(),
+          );
 
-          return SingleChildScrollView(
-            scrollDirection: Axis.horizontal,
-            physics: const BouncingScrollPhysics(),
-            child: buildRoom(),
+          return Stack(
+            fit: StackFit.expand,
+            children: [
+              roomViewport,
+
+              // Screen-space Decorate controls.
+              // These stay fixed to the device while the room moves beneath them.
+              SafeArea(
+                child: Align(
+                  alignment: Alignment.bottomLeft,
+                  child: Padding(
+                    padding: const EdgeInsets.all(16),
+                    child: Material(
+                      color: const Color(0xDD1A1720),
+                      borderRadius: BorderRadius.circular(18),
+                      elevation: 8,
+                      child: Padding(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 4,
+                          vertical: 4,
+                        ),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            IconButton(
+                              tooltip: _decorateMode
+                                  ? 'Finish Decorating'
+                                  : 'Decorate',
+                              onPressed: () {
+                                setState(() {
+                                  _decorateMode = !_decorateMode;
+
+                                  if (!_decorateMode) {
+                                    _selectedDecorationId = null;
+                                  }
+                                });
+                              },
+                              icon: Icon(
+                                Icons.auto_awesome_mosaic_outlined,
+                                color: _decorateMode
+                                    ? Colors.cyanAccent
+                                    : Colors.white,
+                              ),
+                            ),
+                            if (_decorateMode)
+                              IconButton(
+                                tooltip: 'Choose from Bag',
+                                onPressed: _chooseDecoration,
+                                icon: const Icon(
+                                  Icons.backpack_outlined,
+                                  color: Colors.white,
+                                ),
+                              ),
+                            if (_decorateMode &&
+                                _selectedDecoration != null) ...[
+                              IconButton(
+                                tooltip: 'Scale down',
+                                onPressed: () {
+                                  _scaleSelectedDecoration(0.9);
+                                },
+                                icon: const Icon(
+                                  Icons.remove_circle_outline,
+                                  color: Colors.white,
+                                ),
+                              ),
+                              IconButton(
+                                tooltip: 'Scale up',
+                                onPressed: () {
+                                  _scaleSelectedDecoration(1.1);
+                                },
+                                icon: const Icon(
+                                  Icons.add_circle_outline,
+                                  color: Colors.white,
+                                ),
+                              ),
+                              IconButton(
+                                tooltip: 'Mirror horizontally',
+                                onPressed: _mirrorSelectedDecoration,
+                                icon: const Icon(
+                                  Icons.flip,
+                                  color: Colors.white,
+                                ),
+                              ),
+                            ],
+                            if (_decorateMode && _selectedDecoration != null)
+                              IconButton(
+                                tooltip: 'Delete decoration',
+                                onPressed: _deleteSelectedDecoration,
+                                icon: const Icon(
+                                  Icons.delete_outline,
+                                  color: Colors.white70,
+                                ),
+                              ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ],
           );
         },
       ),

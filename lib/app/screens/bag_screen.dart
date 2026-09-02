@@ -34,7 +34,9 @@ class _BagPocket {
 }
 
 class BagScreen extends StatefulWidget {
-  const BagScreen({super.key});
+  const BagScreen({super.key, this.selectionMode = false});
+
+  final bool selectionMode;
 
   @override
   State<BagScreen> createState() => _BagScreenState();
@@ -745,9 +747,11 @@ class _BagScreenState extends State<BagScreen> {
                             item.name,
                             style: const TextStyle(color: Color(0xFFF4E5CF)),
                           ),
-                          subtitle: const Text(
-                            'Tap to use in Workspace',
-                            style: TextStyle(color: Colors.white54),
+                          subtitle: Text(
+                            widget.selectionMode
+                                ? 'Tap to place in Home'
+                                : 'Tap to use in Workspace',
+                            style: const TextStyle(color: Colors.white54),
                           ),
                           trailing: Row(
                             mainAxisSize: MainAxisSize.min,
