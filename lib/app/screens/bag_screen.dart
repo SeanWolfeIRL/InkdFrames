@@ -1,5 +1,6 @@
 import 'dart:convert';
 
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -8,6 +9,7 @@ import '../models/vector_stroke.dart';
 import '../painters/bag_item_preview_painter.dart';
 import '../painters/frame_thumbnail_painter.dart';
 import '../services/bag_service.dart';
+import '../services/bag_asset_transfer_service.dart';
 
 class _BagPocket {
   const _BagPocket({
@@ -44,6 +46,8 @@ class BagScreen extends StatefulWidget {
 
 class _BagScreenState extends State<BagScreen> {
   final BagService _bagService = BagService();
+  final BagAssetTransferService _assetTransferService =
+      const BagAssetTransferService();
 
   List<BagItem> _items = <BagItem>[];
   bool _loading = true;
@@ -497,6 +501,110 @@ class _BagScreenState extends State<BagScreen> {
     });
   }
 
+  String _uniqueImportedName(String originalName) {
+    final baseName = originalName.trim().isEmpty
+        ? 'Imported Asset'
+        : originalName.trim();
+
+    final existingNames = _items
+        .map((item) => item.name.trim().toLowerCase())
+        .toSet();
+
+    if (!existingNames.contains(baseName.toLowerCase())) {
+      return baseName;
+    }
+
+    var number = 2;
+
+    while (true) {
+      final candidate = '$baseName (Imported $number)';
+
+      if (!existingNames.contains(candidate.toLowerCase())) {
+        return candidate;
+      }
+
+      number++;
+    }
+  }
+
+  Future<void> _exportNativeAsset(BagItem item) async {
+    try {
+      final outputPath = await _assetTransferService.exportAsset(item);
+
+      if (!mounted) return;
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            '${item.name} exported as an InkdFrames asset\n$outputPath',
+          ),
+          duration: const Duration(seconds: 6),
+        ),
+      );
+    } catch (error) {
+      if (!mounted) return;
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('InkdFrames asset export failed: $error')),
+      );
+    }
+  }
+
+  Future<void> _importNativeAsset() async {
+    try {
+      final pickedFile = await FilePicker.pickFile(
+        type: FileType.custom,
+        allowedExtensions: const <String>['inkdasset'],
+      );
+
+      if (pickedFile == null || !mounted) {
+        return;
+      }
+
+      final path = pickedFile.path;
+
+      if (path == null || path.isEmpty) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Could not access that asset file.')),
+        );
+        return;
+      }
+
+      final sourceItem = await _assetTransferService.importAsset(path);
+
+      final imported = BagItem(
+        id: 'bag_${DateTime.now().microsecondsSinceEpoch}',
+        name: _uniqueImportedName(sourceItem.name),
+        sourceGroupName: sourceItem.sourceGroupName,
+        layers: sourceItem.layers,
+        createdAt: DateTime.now(),
+      );
+
+      await _bagService.addItem(imported);
+      await _loadItems();
+
+      if (!mounted) return;
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('${imported.name} imported into your Bag.')),
+      );
+
+      await _assignItemToPocket(imported);
+    } on FormatException catch (error) {
+      if (!mounted) return;
+
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text(error.message)));
+    } catch (error) {
+      if (!mounted) return;
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('InkdFrames asset import failed: $error')),
+      );
+    }
+  }
+
   Future<void> _deleteItem(BagItem item) async {
     final confirmed = await showDialog<bool>(
       context: context,
@@ -701,105 +809,144 @@ class _BagScreenState extends State<BagScreen> {
       context: context,
       backgroundColor: const Color(0xFF21160F),
       showDragHandle: true,
+      isScrollControlled: true,
       builder: (sheetContext) {
         return SafeArea(
-          child: Padding(
-            padding: const EdgeInsets.fromLTRB(20, 8, 20, 28),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Text(
-                  title.toUpperCase(),
-                  style: const TextStyle(
-                    color: Color(0xFFF1D3A2),
-                    fontSize: 22,
-                    fontWeight: FontWeight.w800,
-                    letterSpacing: 1.4,
-                  ),
-                ),
-                const SizedBox(height: 12),
-                if (items.isEmpty)
-                  const Padding(
-                    padding: EdgeInsets.symmetric(vertical: 28),
-                    child: Text(
-                      'This Pocket is empty.',
-                      style: TextStyle(color: Color(0xFFCFB997), fontSize: 15),
+          child: FractionallySizedBox(
+            heightFactor: 0.72,
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(20, 8, 20, 28),
+              child: Column(
+                children: [
+                  Text(
+                    title.toUpperCase(),
+                    style: const TextStyle(
+                      color: Color(0xFFF1D3A2),
+                      fontSize: 22,
+                      fontWeight: FontWeight.w800,
+                      letterSpacing: 1.4,
                     ),
-                  )
-                else
-                  ConstrainedBox(
-                    constraints: const BoxConstraints(maxHeight: 420),
-                    child: ListView.separated(
-                      shrinkWrap: true,
-                      itemCount: items.length,
-                      separatorBuilder: (_, _) =>
-                          const Divider(color: Colors.white12),
-                      itemBuilder: (context, index) {
-                        final item = items[index];
+                  ),
+                  const SizedBox(height: 12),
+                  if (items.isEmpty)
+                    const Padding(
+                      padding: EdgeInsets.symmetric(vertical: 28),
+                      child: Text(
+                        'This Pocket is empty.',
+                        style: TextStyle(
+                          color: Color(0xFFCFB997),
+                          fontSize: 15,
+                        ),
+                      ),
+                    )
+                  else
+                    Expanded(
+                      child: ListView.separated(
+                        itemCount: items.length,
+                        separatorBuilder: (_, _) =>
+                            const Divider(color: Colors.white12),
+                        itemBuilder: (context, index) {
+                          final item = items[index];
 
-                        return ListTile(
-                          contentPadding: const EdgeInsets.symmetric(
-                            horizontal: 4,
-                            vertical: 4,
-                          ),
-                          leading: _bagItemThumbnail(item),
-                          title: Text(
-                            item.name,
-                            style: const TextStyle(color: Color(0xFFF4E5CF)),
-                          ),
-                          subtitle: Text(
-                            widget.selectionMode
-                                ? 'Tap to place in Home'
-                                : 'Tap to use in Workspace',
-                            style: const TextStyle(color: Colors.white54),
-                          ),
-                          trailing: Row(
-                            mainAxisSize: MainAxisSize.min,
-                            children: [
-                              IconButton(
-                                tooltip: 'View item',
-                                icon: const Icon(
-                                  Icons.zoom_in_rounded,
-                                  color: Color(0xFFF1D3A2),
+                          return Padding(
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 4,
+                              vertical: 6,
+                            ),
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.stretch,
+                              children: [
+                                ListTile(
+                                  contentPadding: EdgeInsets.zero,
+                                  leading: _bagItemThumbnail(item),
+                                  title: Text(
+                                    item.name,
+                                    maxLines: 2,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: const TextStyle(
+                                      color: Color(0xFFF4E5CF),
+                                      fontWeight: FontWeight.w600,
+                                    ),
+                                  ),
+                                  subtitle: Text(
+                                    widget.selectionMode
+                                        ? 'Tap to place in Home'
+                                        : 'Tap to use in Workspace',
+                                    style: const TextStyle(
+                                      color: Colors.white54,
+                                    ),
+                                  ),
+                                  trailing: const Icon(
+                                    Icons.chevron_right,
+                                    color: Colors.white38,
+                                  ),
+                                  onTap: () {
+                                    Navigator.pop(sheetContext);
+                                    Navigator.pop(context, item);
+                                  },
                                 ),
-                                onPressed: () async {
-                                  Navigator.pop(sheetContext);
-                                  await _viewBagItem(item);
-                                },
-                              ),
-                              IconButton(
-                                tooltip: 'Move to another Pocket',
-                                icon: const Icon(
-                                  Icons.drive_file_move_outline,
-                                  color: Color(0xFFF1D3A2),
+                                Padding(
+                                  padding: const EdgeInsets.only(left: 72),
+                                  child: Wrap(
+                                    spacing: 2,
+                                    runSpacing: 2,
+                                    alignment: WrapAlignment.start,
+                                    children: [
+                                      IconButton(
+                                        tooltip: 'View item',
+                                        icon: const Icon(
+                                          Icons.zoom_in_rounded,
+                                          color: Color(0xFFF1D3A2),
+                                        ),
+                                        onPressed: () async {
+                                          Navigator.pop(sheetContext);
+                                          await _viewBagItem(item);
+                                        },
+                                      ),
+                                      IconButton(
+                                        tooltip: 'Export InkdFrames Asset',
+                                        icon: const Icon(
+                                          Icons.file_download_outlined,
+                                          color: Color(0xFFF1D3A2),
+                                        ),
+                                        onPressed: () async {
+                                          Navigator.pop(sheetContext);
+                                          await _exportNativeAsset(item);
+                                        },
+                                      ),
+                                      IconButton(
+                                        tooltip: 'Move to another Pocket',
+                                        icon: const Icon(
+                                          Icons.drive_file_move_outline,
+                                          color: Color(0xFFF1D3A2),
+                                        ),
+                                        onPressed: () async {
+                                          Navigator.pop(sheetContext);
+                                          await _assignItemToPocket(item);
+                                        },
+                                      ),
+                                      IconButton(
+                                        tooltip: 'Delete from Bag',
+                                        icon: const Icon(
+                                          Icons.delete_outline,
+                                          color: Colors.white54,
+                                        ),
+                                        onPressed: () async {
+                                          Navigator.pop(sheetContext);
+                                          await _deleteItem(item);
+                                        },
+                                      ),
+                                    ],
+                                  ),
                                 ),
-                                onPressed: () async {
-                                  Navigator.pop(sheetContext);
-                                  await _assignItemToPocket(item);
-                                },
-                              ),
-                              IconButton(
-                                tooltip: 'Delete from Bag',
-                                icon: const Icon(
-                                  Icons.delete_outline,
-                                  color: Colors.white54,
-                                ),
-                                onPressed: () async {
-                                  Navigator.pop(sheetContext);
-                                  await _deleteItem(item);
-                                },
-                              ),
-                            ],
-                          ),
-                          onTap: () {
-                            Navigator.pop(sheetContext);
-                            Navigator.pop(context, item);
-                          },
-                        );
-                      },
+                              ],
+                            ),
+                          );
+                        },
+                      ),
                     ),
-                  ),
-              ],
+                ],
+              ),
             ),
           ),
         );
@@ -849,6 +996,17 @@ class _BagScreenState extends State<BagScreen> {
                                 fontWeight: FontWeight.w800,
                                 letterSpacing: 1.4,
                               ),
+                            ),
+                          ),
+                          IconButton(
+                            tooltip: 'Import InkdFrames Asset',
+                            onPressed: () async {
+                              Navigator.pop(sheetContext);
+                              await _importNativeAsset();
+                            },
+                            icon: const Icon(
+                              Icons.file_upload_outlined,
+                              color: Color(0xFFF1D3A2),
                             ),
                           ),
                           FilledButton.icon(

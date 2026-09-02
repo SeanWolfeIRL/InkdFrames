@@ -587,6 +587,119 @@ class _HomeScreenState extends State<HomeScreen> {
     await _saveDecorations();
   }
 
+  Future<void> _resetSelectedDecoration() async {
+    final selected = _selectedDecoration;
+
+    if (selected == null) return;
+
+    setState(() {
+      _replaceDecoration(
+        selected.copyWith(scale: 1.0, rotation: 0.0, mirrored: false),
+      );
+    });
+
+    await _saveDecorations();
+  }
+
+  Future<void> _showDecorationPicker() async {
+    if (_decorations.isEmpty) {
+      if (!mounted) return;
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('There are no placed decorations yet.')),
+      );
+      return;
+    }
+
+    final selectedId = await showModalBottomSheet<String>(
+      context: context,
+      backgroundColor: const Color(0xFF21160F),
+      showDragHandle: true,
+      builder: (sheetContext) {
+        return SafeArea(
+          child: ConstrainedBox(
+            constraints: BoxConstraints(
+              maxHeight: MediaQuery.sizeOf(sheetContext).height * 0.62,
+            ),
+            child: ListView.separated(
+              shrinkWrap: true,
+              padding: const EdgeInsets.fromLTRB(16, 4, 16, 24),
+              itemCount: _decorations.length,
+              separatorBuilder: (_, _) => const Divider(color: Colors.white12),
+              itemBuilder: (context, index) {
+                final decoration = _decorations[index];
+                final selected = decoration.id == _selectedDecorationId;
+
+                return ListTile(
+                  leading: Icon(
+                    selected
+                        ? Icons.check_box_outlined
+                        : Icons.crop_square_outlined,
+                    color: selected
+                        ? Colors.cyanAccent
+                        : const Color(0xFFF1D3A2),
+                  ),
+                  title: Text(
+                    decoration.name,
+                    style: const TextStyle(
+                      color: Color(0xFFF4E5CF),
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                  subtitle: Text(
+                    'Scale ${(decoration.scale * 100).round()}%',
+                    style: const TextStyle(color: Colors.white54),
+                  ),
+                  trailing: selected
+                      ? const Icon(Icons.check, color: Colors.cyanAccent)
+                      : null,
+                  onTap: () {
+                    Navigator.pop(sheetContext, decoration.id);
+                  },
+                );
+              },
+            ),
+          ),
+        );
+      },
+    );
+
+    if (selectedId == null || !mounted) {
+      return;
+    }
+
+    setState(() {
+      _selectedDecorationId = selectedId;
+    });
+
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || !_homeScrollController.hasClients) {
+        return;
+      }
+
+      final decoration = _selectedDecoration;
+
+      if (decoration == null) {
+        return;
+      }
+
+      final position = _homeScrollController.position;
+      final roomWidth = position.maxScrollExtent + position.viewportDimension;
+
+      final target =
+          ((decoration.x * roomWidth) - (position.viewportDimension / 2)).clamp(
+            position.minScrollExtent,
+            position.maxScrollExtent,
+          );
+
+      _homeScrollController.animateTo(
+        target,
+        duration: const Duration(milliseconds: 220),
+        curve: Curves.easeOut,
+      );
+    });
+  }
+
   Future<void> _showComingSoon(BuildContext context, String area) async {
     await showDialog<void>(
       context: context,
@@ -875,83 +988,119 @@ class _HomeScreenState extends State<HomeScreen> {
 
                   for (final decoration in _decorations)
                     if (_bagItemsById[decoration.bagItemId] != null)
-                      Positioned(
-                        left: (decoration.x * roomWidth) - (roomWidth * 0.09),
-                        top: (decoration.y * roomHeight) - (roomHeight * 0.09),
-                        width: roomWidth * 0.18,
-                        height: roomHeight * 0.18,
-                        child: GestureDetector(
-                          behavior: HitTestBehavior.opaque,
-                          onTap: _decorateMode
-                              ? () {
-                                  setState(() {
-                                    _selectedDecorationId = decoration.id;
-                                  });
-                                }
-                              : null,
-                          onPanStart: !_decorateMode
-                              ? null
-                              : (_) {
-                                  setState(() {
-                                    _selectedDecorationId = decoration.id;
-                                  });
-                                },
-                          onPanUpdate: !_decorateMode
-                              ? null
-                              : (details) {
-                                  if (_decorateTouchPointers.length > 1) {
-                                    return;
-                                  }
+                      Builder(
+                        builder: (context) {
+                          final decorationWidth =
+                              roomWidth * 0.18 * decoration.scale;
 
-                                  setState(() {
-                                    _replaceDecoration(
-                                      decoration.copyWith(
-                                        x:
-                                            (decoration.x +
-                                                    (details.delta.dx /
-                                                        roomWidth))
-                                                .clamp(0.0, 1.0),
-                                        y:
-                                            (decoration.y +
-                                                    (details.delta.dy /
-                                                        roomHeight))
-                                                .clamp(0.0, 1.0),
+                          final decorationHeight =
+                              roomHeight * 0.18 * decoration.scale;
+
+                          final selected =
+                              _decorateMode &&
+                              _selectedDecorationId == decoration.id;
+
+                          return Positioned(
+                            left:
+                                (decoration.x * roomWidth) -
+                                (decorationWidth / 2),
+                            top:
+                                (decoration.y * roomHeight) -
+                                (decorationHeight / 2),
+                            width: decorationWidth,
+                            height: decorationHeight,
+                            child: GestureDetector(
+                              behavior: HitTestBehavior.opaque,
+                              onTap: _decorateMode
+                                  ? () {
+                                      setState(() {
+                                        _selectedDecorationId = decoration.id;
+                                      });
+                                    }
+                                  : null,
+                              onPanStart: !_decorateMode
+                                  ? null
+                                  : (_) {
+                                      setState(() {
+                                        _selectedDecorationId = decoration.id;
+                                      });
+                                    },
+                              onPanUpdate: !_decorateMode
+                                  ? null
+                                  : (details) {
+                                      if (_decorateTouchPointers.length > 1) {
+                                        return;
+                                      }
+
+                                      final currentIndex = _decorations
+                                          .indexWhere(
+                                            (candidate) =>
+                                                candidate.id == decoration.id,
+                                          );
+
+                                      if (currentIndex == -1) {
+                                        return;
+                                      }
+
+                                      final current =
+                                          _decorations[currentIndex];
+
+                                      setState(() {
+                                        _replaceDecoration(
+                                          current.copyWith(
+                                            x:
+                                                (current.x +
+                                                        (details.delta.dx /
+                                                            roomWidth))
+                                                    .clamp(0.0, 1.0),
+                                            y:
+                                                (current.y +
+                                                        (details.delta.dy /
+                                                            roomHeight))
+                                                    .clamp(0.0, 1.0),
+                                          ),
+                                        );
+                                      });
+                                    },
+                              onPanEnd: !_decorateMode
+                                  ? null
+                                  : (_) {
+                                      _saveDecorations();
+                                    },
+                              child: DecoratedBox(
+                                decoration: BoxDecoration(
+                                  border: selected
+                                      ? Border.all(
+                                          color: Colors.cyanAccent,
+                                          width: 2,
+                                        )
+                                      : null,
+                                ),
+                                child: Padding(
+                                  padding: selected
+                                      ? const EdgeInsets.all(2)
+                                      : EdgeInsets.zero,
+                                  child: Transform(
+                                    alignment: Alignment.center,
+                                    transform: Matrix4.diagonal3Values(
+                                      decoration.mirrored ? -1.0 : 1.0,
+                                      1.0,
+                                      1.0,
+                                    ),
+                                    child: CustomPaint(
+                                      painter: BagItemPreviewPainter(
+                                        strokes: _bagItemStrokes(
+                                          _bagItemsById[decoration.bagItemId]!,
+                                        ),
                                       ),
-                                    );
-                                  });
-                                },
-                          onPanEnd: !_decorateMode
-                              ? null
-                              : (_) {
-                                  _saveDecorations();
-                                },
-                          child: Transform.scale(
-                            scaleX: decoration.mirrored
-                                ? -decoration.scale
-                                : decoration.scale,
-                            scaleY: decoration.scale,
-                            child: DecoratedBox(
-                              decoration: BoxDecoration(
-                                border:
-                                    _decorateMode &&
-                                        _selectedDecorationId == decoration.id
-                                    ? Border.all(
-                                        color: Colors.cyanAccent,
-                                        width: 2,
-                                      )
-                                    : null,
-                              ),
-                              child: CustomPaint(
-                                painter: BagItemPreviewPainter(
-                                  strokes: _bagItemStrokes(
-                                    _bagItemsById[decoration.bagItemId]!,
+                                      child: const SizedBox.expand(),
+                                    ),
                                   ),
                                 ),
-                                child: const SizedBox.expand(),
                               ),
                             ),
-                          ),
-                        ),
+                          );
+                        },
                       ),
 
                   // DEVELOPMENT: RETURN TO HOME EXTERIOR
@@ -1178,88 +1327,112 @@ class _HomeScreenState extends State<HomeScreen> {
                   alignment: Alignment.bottomLeft,
                   child: Padding(
                     padding: const EdgeInsets.all(16),
-                    child: Material(
-                      color: const Color(0xDD1A1720),
-                      borderRadius: BorderRadius.circular(18),
-                      elevation: 8,
-                      child: Padding(
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 4,
-                          vertical: 4,
-                        ),
-                        child: Row(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            IconButton(
-                              tooltip: _decorateMode
-                                  ? 'Finish Decorating'
-                                  : 'Decorate',
-                              onPressed: () {
-                                setState(() {
-                                  _decorateMode = !_decorateMode;
+                    child: ConstrainedBox(
+                      constraints: BoxConstraints(
+                        maxWidth: constraints.maxWidth - 32,
+                      ),
+                      child: Material(
+                        color: const Color(0xDD1A1720),
+                        borderRadius: BorderRadius.circular(18),
+                        elevation: 8,
+                        child: Padding(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 4,
+                            vertical: 4,
+                          ),
+                          child: Wrap(
+                            spacing: 0,
+                            runSpacing: 0,
+                            crossAxisAlignment: WrapCrossAlignment.center,
+                            children: [
+                              IconButton(
+                                tooltip: _decorateMode
+                                    ? 'Finish Decorating'
+                                    : 'Decorate',
+                                onPressed: () {
+                                  setState(() {
+                                    _decorateMode = !_decorateMode;
 
-                                  if (!_decorateMode) {
-                                    _selectedDecorationId = null;
-                                  }
-                                });
-                              },
-                              icon: Icon(
-                                Icons.auto_awesome_mosaic_outlined,
-                                color: _decorateMode
-                                    ? Colors.cyanAccent
-                                    : Colors.white,
-                              ),
-                            ),
-                            if (_decorateMode)
-                              IconButton(
-                                tooltip: 'Choose from Bag',
-                                onPressed: _chooseDecoration,
-                                icon: const Icon(
-                                  Icons.backpack_outlined,
-                                  color: Colors.white,
-                                ),
-                              ),
-                            if (_decorateMode &&
-                                _selectedDecoration != null) ...[
-                              IconButton(
-                                tooltip: 'Scale down',
-                                onPressed: () {
-                                  _scaleSelectedDecoration(0.9);
+                                    if (!_decorateMode) {
+                                      _selectedDecorationId = null;
+                                    }
+                                  });
                                 },
-                                icon: const Icon(
-                                  Icons.remove_circle_outline,
-                                  color: Colors.white,
+                                icon: Icon(
+                                  Icons.auto_awesome_mosaic_outlined,
+                                  color: _decorateMode
+                                      ? Colors.cyanAccent
+                                      : Colors.white,
                                 ),
                               ),
-                              IconButton(
-                                tooltip: 'Scale up',
-                                onPressed: () {
-                                  _scaleSelectedDecoration(1.1);
-                                },
-                                icon: const Icon(
-                                  Icons.add_circle_outline,
-                                  color: Colors.white,
+                              if (_decorateMode)
+                                IconButton(
+                                  tooltip: 'Choose from Bag',
+                                  onPressed: _chooseDecoration,
+                                  icon: const Icon(
+                                    Icons.backpack_outlined,
+                                    color: Colors.white,
+                                  ),
                                 ),
-                              ),
-                              IconButton(
-                                tooltip: 'Mirror horizontally',
-                                onPressed: _mirrorSelectedDecoration,
-                                icon: const Icon(
-                                  Icons.flip,
-                                  color: Colors.white,
+                              if (_decorateMode)
+                                IconButton(
+                                  tooltip: 'Placed Objects',
+                                  onPressed: _showDecorationPicker,
+                                  icon: const Icon(
+                                    Icons.layers_outlined,
+                                    color: Colors.white,
+                                  ),
                                 ),
-                              ),
+                              if (_decorateMode &&
+                                  _selectedDecoration != null) ...[
+                                IconButton(
+                                  tooltip: 'Reset Transform',
+                                  onPressed: _resetSelectedDecoration,
+                                  icon: const Icon(
+                                    Icons.restart_alt,
+                                    color: Colors.white,
+                                  ),
+                                ),
+                                IconButton(
+                                  tooltip: 'Scale down',
+                                  onPressed: () {
+                                    _scaleSelectedDecoration(0.9);
+                                  },
+                                  icon: const Icon(
+                                    Icons.remove_circle_outline,
+                                    color: Colors.white,
+                                  ),
+                                ),
+                                IconButton(
+                                  tooltip: 'Scale up',
+                                  onPressed: () {
+                                    _scaleSelectedDecoration(1.1);
+                                  },
+                                  icon: const Icon(
+                                    Icons.add_circle_outline,
+                                    color: Colors.white,
+                                  ),
+                                ),
+                                IconButton(
+                                  tooltip: 'Mirror horizontally',
+                                  onPressed: _mirrorSelectedDecoration,
+                                  icon: const Icon(
+                                    Icons.flip,
+                                    color: Colors.white,
+                                  ),
+                                ),
+                              ],
+                              if (_decorateMode && _selectedDecoration != null)
+                                IconButton(
+                                  tooltip: 'Delete decoration',
+                                  onPressed: _deleteSelectedDecoration,
+                                  icon: const Icon(
+                                    Icons.delete_outline,
+                                    color: Colors.white70,
+                                  ),
+                                ),
                             ],
-                            if (_decorateMode && _selectedDecoration != null)
-                              IconButton(
-                                tooltip: 'Delete decoration',
-                                onPressed: _deleteSelectedDecoration,
-                                icon: const Icon(
-                                  Icons.delete_outline,
-                                  color: Colors.white70,
-                                ),
-                              ),
-                          ],
+                          ),
                         ),
                       ),
                     ),
