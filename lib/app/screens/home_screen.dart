@@ -180,10 +180,31 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   List<VectorStroke> _bagItemStrokes(BagItem item) {
-    return item.layers
-        .where((layer) => layer.visible)
-        .expand((layer) => layer.strokes)
-        .toList();
+    final strokes = <VectorStroke>[];
+
+    // Bag layers are stored top-to-bottom, matching the Workspace layer panel.
+    // Paint bottom layers first so upper layers remain visually on top.
+    for (final layer in item.layers.reversed) {
+      if (!layer.visible) {
+        continue;
+      }
+
+      for (final stroke in layer.strokes) {
+        strokes.add(
+          VectorStroke(
+            points: stroke.points.map((point) => point.copy()).toList(),
+            strokeWidth: stroke.strokeWidth,
+            color: stroke.color.withValues(
+              alpha: stroke.color.a * layer.opacity,
+            ),
+            filled: stroke.filled,
+            brushType: stroke.brushType,
+          ),
+        );
+      }
+    }
+
+    return strokes;
   }
 
   Future<void> _chooseDecoration() async {
