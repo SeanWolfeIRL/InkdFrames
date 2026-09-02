@@ -22,10 +22,19 @@ class _WelcomeHomeScreenState extends State<WelcomeHomeScreen> {
   bool _tapPromptVisible = false;
   bool _milestoneVisible = false;
 
+  final ScrollController _exteriorScrollController = ScrollController();
+  bool _exteriorInitialPositionApplied = false;
+
   @override
   void initState() {
     super.initState();
     _loadArrivalState();
+  }
+
+  @override
+  void dispose() {
+    _exteriorScrollController.dispose();
+    super.dispose();
   }
 
   Future<void> _loadArrivalState() async {
@@ -173,31 +182,61 @@ class _WelcomeHomeScreenState extends State<WelcomeHomeScreen> {
   }) {
     final viewportWidth = constraints.maxWidth;
     final viewportHeight = constraints.maxHeight;
-
-    // Preserve the original 3:2 exterior artwork.
-    //
-    // Fit the complete authored scene inside the available viewport
-    // instead of cropping or zooming it. This keeps WELCOME HOME,
-    // cottage, garden, landscape and gate visible together.
     final artworkAspect = _artWidth / _artHeight;
-    final viewportAspect = viewportWidth / viewportHeight;
+    final isPortrait = viewportHeight > viewportWidth;
 
-    late final double sceneWidth;
-    late final double sceneHeight;
+    // Use the native 3:2 exterior artwork as one fixed environment.
+    //
+    // Portrait fills the screen height and explores horizontally.
+    // Landscape fills the screen width.
+    // No artificial zoom factor and no distortion.
+    final sceneHeight = isPortrait
+        ? viewportHeight
+        : viewportWidth / artworkAspect;
 
-    if (viewportAspect > artworkAspect) {
-      sceneHeight = viewportHeight;
-      sceneWidth = sceneHeight * artworkAspect;
-    } else {
-      sceneWidth = viewportWidth;
-      sceneHeight = sceneWidth / artworkAspect;
+    final sceneWidth = isPortrait ? sceneHeight * artworkAspect : viewportWidth;
+
+    if (isPortrait && !_exteriorInitialPositionApplied) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted ||
+            !_exteriorScrollController.hasClients ||
+            _exteriorInitialPositionApplied) {
+          return;
+        }
+
+        // Begin around the cottage/front-door area while leaving
+        // the rest of the exterior available for exploration.
+        final desiredOffset = (sceneWidth * 0.5275) - (viewportWidth / 2);
+
+        final maxOffset = _exteriorScrollController.position.maxScrollExtent;
+
+        final target = desiredOffset.clamp(0.0, maxOffset);
+
+        _exteriorScrollController.jumpTo(target);
+
+        _exteriorInitialPositionApplied = true;
+      });
     }
 
-    return Center(
-      child: _buildExterior(
-        width: sceneWidth,
-        height: sceneHeight,
-        doorEnabled: doorEnabled,
+    return ClipRect(
+      child: SingleChildScrollView(
+        controller: _exteriorScrollController,
+        scrollDirection: Axis.horizontal,
+        physics: const BouncingScrollPhysics(),
+        child: ConstrainedBox(
+          constraints: BoxConstraints(
+            minWidth: viewportWidth,
+            minHeight: viewportHeight,
+          ),
+          child: Align(
+            alignment: isPortrait ? Alignment.topLeft : Alignment.center,
+            child: _buildExterior(
+              width: sceneWidth,
+              height: sceneHeight,
+              doorEnabled: doorEnabled,
+            ),
+          ),
+        ),
       ),
     );
   }

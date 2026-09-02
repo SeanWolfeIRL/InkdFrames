@@ -1,0 +1,426 @@
+import 'package:flutter/material.dart';
+
+import '../services/onboarding_milestone_service.dart';
+import 'home_screen.dart';
+
+enum _ArrivalPhase { loading, welcome, milestone, exploring }
+
+class WelcomeHomeScreen extends StatefulWidget {
+  const WelcomeHomeScreen({super.key});
+
+  @override
+  State<WelcomeHomeScreen> createState() => _WelcomeHomeScreenState();
+}
+
+class _WelcomeHomeScreenState extends State<WelcomeHomeScreen> {
+  static const double _artWidth = 1536;
+  static const double _artHeight = 1024;
+
+  _ArrivalPhase _phase = _ArrivalPhase.loading;
+
+  bool _welcomeVisible = false;
+  bool _tapPromptVisible = false;
+  bool _milestoneVisible = false;
+
+  final ScrollController _exteriorScrollController = ScrollController();
+  bool _exteriorInitialPositionApplied = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadArrivalState();
+  }
+
+  @override
+  void dispose() {
+    _exteriorScrollController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _loadArrivalState() async {
+    final arrivalSeen = await OnboardingMilestoneService.has(
+      OnboardingMilestoneService.arrivalSeen,
+    );
+
+    if (!mounted) {
+      return;
+    }
+
+    if (arrivalSeen) {
+      setState(() {
+        _phase = _ArrivalPhase.exploring;
+      });
+      return;
+    }
+
+    setState(() {
+      _phase = _ArrivalPhase.welcome;
+      _welcomeVisible = true;
+    });
+
+    await Future<void>.delayed(const Duration(milliseconds: 1100));
+
+    if (!mounted || _phase != _ArrivalPhase.welcome) {
+      return;
+    }
+
+    setState(() {
+      _tapPromptVisible = true;
+    });
+  }
+
+  Future<void> _beginArrival() async {
+    if (_phase != _ArrivalPhase.welcome) {
+      return;
+    }
+
+    setState(() {
+      _welcomeVisible = false;
+      _tapPromptVisible = false;
+    });
+
+    // Give the physical welcome page time to fade away.
+    await Future<void>.delayed(const Duration(milliseconds: 700));
+
+    if (!mounted) {
+      return;
+    }
+
+    await OnboardingMilestoneService.complete(
+      OnboardingMilestoneService.arrivalSeen,
+    );
+
+    if (!mounted) {
+      return;
+    }
+
+    setState(() {
+      _phase = _ArrivalPhase.milestone;
+      _milestoneVisible = true;
+    });
+
+    await Future<void>.delayed(const Duration(milliseconds: 2100));
+
+    if (!mounted) {
+      return;
+    }
+
+    setState(() {
+      _milestoneVisible = false;
+    });
+
+    await Future<void>.delayed(const Duration(milliseconds: 1000));
+
+    if (!mounted) {
+      return;
+    }
+
+    setState(() {
+      _phase = _ArrivalPhase.exploring;
+    });
+  }
+
+  Future<void> _goHome() async {
+    if (_phase != _ArrivalPhase.exploring) {
+      return;
+    }
+
+    await OnboardingMilestoneService.complete(
+      OnboardingMilestoneService.enteredHome,
+    );
+
+    if (!mounted) {
+      return;
+    }
+
+    Navigator.of(context).pushReplacement(
+      MaterialPageRoute<void>(builder: (_) => const HomeScreen()),
+    );
+  }
+
+  Widget _buildExterior({
+    required double width,
+    required double height,
+    required bool doorEnabled,
+  }) {
+    return SizedBox(
+      width: width,
+      height: height,
+      child: Stack(
+        fit: StackFit.expand,
+        children: [
+          Image.asset(
+            'assets/images/inkdframes_home_exterior_v1.png',
+            fit: BoxFit.cover,
+            alignment: Alignment.center,
+          ),
+
+          // Invisible interactive area over the cottage door.
+          Positioned(
+            left: width * 0.475,
+            top: height * 0.44,
+            width: width * 0.105,
+            height: height * 0.30,
+            child: Semantics(
+              button: true,
+              label: 'Go home',
+              child: GestureDetector(
+                behavior: HitTestBehavior.opaque,
+                onTap: doorEnabled ? _goHome : null,
+                child: const SizedBox.expand(),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildStaticExterior(
+    BoxConstraints constraints, {
+    required bool doorEnabled,
+  }) {
+    final viewportWidth = constraints.maxWidth;
+    final viewportHeight = constraints.maxHeight;
+    final artworkAspect = _artWidth / _artHeight;
+
+    // Keep the exterior immersive on portrait phones without using
+    // BoxFit.cover's extremely tight crop.
+    //
+    // The scene remains larger than the viewport and can be explored
+    // horizontally, while preserving the authored 3:2 proportions.
+    final isPortrait = viewportHeight > viewportWidth;
+
+    final sceneWidth = isPortrait ? viewportWidth * 1.85 : viewportWidth * 1.08;
+
+    final sceneHeight = sceneWidth / artworkAspect;
+
+    final verticalPadding = sceneHeight < viewportHeight
+        ? (viewportHeight - sceneHeight) / 2
+        : 0.0;
+
+    if (isPortrait && !_exteriorInitialPositionApplied) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted ||
+            !_exteriorScrollController.hasClients ||
+            _exteriorInitialPositionApplied) {
+          return;
+        }
+
+        // Open with the cottage/front door near the centre of the phone.
+        // The user can still explore toward the coast or garden.
+        final desiredOffset = (sceneWidth * 0.5275) - (viewportWidth / 2);
+
+        final maxOffset = _exteriorScrollController.position.maxScrollExtent;
+
+        final target = desiredOffset.clamp(0.0, maxOffset);
+
+        _exteriorScrollController.jumpTo(target);
+
+        _exteriorInitialPositionApplied = true;
+      });
+    }
+
+    return SingleChildScrollView(
+      controller: _exteriorScrollController,
+      scrollDirection: Axis.horizontal,
+      physics: const BouncingScrollPhysics(),
+      child: SizedBox(
+        width: sceneWidth,
+        height: viewportHeight,
+        child: Padding(
+          padding: EdgeInsets.only(
+            top: verticalPadding,
+            bottom: verticalPadding,
+          ),
+          child: Align(
+            alignment: Alignment.center,
+            child: _buildExterior(
+              width: sceneWidth,
+              height: sceneHeight,
+              doorEnabled: doorEnabled,
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildWelcomeOverlay() {
+    return Positioned.fill(
+      child: GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        onTap: _beginArrival,
+        child: SafeArea(
+          child: Center(
+            child: Padding(
+              padding: const EdgeInsets.all(28),
+              child: AnimatedOpacity(
+                opacity: _welcomeVisible ? 1 : 0,
+                duration: const Duration(milliseconds: 700),
+                curve: Curves.easeOut,
+                child: ConstrainedBox(
+                  constraints: const BoxConstraints(maxWidth: 390),
+                  child: Transform.rotate(
+                    angle: -0.012,
+                    child: Container(
+                      padding: const EdgeInsets.fromLTRB(34, 30, 34, 26),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFFF0E2C5).withValues(alpha: 0.94),
+                        borderRadius: BorderRadius.circular(5),
+                        border: Border.all(
+                          color: const Color(
+                            0xFF8A6847,
+                          ).withValues(alpha: 0.55),
+                        ),
+                        boxShadow: const [
+                          BoxShadow(
+                            color: Color(0x66000000),
+                            blurRadius: 18,
+                            offset: Offset(4, 9),
+                          ),
+                        ],
+                      ),
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          const Text(
+                            'WELCOME HOME',
+                            textAlign: TextAlign.center,
+                            style: TextStyle(
+                              color: Color(0xFF493323),
+                              fontSize: 27,
+                              fontWeight: FontWeight.w700,
+                              letterSpacing: 2.4,
+                            ),
+                          ),
+                          const SizedBox(height: 8),
+                          Container(
+                            width: 64,
+                            height: 1,
+                            color: const Color(
+                              0xFF8A6847,
+                            ).withValues(alpha: 0.55),
+                          ),
+                          const SizedBox(height: 20),
+                          const Text(
+                            'It’s been a while.\n'
+                            'I wonder what’s changed.',
+                            textAlign: TextAlign.center,
+                            style: TextStyle(
+                              color: Color(0xFF594331),
+                              fontSize: 17,
+                              height: 1.55,
+                              fontStyle: FontStyle.italic,
+                            ),
+                          ),
+                          const SizedBox(height: 26),
+                          AnimatedOpacity(
+                            opacity: _tapPromptVisible ? 0.72 : 0,
+                            duration: const Duration(milliseconds: 700),
+                            curve: Curves.easeOut,
+                            child: const Text(
+                              'Tap anywhere to continue',
+                              textAlign: TextAlign.center,
+                              style: TextStyle(
+                                color: Color(0xFF725A43),
+                                fontSize: 12,
+                                fontWeight: FontWeight.w600,
+                                letterSpacing: 0.7,
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildMilestoneOverlay() {
+    return Positioned(
+      top: 0,
+      left: 0,
+      right: 0,
+      child: SafeArea(
+        bottom: false,
+        child: IgnorePointer(
+          child: AnimatedOpacity(
+            opacity: _milestoneVisible ? 1 : 0,
+            duration: const Duration(milliseconds: 800),
+            curve: Curves.easeInOut,
+            child: Padding(
+              padding: const EdgeInsets.only(top: 24),
+              child: Column(
+                children: [
+                  const Text(
+                    'MILESTONE 1',
+                    textAlign: TextAlign.center,
+                    style: TextStyle(
+                      color: Color(0xFFE8D8B5),
+                      fontSize: 12,
+                      fontWeight: FontWeight.w600,
+                      letterSpacing: 3.2,
+                      shadows: [Shadow(color: Colors.black87, blurRadius: 8)],
+                    ),
+                  ),
+                  const SizedBox(height: 7),
+                  const Text(
+                    'ARRIVED HOME',
+                    textAlign: TextAlign.center,
+                    style: TextStyle(
+                      color: Color(0xFFFFF1D2),
+                      fontSize: 22,
+                      fontWeight: FontWeight.w700,
+                      letterSpacing: 2.2,
+                      shadows: [Shadow(color: Colors.black87, blurRadius: 9)],
+                    ),
+                  ),
+                  const SizedBox(height: 10),
+                  Container(
+                    width: 72,
+                    height: 1,
+                    color: const Color(0x99FFF1D2),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: Colors.black,
+      body: LayoutBuilder(
+        builder: (context, constraints) {
+          if (_phase == _ArrivalPhase.loading) {
+            return const SizedBox.expand();
+          }
+
+          final doorEnabled = _phase == _ArrivalPhase.exploring;
+
+          return Stack(
+            fit: StackFit.expand,
+            children: [
+              _buildStaticExterior(constraints, doorEnabled: doorEnabled),
+
+              if (_phase == _ArrivalPhase.welcome) _buildWelcomeOverlay(),
+
+              if (_phase == _ArrivalPhase.milestone) _buildMilestoneOverlay(),
+            ],
+          );
+        },
+      ),
+    );
+  }
+}

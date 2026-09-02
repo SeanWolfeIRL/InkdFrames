@@ -175,6 +175,31 @@ class AnimationExportService {
         outputPath,
       ).writeAsBytes(byteData.buffer.asUint8List(), flush: true);
 
+      if (Platform.isAndroid) {
+        await MediaStore.ensureInitialized();
+        MediaStore.appFolder = 'InkdFrames';
+
+        final saveInfo = await MediaStore().saveFile(
+          tempFilePath: outputPath,
+          dirType: DirType.photo,
+          dirName: DirName.pictures,
+        );
+
+        if (saveInfo == null) {
+          throw StateError(
+            'PNG created successfully but could not be saved to Pictures/InkdFrames.',
+          );
+        }
+
+        // The private file was only needed as the MediaStore source.
+        final privateFile = File(outputPath);
+        if (await privateFile.exists()) {
+          await privateFile.delete();
+        }
+
+        return 'Pictures/InkdFrames';
+      }
+
       return outputPath;
     } finally {
       image.dispose();

@@ -1,5 +1,6 @@
 import 'drawing_layer.dart';
 import 'layer_group.dart';
+import 'reference_layer.dart';
 import 'vector_stroke.dart';
 
 class InkdFramesProject {
@@ -16,11 +17,22 @@ class InkdFramesProject {
     this.referenceMediaType,
     List<DrawingLayer>? layers,
     List<LayerGroup>? layerGroups,
+    List<ReferenceLayer>? referenceLayers,
+    this.activeReferenceLayerId,
     List<int>? referenceFrameTimesMs,
     this.referenceVisible = true,
     this.referenceOpacity = 1.0,
   }) : layers = layers ?? _layersFromLegacyFrames(frames),
        layerGroups = layerGroups ?? <LayerGroup>[],
+       referenceLayers =
+           referenceLayers ??
+           _referenceLayersFromLegacy(
+             referenceMediaPath: referenceMediaPath,
+             referenceMediaType: referenceMediaType,
+             referenceVisible: referenceVisible,
+             referenceOpacity: referenceOpacity,
+             referenceFrameTimesMs: referenceFrameTimesMs ?? <int>[],
+           ),
        referenceFrameTimesMs = referenceFrameTimesMs ?? <int>[];
 
   factory InkdFramesProject.fromJson(Map<String, dynamic> json) {
@@ -28,6 +40,7 @@ class InkdFramesProject {
 
     final rawLayers = json['layers'];
     final rawLayerGroups = json['layerGroups'];
+    final rawReferenceLayers = json['referenceLayers'];
 
     final layers = rawLayers is List && rawLayers.isNotEmpty
         ? rawLayers
@@ -48,6 +61,34 @@ class InkdFramesProject {
               )
               .toList()
         : <LayerGroup>[];
+
+    final legacyReferenceFrameTimesMs = json['referenceFrameTimesMs'] is List
+        ? (json['referenceFrameTimesMs'] as List)
+              .map((time) => (time as num).toInt())
+              .toList()
+        : <int>[];
+
+    final referenceLayers =
+        rawReferenceLayers is List && rawReferenceLayers.isNotEmpty
+        ? rawReferenceLayers
+              .map(
+                (reference) => ReferenceLayer.fromJson(
+                  Map<String, dynamic>.from(reference as Map),
+                ),
+              )
+              .toList()
+        : _referenceLayersFromLegacy(
+            referenceMediaPath: json['referenceMediaPath'] as String?,
+            referenceMediaType: json['referenceMediaType'] as String?,
+            referenceVisible: json['referenceVisible'] as bool? ?? true,
+            referenceOpacity:
+                (json['referenceOpacity'] as num?)?.toDouble().clamp(
+                  0.0,
+                  1.0,
+                ) ??
+                1.0,
+            referenceFrameTimesMs: legacyReferenceFrameTimesMs,
+          );
 
     final frameCount = legacyFrames.isNotEmpty
         ? legacyFrames.length
@@ -80,11 +121,11 @@ class InkdFramesProject {
           (json['referenceOpacity'] as num?)?.toDouble().clamp(0.0, 1.0) ?? 1.0,
       layers: layers,
       layerGroups: layerGroups,
-      referenceFrameTimesMs: json['referenceFrameTimesMs'] is List
-          ? (json['referenceFrameTimesMs'] as List)
-                .map((time) => (time as num).toInt())
-                .toList()
-          : <int>[],
+      referenceLayers: referenceLayers,
+      activeReferenceLayerId:
+          json['activeReferenceLayerId'] as String? ??
+          (referenceLayers.isNotEmpty ? referenceLayers.first.id : null),
+      referenceFrameTimesMs: legacyReferenceFrameTimesMs,
     );
   }
 
@@ -100,6 +141,15 @@ class InkdFramesProject {
 
   final List<DrawingLayer> layers;
   final List<LayerGroup> layerGroups;
+
+  /// Persistent image/video reference layers.
+  ///
+  /// Older projects containing only referenceMediaPath/referenceMediaType are
+  /// automatically migrated into a single ReferenceLayer when loaded.
+  final List<ReferenceLayer> referenceLayers;
+
+  /// Reference currently driving video playback/scrubbing.
+  final String? activeReferenceLayerId;
 
   final List<int> frameDurations;
   final double canvasWidth;
@@ -132,6 +182,11 @@ class InkdFramesProject {
       'layers': layers.map((layer) => layer.toJson()).toList(),
       'layerGroups': layerGroups.map((group) => group.toJson()).toList(),
 
+      'referenceLayers': referenceLayers
+          .map((reference) => reference.toJson())
+          .toList(),
+      'activeReferenceLayerId': activeReferenceLayerId,
+
       'frameDurations': frameDurations,
       'canvasWidth': canvasWidth,
       'canvasHeight': canvasHeight,
@@ -160,6 +215,35 @@ class InkdFramesProject {
               .toList(),
         )
         .toList();
+  }
+
+  static List<ReferenceLayer> _referenceLayersFromLegacy({
+    required String? referenceMediaPath,
+    required String? referenceMediaType,
+    required bool referenceVisible,
+    required double referenceOpacity,
+    required List<int> referenceFrameTimesMs,
+  }) {
+    if (referenceMediaPath == null ||
+        referenceMediaPath.isEmpty ||
+        referenceMediaType == null ||
+        referenceMediaType.isEmpty) {
+      return <ReferenceLayer>[];
+    }
+
+    return <ReferenceLayer>[
+      ReferenceLayer(
+        id: 'reference_legacy',
+        name: referenceMediaType == 'video'
+            ? 'Video Reference'
+            : 'Image Reference',
+        mediaPath: referenceMediaPath,
+        mediaType: referenceMediaType,
+        visible: referenceVisible,
+        opacity: referenceOpacity,
+        frameTimesMs: List<int>.from(referenceFrameTimesMs),
+      ),
+    ];
   }
 
   static List<DrawingLayer> _layersFromLegacyFrames(

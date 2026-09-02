@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:math' as math;
 import 'dart:ui' as ui;
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter/rendering.dart';
@@ -12,6 +13,7 @@ import '../models/brush_preset.dart';
 import '../models/drawing_layer.dart';
 import '../models/inkdframes_project.dart';
 import '../models/layer_group.dart';
+import '../models/reference_layer.dart';
 import '../models/vector_point.dart';
 import '../models/vector_stroke.dart';
 import '../painters/animation_canvas_painter.dart';
@@ -65,6 +67,14 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
   final List<LayerGroup> _layerGroups = <LayerGroup>[];
   String? _activeLayerGroupId;
 
+  // Persistent reference-media layers.
+  //
+  // During the V1 migration the existing singular reference fields remain as
+  // a compatibility bridge for playback/scrubbing. They represent whichever
+  // ReferenceLayer is currently active.
+  final List<ReferenceLayer> _referenceLayers = <ReferenceLayer>[];
+  String? _activeReferenceLayerId;
+
   // Group context used when creating new drawing layers.
   String? _layerInsertionGroupId;
 
@@ -102,6 +112,9 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
 
   List<VectorPoint> _lassoPoints = const <VectorPoint>[];
   Map<String, Set<int>> _selectedTransformStrokes = <String, Set<int>>{};
+
+  String? _transformReferenceLayerId;
+  ReferenceLayer? _referenceTransformSnapshot;
 
   /// Temporary in-memory clipboard used by Transform copy/paste.
   final Map<String, List<VectorStroke>> _strokeClipboard =
@@ -221,6 +234,23 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
       _canvasHeight = widget.initialCanvasHeight;
       _referenceMediaPath = widget.initialReferenceMediaPath;
       _referenceMediaType = widget.initialReferenceMediaType;
+
+      if (_referenceMediaPath != null && _referenceMediaType != null) {
+        final initialReference = ReferenceLayer(
+          id: 'reference_${DateTime.now().microsecondsSinceEpoch}',
+          name: _referenceMediaType == 'video'
+              ? 'Video Reference'
+              : 'Image Reference',
+          mediaPath: _referenceMediaPath!,
+          mediaType: _referenceMediaType!,
+          visible: _referenceVisible,
+          opacity: _referenceOpacity,
+          frameTimesMs: List<int>.from(_referenceFrameTimesMs),
+        );
+
+        _referenceLayers.add(initialReference);
+        _activeReferenceLayerId = initialReference.id;
+      }
 
       if (_referenceMediaType == 'video') {
         WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -482,6 +512,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
 
   Future<void> _saveProject() async {
     _rebuildCompositeFrames();
+    _syncActiveReferenceLayerFromLegacyState();
 
     final project = InkdFramesProject(
       id: _projectId,
@@ -490,6 +521,8 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
       frames: _frames,
       layers: _layers,
       layerGroups: _layerGroups,
+      referenceLayers: _referenceLayers,
+      activeReferenceLayerId: _activeReferenceLayerId,
       frameDurations: _frameDurations,
       canvasWidth: _canvasWidth,
       canvasHeight: _canvasHeight,
@@ -518,6 +551,94 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
 
   String _generateProjectId() {
     return DateTime.now().microsecondsSinceEpoch.toString();
+  }
+
+  ReferenceLayer? get _activeReferenceLayer {
+    if (_referenceLayers.isEmpty) {
+      return null;
+    }
+
+    final activeId = _activeReferenceLayerId;
+
+    if (activeId != null) {
+      final index = _referenceLayers.indexWhere(
+        (reference) => reference.id == activeId,
+      );
+
+      if (index != -1) {
+        return _referenceLayers[index];
+      }
+    }
+
+    return _referenceLayers.first;
+  }
+
+  void _syncActiveReferenceLayerFromLegacyState() {
+    final path = _referenceMediaPath;
+    final type = _referenceMediaType;
+
+    if (path == null || path.isEmpty || type == null || type.isEmpty) {
+      return;
+    }
+
+    var activeId = _activeReferenceLayerId;
+
+    if (activeId == null) {
+      activeId = 'reference_${DateTime.now().microsecondsSinceEpoch}';
+      _activeReferenceLayerId = activeId;
+    }
+
+    final updated = ReferenceLayer(
+      id: activeId,
+      name: type == 'video' ? 'Video Reference' : 'Image Reference',
+      mediaPath: path,
+      mediaType: type,
+      visible: _referenceVisible,
+      opacity: _referenceOpacity,
+      frameTimesMs: List<int>.from(_referenceFrameTimesMs),
+    );
+
+    final index = _referenceLayers.indexWhere(
+      (reference) => reference.id == activeId,
+    );
+
+    if (index == -1) {
+      _referenceLayers.add(updated);
+      return;
+    }
+
+    final existing = _referenceLayers[index];
+
+    _referenceLayers[index] = existing.copyWith(
+      mediaPath: path,
+      mediaType: type,
+      visible: _referenceVisible,
+      opacity: _referenceOpacity,
+      frameTimesMs: List<int>.from(_referenceFrameTimesMs),
+    );
+  }
+
+  void _loadLegacyReferenceStateFromActiveLayer() {
+    final reference = _activeReferenceLayer;
+
+    if (reference == null) {
+      _referenceMediaPath = null;
+      _referenceMediaType = null;
+      _referenceVisible = true;
+      _referenceOpacity = 1.0;
+      _referenceFrameTimesMs.clear();
+      return;
+    }
+
+    _activeReferenceLayerId = reference.id;
+    _referenceMediaPath = reference.mediaPath;
+    _referenceMediaType = reference.mediaType;
+    _referenceVisible = reference.visible;
+    _referenceOpacity = reference.opacity;
+
+    _referenceFrameTimesMs
+      ..clear()
+      ..addAll(reference.frameTimesMs);
   }
 
   DrawingLayer get _activeLayer => _layers[_activeLayerIndex];
@@ -1885,14 +2006,19 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
       _canvasWidth = project.canvasWidth;
       _canvasHeight = project.canvasHeight;
       _canvasBackgroundColor = Color(project.canvasBackgroundColor);
-      _referenceMediaPath = project.referenceMediaPath;
-      _referenceMediaType = project.referenceMediaType;
-      _referenceVisible = project.referenceVisible;
-      _referenceOpacity = project.referenceOpacity;
-
-      _referenceFrameTimesMs
+      _referenceLayers
         ..clear()
-        ..addAll(project.referenceFrameTimesMs);
+        ..addAll(
+          project.referenceLayers.map(
+            (reference) => reference.copyWith(
+              frameTimesMs: List<int>.from(reference.frameTimesMs),
+            ),
+          ),
+        );
+
+      _activeReferenceLayerId = project.activeReferenceLayerId;
+
+      _loadLegacyReferenceStateFromActiveLayer();
 
       _selectedFrameIndex = 0;
       _draftStroke = const <VectorPoint>[];
@@ -2608,9 +2734,278 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     _startPlaybackTimer();
   }
 
+  ReferenceLayer? get _referenceTransformTarget {
+    final referenceId = _transformReferenceLayerId;
+
+    if (referenceId == null) {
+      return null;
+    }
+
+    final index = _referenceLayers.indexWhere(
+      (reference) => reference.id == referenceId,
+    );
+
+    if (index == -1) {
+      return null;
+    }
+
+    return _referenceLayers[index];
+  }
+
+  Offset get _referenceCanvasCenter {
+    return Offset(_canvasWidth / 2, _canvasHeight / 2);
+  }
+
+  Rect get _referenceBaseTransformBounds {
+    final shortestSide = math.min(_canvasWidth, _canvasHeight);
+
+    // Keep transform handles comfortably inside the canvas.
+    final inset = shortestSide * 0.06;
+
+    return Rect.fromLTWH(0, 0, _canvasWidth, _canvasHeight).deflate(inset);
+  }
+
+  Offset _referenceDisplayedCenter(ReferenceLayer reference) {
+    return _referenceCanvasCenter +
+        Offset(reference.offsetX, reference.offsetY);
+  }
+
+  Rect _referenceTransformBounds(ReferenceLayer reference) {
+    final baseBounds = _referenceBaseTransformBounds;
+    final baseCenter = _referenceCanvasCenter;
+
+    final cosAngle = math.cos(reference.rotation);
+    final sinAngle = math.sin(reference.rotation);
+
+    Offset transformPoint(Offset point) {
+      final localX = (point.dx - baseCenter.dx) * reference.scaleX;
+      final localY = (point.dy - baseCenter.dy) * reference.scaleY;
+
+      final rotatedX = (localX * cosAngle) - (localY * sinAngle);
+      final rotatedY = (localX * sinAngle) + (localY * cosAngle);
+
+      return Offset(
+        baseCenter.dx + reference.offsetX + rotatedX,
+        baseCenter.dy + reference.offsetY + rotatedY,
+      );
+    }
+
+    final points = <Offset>[
+      transformPoint(baseBounds.topLeft),
+      transformPoint(baseBounds.topRight),
+      transformPoint(baseBounds.bottomLeft),
+      transformPoint(baseBounds.bottomRight),
+    ];
+
+    final minX = points.map((point) => point.dx).reduce(math.min);
+    final minY = points.map((point) => point.dy).reduce(math.min);
+    final maxX = points.map((point) => point.dx).reduce(math.max);
+    final maxY = points.map((point) => point.dy).reduce(math.max);
+
+    return Rect.fromLTRB(minX, minY, maxX, maxY);
+  }
+
+  Rect? _transformSelectionBounds() {
+    final reference = _referenceTransformTarget;
+
+    if (reference != null) {
+      return _referenceTransformBounds(reference);
+    }
+
+    return _selectedStrokeBounds();
+  }
+
+  void _replaceReferenceTransform(ReferenceLayer updated) {
+    final index = _referenceLayers.indexWhere(
+      (reference) => reference.id == updated.id,
+    );
+
+    if (index == -1) {
+      return;
+    }
+
+    _referenceLayers[index] = updated;
+  }
+
+  void _moveReferenceTransform(Offset delta) {
+    final reference = _referenceTransformTarget;
+
+    if (reference == null) {
+      return;
+    }
+
+    final hasStoredPivot = reference.pivotX != null && reference.pivotY != null;
+
+    _replaceReferenceTransform(
+      reference.copyWith(
+        offsetX: reference.offsetX + delta.dx,
+        offsetY: reference.offsetY + delta.dy,
+        pivotX: hasStoredPivot
+            ? reference.pivotX! + delta.dx
+            : reference.pivotX,
+        pivotY: hasStoredPivot
+            ? reference.pivotY! + delta.dy
+            : reference.pivotY,
+      ),
+    );
+  }
+
+  void _setReferenceTransformPivot(Offset pivot) {
+    final reference = _referenceTransformTarget;
+
+    if (reference == null) {
+      return;
+    }
+
+    _replaceReferenceTransform(
+      reference.copyWith(pivotX: pivot.dx, pivotY: pivot.dy),
+    );
+  }
+
+  void _rotateReferenceTransform(
+    double angle,
+    Offset pivot,
+    ReferenceLayer snapshot,
+  ) {
+    final startCenter = _referenceDisplayedCenter(snapshot);
+
+    final relative = startCenter - pivot;
+    final cosAngle = math.cos(angle);
+    final sinAngle = math.sin(angle);
+
+    final rotatedCenter = Offset(
+      pivot.dx + (relative.dx * cosAngle) - (relative.dy * sinAngle),
+      pivot.dy + (relative.dx * sinAngle) + (relative.dy * cosAngle),
+    );
+
+    final newOffset = rotatedCenter - _referenceCanvasCenter;
+
+    _replaceReferenceTransform(
+      snapshot.copyWith(
+        offsetX: newOffset.dx,
+        offsetY: newOffset.dy,
+        rotation: snapshot.rotation + angle,
+      ),
+    );
+  }
+
+  void _scaleReferenceTransform(
+    double scaleX,
+    double scaleY,
+    Offset anchor,
+    ReferenceLayer snapshot,
+  ) {
+    final safeScaleX = scaleX.clamp(0.05, 20.0);
+    final safeScaleY = scaleY.clamp(0.05, 20.0);
+
+    final startCenter = _referenceDisplayedCenter(snapshot);
+
+    final newCenter = Offset(
+      anchor.dx + ((startCenter.dx - anchor.dx) * safeScaleX),
+      anchor.dy + ((startCenter.dy - anchor.dy) * safeScaleY),
+    );
+
+    final newOffset = newCenter - _referenceCanvasCenter;
+
+    _replaceReferenceTransform(
+      snapshot.copyWith(
+        offsetX: newOffset.dx,
+        offsetY: newOffset.dy,
+        scaleX: snapshot.scaleX * safeScaleX,
+        scaleY: snapshot.scaleY * safeScaleY,
+      ),
+    );
+  }
+
+  Future<void> _enterReferenceTransform(String referenceId) async {
+    await _selectReferenceLayer(referenceId);
+
+    if (!mounted) {
+      return;
+    }
+
+    final index = _referenceLayers.indexWhere(
+      (reference) => reference.id == referenceId,
+    );
+
+    if (index == -1) {
+      return;
+    }
+
+    final reference = _referenceLayers[index];
+
+    setState(() {
+      _draftStroke = const <VectorPoint>[];
+      _draftTextureStrokes = <VectorStroke>[];
+      _draftStampStrokes = <VectorStroke>[];
+
+      _clearFillLasso();
+      _clearShapeDraft();
+      _clearTransformSelection();
+
+      _activeLayerGroupId = null;
+
+      _isEraserActive = false;
+      _isFillToolActive = false;
+      _isShapeToolActive = false;
+
+      _stampBrushActive = false;
+      _stampBrushItem = null;
+
+      _isTransformActive = true;
+      _transformToolbarExpanded = true;
+
+      _transformReferenceLayerId = referenceId;
+
+      final bounds = _referenceTransformBounds(reference);
+
+      if (reference.pivotX != null && reference.pivotY != null) {
+        _transformPivot = Offset(reference.pivotX!, reference.pivotY!);
+      } else {
+        _transformPivot = bounds.center;
+      }
+
+      _isTransformPivotDragging = false;
+    });
+
+    HapticFeedback.mediumImpact();
+  }
+
+  void _flipReferenceTransformHorizontally() {
+    final reference = _referenceTransformTarget;
+
+    if (reference == null) {
+      return;
+    }
+
+    final bounds = _referenceTransformBounds(reference);
+    final pivot = _effectiveTransformPivot(bounds);
+
+    final center = _referenceDisplayedCenter(reference);
+
+    final mirroredCenter = Offset(pivot.dx - (center.dx - pivot.dx), center.dy);
+
+    final newOffset = mirroredCenter - _referenceCanvasCenter;
+
+    setState(() {
+      _replaceReferenceTransform(
+        reference.copyWith(
+          offsetX: newOffset.dx,
+          offsetY: newOffset.dy,
+          scaleX: -reference.scaleX,
+        ),
+      );
+    });
+
+    _scheduleAutosave();
+    HapticFeedback.lightImpact();
+  }
+
   void _clearTransformSelection() {
     _lassoPoints = const <VectorPoint>[];
     _selectedTransformStrokes = <String, Set<int>>{};
+    _transformReferenceLayerId = null;
+    _referenceTransformSnapshot = null;
     _transformLastPosition = null;
     _transformScaleAnchor = null;
     _transformScaleStartDistance = null;
@@ -2904,6 +3299,11 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
   }
 
   void _flipSelectedStrokesHorizontally() {
+    if (_transformReferenceLayerId != null) {
+      _flipReferenceTransformHorizontally();
+      return;
+    }
+
     if (_selectedTransformStrokes.isEmpty) {
       return;
     }
@@ -4362,7 +4762,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     }
 
     if (_isTransformActive) {
-      final bounds = _selectedStrokeBounds();
+      final bounds = _transformSelectionBounds();
 
       if (bounds != null) {
         if (_transformPivotHit(canvasPosition, bounds)) {
@@ -4378,10 +4778,12 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
         }
 
         if (_transformRotationHandleHit(canvasPosition, bounds)) {
-          if (_activeLayerGroup == null) {
-            _saveUndoState();
-          } else {
-            _saveGroupUndoState();
+          if (_transformReferenceLayerId == null) {
+            if (_activeLayerGroup == null) {
+              _saveUndoState();
+            } else {
+              _saveGroupUndoState();
+            }
           }
 
           final pivot = _effectiveTransformPivot(bounds);
@@ -4397,7 +4799,13 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
               canvasPosition,
               pivot,
             );
-            _transformRotationSnapshot = _selectedTransformSnapshot();
+            if (_transformReferenceLayerId != null) {
+              _referenceTransformSnapshot = _referenceTransformTarget;
+              _transformRotationSnapshot = null;
+            } else {
+              _referenceTransformSnapshot = null;
+              _transformRotationSnapshot = _selectedTransformSnapshot();
+            }
           });
 
           return;
@@ -4406,10 +4814,12 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
         final corner = _transformCornerHit(canvasPosition, bounds);
 
         if (corner != null) {
-          if (_activeLayerGroup == null) {
-            _saveUndoState();
-          } else {
-            _saveGroupUndoState();
+          if (_transformReferenceLayerId == null) {
+            if (_activeLayerGroup == null) {
+              _saveUndoState();
+            } else {
+              _saveGroupUndoState();
+            }
           }
 
           final anchor = _oppositeTransformCorner(corner, bounds);
@@ -4426,7 +4836,13 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
             _transformScaleStartDistance = startDistance < 0.001
                 ? 0.001
                 : startDistance;
-            _transformScaleSnapshot = _selectedTransformSnapshot();
+            if (_transformReferenceLayerId != null) {
+              _referenceTransformSnapshot = _referenceTransformTarget;
+              _transformScaleSnapshot = null;
+            } else {
+              _referenceTransformSnapshot = null;
+              _transformScaleSnapshot = _selectedTransformSnapshot();
+            }
           });
 
           return;
@@ -4435,10 +4851,12 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
         final edgeHandle = _transformEdgeHandleHit(canvasPosition, bounds);
 
         if (edgeHandle != null) {
-          if (_activeLayerGroup == null) {
-            _saveUndoState();
-          } else {
-            _saveGroupUndoState();
+          if (_transformReferenceLayerId == null) {
+            if (_activeLayerGroup == null) {
+              _saveUndoState();
+            } else {
+              _saveGroupUndoState();
+            }
           }
 
           final anchor = _oppositeTransformEdge(edgeHandle, bounds);
@@ -4461,7 +4879,13 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                 ? 0.001
                 : startDistance;
 
-            _transformScaleSnapshot = _selectedTransformSnapshot();
+            if (_transformReferenceLayerId != null) {
+              _referenceTransformSnapshot = _referenceTransformTarget;
+              _transformScaleSnapshot = null;
+            } else {
+              _referenceTransformSnapshot = null;
+              _transformScaleSnapshot = _selectedTransformSnapshot();
+            }
           });
 
           return;
@@ -4481,7 +4905,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
           _isTransformRotating = false;
           _transformLastPosition = canvasPosition;
         });
-      } else {
+      } else if (_transformReferenceLayerId == null) {
         setState(() {
           _selectedTransformStrokes = <String, Set<int>>{};
           _transformPivot = null;
@@ -4579,6 +5003,10 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
       if (_isTransformPivotDragging) {
         setState(() {
           _transformPivot = canvasPosition;
+
+          if (_transformReferenceLayerId != null) {
+            _setReferenceTransformPivot(canvasPosition);
+          }
         });
 
         return;
@@ -4587,7 +5015,8 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
       if (_isTransformRotating &&
           _transformRotationCenter != null &&
           _transformRotationStartAngle != null &&
-          _transformRotationSnapshot != null) {
+          (_transformRotationSnapshot != null ||
+              _referenceTransformSnapshot != null)) {
         final currentAngle = _angleFromCenter(
           canvasPosition,
           _transformRotationCenter!,
@@ -4596,11 +5025,21 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
         final angle = currentAngle - _transformRotationStartAngle!;
 
         setState(() {
-          _rotateSelectedStrokes(
-            angle,
-            _transformRotationCenter!,
-            _transformRotationSnapshot!,
-          );
+          final referenceSnapshot = _referenceTransformSnapshot;
+
+          if (_transformReferenceLayerId != null && referenceSnapshot != null) {
+            _rotateReferenceTransform(
+              angle,
+              _transformRotationCenter!,
+              referenceSnapshot,
+            );
+          } else if (_transformRotationSnapshot != null) {
+            _rotateSelectedStrokes(
+              angle,
+              _transformRotationCenter!,
+              _transformRotationSnapshot!,
+            );
+          }
         });
 
         return;
@@ -4609,7 +5048,8 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
       if (_isTransformScaling &&
           _transformScaleAnchor != null &&
           _transformScaleStartDistance != null &&
-          _transformScaleSnapshot != null) {
+          (_transformScaleSnapshot != null ||
+              _referenceTransformSnapshot != null)) {
         double scaleX = 1.0;
         double scaleY = 1.0;
 
@@ -4634,12 +5074,23 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
         }
 
         setState(() {
-          _scaleSelectedStrokes(
-            scaleX,
-            scaleY,
-            _transformScaleAnchor!,
-            _transformScaleSnapshot!,
-          );
+          final referenceSnapshot = _referenceTransformSnapshot;
+
+          if (_transformReferenceLayerId != null && referenceSnapshot != null) {
+            _scaleReferenceTransform(
+              scaleX,
+              scaleY,
+              _transformScaleAnchor!,
+              referenceSnapshot,
+            );
+          } else if (_transformScaleSnapshot != null) {
+            _scaleSelectedStrokes(
+              scaleX,
+              scaleY,
+              _transformScaleAnchor!,
+              _transformScaleSnapshot!,
+            );
+          }
         });
 
         return;
@@ -4649,7 +5100,11 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
         final delta = canvasPosition - _transformLastPosition!;
 
         setState(() {
-          _moveSelectedStrokes(delta);
+          if (_transformReferenceLayerId != null) {
+            _moveReferenceTransform(delta);
+          } else {
+            _moveSelectedStrokes(delta);
+          }
 
           if (_transformPivot != null) {
             _transformPivot = _transformPivot! + delta;
@@ -4661,7 +5116,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
         return;
       }
 
-      if (_lassoPoints.isNotEmpty) {
+      if (_transformReferenceLayerId == null && _lassoPoints.isNotEmpty) {
         final last = _lassoPoints.last;
         final dx = canvasPosition.dx - last.dx;
         final dy = canvasPosition.dy - last.dy;
@@ -4848,17 +5303,19 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
           _transformRotationCenter = null;
           _transformRotationStartAngle = null;
           _transformRotationSnapshot = null;
+          _referenceTransformSnapshot = null;
         } else if (_isTransformScaling) {
           _isTransformScaling = false;
           _transformScaleAnchor = null;
           _transformScaleStartDistance = null;
           _transformScaleSnapshot = null;
+          _referenceTransformSnapshot = null;
           _transformScaleHorizontalOnly = false;
           _transformScaleVerticalOnly = false;
         } else if (_isTransformDragging) {
           _isTransformDragging = false;
           _transformLastPosition = null;
-        } else {
+        } else if (_transformReferenceLayerId == null) {
           _finishLassoSelection();
         }
       });
@@ -5330,6 +5787,507 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     );
   }
 
+  Future<void> _selectReferenceLayer(String referenceId) async {
+    final index = _referenceLayers.indexWhere(
+      (reference) => reference.id == referenceId,
+    );
+
+    if (index == -1) {
+      return;
+    }
+
+    if (_activeReferenceLayerId == referenceId) {
+      return;
+    }
+
+    // Preserve any active video position/frame mapping/opacity changes before
+    // handing the compatibility bridge to another ReferenceLayer.
+    _syncActiveReferenceLayerFromLegacyState();
+
+    final oldController = _videoController;
+
+    if (oldController != null && oldController.value.isPlaying) {
+      await oldController.pause();
+    }
+
+    if (!mounted) {
+      return;
+    }
+
+    setState(() {
+      _activeReferenceLayerId = referenceId;
+      _loadLegacyReferenceStateFromActiveLayer();
+
+      _activeLayerGroupId = null;
+      _mergeSelectedLayerIds.clear();
+
+      _isVideoScrubbing = false;
+      _videoReady = false;
+    });
+
+    if (_referenceMediaType == 'video') {
+      await _initializeVideoReference();
+    } else {
+      if (mounted) {
+        setState(() {
+          _videoController = null;
+          _videoReady = false;
+        });
+      }
+
+      await oldController?.dispose();
+    }
+
+    _scheduleAutosave();
+  }
+
+  void _setReferenceLayerVisible(String referenceId, bool visible) {
+    final index = _referenceLayers.indexWhere(
+      (reference) => reference.id == referenceId,
+    );
+
+    if (index == -1) {
+      return;
+    }
+
+    setState(() {
+      _referenceLayers[index] = _referenceLayers[index].copyWith(
+        visible: visible,
+      );
+
+      if (_activeReferenceLayerId == referenceId) {
+        _referenceVisible = visible;
+      }
+    });
+
+    _scheduleAutosave();
+  }
+
+  void _setReferenceLayerOpacity(String referenceId, double opacity) {
+    final index = _referenceLayers.indexWhere(
+      (reference) => reference.id == referenceId,
+    );
+
+    if (index == -1) {
+      return;
+    }
+
+    final safeOpacity = opacity.clamp(0.0, 1.0);
+
+    setState(() {
+      _referenceLayers[index] = _referenceLayers[index].copyWith(
+        opacity: safeOpacity,
+      );
+
+      if (_activeReferenceLayerId == referenceId) {
+        _referenceOpacity = safeOpacity;
+      }
+    });
+
+    _scheduleAutosave();
+  }
+
+  Future<void> _addReferenceLayer(String mediaType) async {
+    final pickedFile = await FilePicker.pickFile(
+      type: mediaType == 'image' ? FileType.image : FileType.video,
+    );
+
+    if (pickedFile == null || !mounted) {
+      return;
+    }
+
+    final sourcePath = pickedFile.path;
+
+    if (sourcePath == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Could not access that file.')),
+      );
+      return;
+    }
+
+    try {
+      final referenceDirectory = Platform.isLinux
+          ? Directory('/tmp/inkdframes_reference_media')
+          : Directory('/data/user/0/com.inkdframes.app/files/reference_media');
+
+      if (!await referenceDirectory.exists()) {
+        await referenceDirectory.create(recursive: true);
+      }
+
+      final sourceName = pickedFile.name;
+      final extension = sourceName.contains('.')
+          ? '.${sourceName.split('.').last}'
+          : '';
+
+      final storedPath =
+          '${referenceDirectory.path}/'
+          '${DateTime.now().microsecondsSinceEpoch}$extension';
+
+      await File(sourcePath).copy(storedPath);
+
+      if (!mounted) {
+        return;
+      }
+
+      // Preserve the current active reference before switching.
+      _syncActiveReferenceLayerFromLegacyState();
+
+      final reference = ReferenceLayer(
+        id: 'reference_${DateTime.now().microsecondsSinceEpoch}',
+        name: sourceName.replaceFirst(RegExp(r'\.[^.]+$'), ''),
+        mediaPath: storedPath,
+        mediaType: mediaType,
+      );
+
+      setState(() {
+        // References are currently their own stack inside the reference area.
+        // New references are placed at the top of that stack.
+        _referenceLayers.insert(0, reference);
+
+        _activeReferenceLayerId = reference.id;
+        _loadLegacyReferenceStateFromActiveLayer();
+
+        _activeLayerGroupId = null;
+        _mergeSelectedLayerIds.clear();
+
+        _isVideoScrubbing = false;
+        _videoReady = false;
+      });
+
+      if (mediaType == 'video') {
+        await _initializeVideoReference();
+      } else {
+        final oldController = _videoController;
+
+        if (mounted) {
+          setState(() {
+            _videoController = null;
+            _videoReady = false;
+          });
+        }
+
+        await oldController?.dispose();
+      }
+
+      _scheduleAutosave();
+
+      if (!mounted) {
+        return;
+      }
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            mediaType == 'video'
+                ? 'Video reference added 🎞️'
+                : 'Image reference added 🖼️',
+          ),
+        ),
+      );
+    } catch (error, stackTrace) {
+      debugPrint('❌ Reference import failed: $error');
+      debugPrint(stackTrace.toString());
+
+      if (!mounted) {
+        return;
+      }
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Could not add that reference.')),
+      );
+    }
+  }
+
+  Future<void> _renameReferenceLayer(ReferenceLayer reference) async {
+    final controller = TextEditingController(text: reference.name);
+
+    final result = await showDialog<String>(
+      context: context,
+      builder: (dialogContext) {
+        return AlertDialog(
+          title: const Text('Rename Reference'),
+          content: TextField(
+            controller: controller,
+            autofocus: true,
+            textCapitalization: TextCapitalization.words,
+            decoration: const InputDecoration(labelText: 'Reference name'),
+            onSubmitted: (value) {
+              final trimmed = value.trim();
+
+              if (trimmed.isNotEmpty) {
+                Navigator.pop(dialogContext, trimmed);
+              }
+            },
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(dialogContext),
+              child: const Text('Cancel'),
+            ),
+            FilledButton(
+              onPressed: () {
+                final trimmed = controller.text.trim();
+
+                if (trimmed.isNotEmpty) {
+                  Navigator.pop(dialogContext, trimmed);
+                }
+              },
+              child: const Text('Rename'),
+            ),
+          ],
+        );
+      },
+    );
+
+    controller.dispose();
+
+    if (result == null || !mounted) {
+      return;
+    }
+
+    final index = _referenceLayers.indexWhere(
+      (item) => item.id == reference.id,
+    );
+
+    if (index == -1) {
+      return;
+    }
+
+    setState(() {
+      _referenceLayers[index] = _referenceLayers[index].copyWith(name: result);
+    });
+
+    _scheduleAutosave();
+  }
+
+  Future<void> _deleteReferenceLayer(ReferenceLayer reference) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) {
+        return AlertDialog(
+          title: const Text('Delete Reference?'),
+          content: Text(
+            'Remove "${reference.name}" from this project?\n\n'
+            'The original media file will not be deleted.',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(dialogContext, false),
+              child: const Text('Cancel'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(dialogContext, true),
+              child: const Text('Delete'),
+            ),
+          ],
+        );
+      },
+    );
+
+    if (confirmed != true || !mounted) {
+      return;
+    }
+
+    final index = _referenceLayers.indexWhere(
+      (item) => item.id == reference.id,
+    );
+
+    if (index == -1) {
+      return;
+    }
+
+    final deletingActive = _activeReferenceLayerId == reference.id;
+
+    if (!deletingActive) {
+      setState(() {
+        _referenceLayers.removeAt(index);
+      });
+
+      _scheduleAutosave();
+      return;
+    }
+
+    // Preserve the active compatibility state before removing its layer.
+    _syncActiveReferenceLayerFromLegacyState();
+
+    final oldController = _videoController;
+
+    if (oldController != null && oldController.value.isPlaying) {
+      await oldController.pause();
+    }
+
+    if (!mounted) {
+      return;
+    }
+
+    setState(() {
+      _referenceLayers.removeWhere((item) => item.id == reference.id);
+
+      _activeReferenceLayerId = _referenceLayers.isEmpty
+          ? null
+          : _referenceLayers.first.id;
+
+      _loadLegacyReferenceStateFromActiveLayer();
+
+      _isVideoScrubbing = false;
+      _videoReady = false;
+    });
+
+    if (_referenceMediaType == 'video') {
+      await _initializeVideoReference();
+    } else {
+      if (mounted) {
+        setState(() {
+          _videoController = null;
+          _videoReady = false;
+        });
+      }
+
+      await oldController?.dispose();
+    }
+
+    _scheduleAutosave();
+
+    if (!mounted) {
+      return;
+    }
+
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(SnackBar(content: Text('${reference.name} removed')));
+  }
+
+  Widget _buildReferenceLayerCard(ReferenceLayer reference) {
+    final selected = _activeReferenceLayerId == reference.id;
+
+    return Container(
+      margin: const EdgeInsets.fromLTRB(6, 4, 6, 0),
+      decoration: BoxDecoration(
+        color: selected
+            ? Colors.amberAccent.withValues(alpha: 0.10)
+            : Colors.transparent,
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(
+          color: selected ? Colors.amberAccent : Colors.white12,
+        ),
+      ),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(10),
+        onTap: _isPlaying
+            ? null
+            : () {
+                unawaited(_selectReferenceLayer(reference.id));
+              },
+        onLongPress: _isPlaying
+            ? null
+            : () {
+                unawaited(_enterReferenceTransform(reference.id));
+              },
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Row(
+              children: [
+                IconButton(
+                  tooltip: reference.visible
+                      ? 'Hide Reference'
+                      : 'Show Reference',
+                  visualDensity: VisualDensity.compact,
+                  onPressed: () {
+                    _setReferenceLayerVisible(reference.id, !reference.visible);
+                  },
+                  icon: Icon(
+                    reference.visible ? Icons.visibility : Icons.visibility_off,
+                    size: 20,
+                  ),
+                ),
+                Icon(
+                  reference.mediaType == 'video'
+                      ? Icons.movie_outlined
+                      : Icons.image_outlined,
+                  size: 19,
+                  color: selected ? Colors.amberAccent : Colors.white70,
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(reference.name, overflow: TextOverflow.ellipsis),
+                ),
+                if (selected)
+                  const Padding(
+                    padding: EdgeInsets.only(left: 4),
+                    child: Icon(
+                      Icons.adjust,
+                      size: 16,
+                      color: Colors.amberAccent,
+                    ),
+                  ),
+                PopupMenuButton<String>(
+                  tooltip: 'Reference Options',
+                  enabled: !_isPlaying,
+                  onSelected: (value) {
+                    if (value == 'rename') {
+                      unawaited(_renameReferenceLayer(reference));
+                    } else if (value == 'delete') {
+                      unawaited(_deleteReferenceLayer(reference));
+                    }
+                  },
+                  itemBuilder: (context) => const [
+                    PopupMenuItem<String>(
+                      value: 'rename',
+                      child: ListTile(
+                        dense: true,
+                        contentPadding: EdgeInsets.zero,
+                        leading: Icon(Icons.edit_outlined),
+                        title: Text('Rename'),
+                      ),
+                    ),
+                    PopupMenuItem<String>(
+                      value: 'delete',
+                      child: ListTile(
+                        dense: true,
+                        contentPadding: EdgeInsets.zero,
+                        leading: Icon(Icons.delete_outline),
+                        title: Text('Delete'),
+                      ),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(12, 0, 10, 2),
+              child: Row(
+                children: [
+                  const SizedBox(
+                    width: 50,
+                    child: Text('Opacity', style: TextStyle(fontSize: 11)),
+                  ),
+                  Expanded(
+                    child: Slider(
+                      value: reference.opacity,
+                      min: 0,
+                      max: 1,
+                      onChanged: (value) {
+                        _setReferenceLayerOpacity(reference.id, value);
+                      },
+                    ),
+                  ),
+                  SizedBox(
+                    width: 38,
+                    child: Text(
+                      '${(reference.opacity * 100).round()}%',
+                      style: const TextStyle(fontSize: 10),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   List<Widget> _buildLayerPanelEntries() {
     final widgets = <Widget>[];
 
@@ -5342,6 +6300,19 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
 
       if (_groupContainingLayer(layer.id) == null) {
         widgets.add(_buildDrawingLayerCard(index, indented: false));
+      }
+    }
+
+    if (_referenceLayers.isNotEmpty) {
+      widgets.add(
+        const Padding(
+          padding: EdgeInsets.symmetric(vertical: 5),
+          child: Divider(height: 1),
+        ),
+      );
+
+      for (final reference in _referenceLayers) {
+        widgets.add(_buildReferenceLayerCard(reference));
       }
     }
 
@@ -5675,6 +6646,81 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     );
   }
 
+  Widget _buildReferenceTransformWidget(
+    ReferenceLayer reference,
+    Widget child,
+  ) {
+    return Transform.translate(
+      offset: Offset(reference.offsetX, reference.offsetY),
+      child: Transform.rotate(
+        angle: reference.rotation,
+        alignment: Alignment.center,
+        child: Transform.scale(
+          scaleX: reference.scaleX,
+          scaleY: reference.scaleY,
+          alignment: Alignment.center,
+          child: child,
+        ),
+      ),
+    );
+  }
+
+  Widget _buildActiveVideoReferenceWidget() {
+    final reference = _activeReferenceLayer;
+    final controller = _videoController;
+
+    if (reference == null || controller == null) {
+      return const SizedBox.shrink();
+    }
+
+    return _buildReferenceTransformWidget(
+      reference,
+      Opacity(
+        opacity: reference.opacity,
+        child: FittedBox(
+          fit: BoxFit.contain,
+          child: SizedBox(
+            width: controller.value.size.width,
+            height: controller.value.size.height,
+            child: VideoPlayer(controller),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildImageReferenceWidget(ReferenceLayer reference) {
+    return _buildReferenceTransformWidget(
+      reference,
+      Opacity(
+        opacity: reference.opacity,
+        child: Image.file(
+          File(reference.mediaPath),
+          fit: BoxFit.contain,
+          errorBuilder: (context, error, stackTrace) {
+            return const Center(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(
+                    Icons.broken_image_outlined,
+                    size: 48,
+                    color: Colors.white54,
+                  ),
+                  SizedBox(height: 8),
+                  Text(
+                    'Reference image unavailable',
+                    style: TextStyle(color: Colors.white54),
+                  ),
+                ],
+              ),
+            );
+          },
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final previousFrameStrokes = _getPreviousFrameStrokes();
@@ -5784,74 +6830,24 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                                             ColoredBox(
                                               color: _canvasBackgroundColor,
                                             ),
-                                            if (_referenceVisible &&
-                                                _referenceMediaType ==
+                                            if (_referenceMediaType ==
                                                     'video' &&
                                                 _videoReady &&
-                                                _videoController != null)
-                                              Opacity(
-                                                opacity: _referenceOpacity,
-                                                child: FittedBox(
-                                                  fit: BoxFit.contain,
-                                                  child: SizedBox(
-                                                    width: _videoController!
-                                                        .value
-                                                        .size
-                                                        .width,
-                                                    height: _videoController!
-                                                        .value
-                                                        .size
-                                                        .height,
-                                                    child: VideoPlayer(
-                                                      _videoController!,
-                                                    ),
-                                                  ),
+                                                _videoController != null &&
+                                                _activeReferenceLayer != null &&
+                                                _activeReferenceLayer!.visible)
+                                              _buildActiveVideoReferenceWidget(),
+                                            for (final reference
+                                                in _referenceLayers)
+                                              if (reference.visible &&
+                                                  reference.mediaType ==
+                                                      'image' &&
+                                                  reference
+                                                      .mediaPath
+                                                      .isNotEmpty)
+                                                _buildImageReferenceWidget(
+                                                  reference,
                                                 ),
-                                              ),
-                                            if (_referenceVisible &&
-                                                _referenceMediaType ==
-                                                    'image' &&
-                                                _referenceMediaPath != null)
-                                              Opacity(
-                                                opacity: _referenceOpacity,
-                                                child: Image.file(
-                                                  File(_referenceMediaPath!),
-                                                  fit: BoxFit.contain,
-                                                  errorBuilder:
-                                                      (
-                                                        context,
-                                                        error,
-                                                        stackTrace,
-                                                      ) {
-                                                        return const Center(
-                                                          child: Column(
-                                                            mainAxisSize:
-                                                                MainAxisSize
-                                                                    .min,
-                                                            children: [
-                                                              Icon(
-                                                                Icons
-                                                                    .broken_image_outlined,
-                                                                size: 48,
-                                                                color: Colors
-                                                                    .white54,
-                                                              ),
-                                                              SizedBox(
-                                                                height: 8,
-                                                              ),
-                                                              Text(
-                                                                'Reference image unavailable',
-                                                                style: TextStyle(
-                                                                  color: Colors
-                                                                      .white54,
-                                                                ),
-                                                              ),
-                                                            ],
-                                                          ),
-                                                        );
-                                                      },
-                                                ),
-                                              ),
                                             CustomPaint(
                                               painter: AnimationCanvasPainter(
                                                 strokes: <VectorStroke>[
@@ -5938,7 +6934,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                                                   painter: _TransformOverlayPainter(
                                                     lassoPoints: _lassoPoints,
                                                     selectionBounds:
-                                                        _selectedStrokeBounds(),
+                                                        _transformSelectionBounds(),
                                                     pivot: _transformPivot,
                                                   ),
                                                   child:
@@ -7479,6 +8475,54 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                                               ),
                                             ),
                                           ),
+                                          PopupMenuButton<String>(
+                                            tooltip: 'Add Reference',
+                                            enabled: !_isPlaying,
+                                            icon: const Icon(
+                                              Icons.perm_media_outlined,
+                                            ),
+                                            onSelected: (value) {
+                                              if (value == 'image') {
+                                                unawaited(
+                                                  _addReferenceLayer('image'),
+                                                );
+                                              } else if (value == 'video') {
+                                                unawaited(
+                                                  _addReferenceLayer('video'),
+                                                );
+                                              }
+                                            },
+                                            itemBuilder: (context) => const [
+                                              PopupMenuItem<String>(
+                                                value: 'image',
+                                                child: ListTile(
+                                                  dense: true,
+                                                  contentPadding:
+                                                      EdgeInsets.zero,
+                                                  leading: Icon(
+                                                    Icons.image_outlined,
+                                                  ),
+                                                  title: Text(
+                                                    'Add Image Reference',
+                                                  ),
+                                                ),
+                                              ),
+                                              PopupMenuItem<String>(
+                                                value: 'video',
+                                                child: ListTile(
+                                                  dense: true,
+                                                  contentPadding:
+                                                      EdgeInsets.zero,
+                                                  leading: Icon(
+                                                    Icons.movie_outlined,
+                                                  ),
+                                                  title: Text(
+                                                    'Add Video Reference',
+                                                  ),
+                                                ),
+                                              ),
+                                            ],
+                                          ),
                                           IconButton(
                                             tooltip: 'Add Layer Group',
                                             visualDensity:
@@ -7519,7 +8563,9 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                                           if (!_isVideoScrubbing)
                                             ..._buildLayerPanelEntries(),
 
-                                          if (_referenceMediaPath != null) ...[
+                                          if (_referenceMediaType == 'video' &&
+                                              _videoReady &&
+                                              _videoController != null) ...[
                                             if (!_isVideoScrubbing)
                                               const Padding(
                                                 padding: EdgeInsets.symmetric(
@@ -7549,120 +8595,6 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                                               child: Column(
                                                 mainAxisSize: MainAxisSize.min,
                                                 children: [
-                                                  if (!_isVideoScrubbing)
-                                                    Row(
-                                                      children: [
-                                                        IconButton(
-                                                          tooltip:
-                                                              _referenceVisible
-                                                              ? 'Hide Reference'
-                                                              : 'Show Reference',
-                                                          visualDensity:
-                                                              VisualDensity
-                                                                  .compact,
-                                                          onPressed: () {
-                                                            setState(() {
-                                                              _referenceVisible =
-                                                                  !_referenceVisible;
-                                                            });
-                                                            _scheduleAutosave();
-                                                          },
-                                                          icon: Icon(
-                                                            _referenceVisible
-                                                                ? Icons
-                                                                      .visibility
-                                                                : Icons
-                                                                      .visibility_off,
-                                                            size: 20,
-                                                          ),
-                                                        ),
-                                                        Icon(
-                                                          _referenceMediaType ==
-                                                                  'video'
-                                                              ? Icons
-                                                                    .movie_outlined
-                                                              : Icons
-                                                                    .image_outlined,
-                                                          size: 19,
-                                                          color: Colors.white70,
-                                                        ),
-                                                        const SizedBox(
-                                                          width: 8,
-                                                        ),
-                                                        Expanded(
-                                                          child: Text(
-                                                            _referenceMediaType ==
-                                                                    'video'
-                                                                ? 'Video Reference'
-                                                                : 'Image Reference',
-                                                            overflow:
-                                                                TextOverflow
-                                                                    .ellipsis,
-                                                          ),
-                                                        ),
-                                                        const Padding(
-                                                          padding:
-                                                              EdgeInsets.only(
-                                                                right: 10,
-                                                              ),
-                                                          child: Icon(
-                                                            Icons.lock_outline,
-                                                            size: 17,
-                                                            color:
-                                                                Colors.white38,
-                                                          ),
-                                                        ),
-                                                      ],
-                                                    ),
-                                                  if (!_isVideoScrubbing)
-                                                    Padding(
-                                                      padding:
-                                                          const EdgeInsets.fromLTRB(
-                                                            12,
-                                                            0,
-                                                            10,
-                                                            2,
-                                                          ),
-                                                      child: Row(
-                                                        children: [
-                                                          const SizedBox(
-                                                            width: 50,
-                                                            child: Text(
-                                                              'Opacity',
-                                                              style: TextStyle(
-                                                                fontSize: 11,
-                                                              ),
-                                                            ),
-                                                          ),
-                                                          Expanded(
-                                                            child: Slider(
-                                                              value:
-                                                                  _referenceOpacity,
-                                                              min: 0,
-                                                              max: 1,
-                                                              onChanged: (value) {
-                                                                setState(() {
-                                                                  _referenceOpacity =
-                                                                      value;
-                                                                });
-                                                                _scheduleAutosave();
-                                                              },
-                                                            ),
-                                                          ),
-                                                          SizedBox(
-                                                            width: 38,
-                                                            child: Text(
-                                                              '${(_referenceOpacity * 100).round()}%',
-                                                              style:
-                                                                  const TextStyle(
-                                                                    fontSize:
-                                                                        10,
-                                                                  ),
-                                                            ),
-                                                          ),
-                                                        ],
-                                                      ),
-                                                    ),
                                                   if (_referenceMediaType ==
                                                           'video' &&
                                                       _videoReady &&
@@ -8173,7 +9105,9 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                                   visualDensity: VisualDensity.compact,
                                   onPressed:
                                       _isPlaying ||
-                                          _selectedTransformStrokes.isEmpty
+                                          (_selectedTransformStrokes.isEmpty &&
+                                              _transformReferenceLayerId ==
+                                                  null)
                                       ? null
                                       : _flipSelectedStrokesHorizontally,
                                   icon: const Icon(Icons.flip),
