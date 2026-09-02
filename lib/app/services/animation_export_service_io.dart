@@ -1,10 +1,12 @@
 import 'dart:io';
+import 'dart:math' as math;
 import 'dart:ui' as ui;
 
 import 'package:ffmpeg_kit_flutter_new_min_gpl/ffmpeg_kit.dart';
 import 'package:ffmpeg_kit_flutter_new_min_gpl/return_code.dart';
 import 'package:media_store_plus/media_store_plus.dart';
 
+import '../models/vector_point.dart';
 import '../models/vector_stroke.dart';
 
 class AnimationExportService {
@@ -137,14 +139,53 @@ class AnimationExportService {
       throw StateError('Cannot export an empty asset.');
     }
 
-    final width = canvasWidth.round();
-    final height = canvasHeight.round();
+    double? minX;
+    double? minY;
+    double? maxX;
+    double? maxY;
+    double maximumStrokeWidth = 0;
+
+    for (final stroke in strokes) {
+      if (stroke.points.isEmpty) {
+        continue;
+      }
+
+      maximumStrokeWidth = math.max(maximumStrokeWidth, stroke.strokeWidth);
+
+      for (final point in stroke.points) {
+        minX = minX == null ? point.dx : math.min(minX, point.dx);
+        minY = minY == null ? point.dy : math.min(minY, point.dy);
+        maxX = maxX == null ? point.dx : math.max(maxX, point.dx);
+        maxY = maxY == null ? point.dy : math.max(maxY, point.dy);
+      }
+    }
+
+    if (minX == null || minY == null || maxX == null || maxY == null) {
+      throw StateError('Cannot export an asset with no drawable points.');
+    }
+
+    final strokeRadius = maximumStrokeWidth / 2;
+
+    const safetyPadding = 4.0;
+
+    final padding = math.max(safetyPadding, strokeRadius + safetyPadding);
+
+    final contentWidth = math.max(1.0, maxX - minX);
+    final contentHeight = math.max(1.0, maxY - minY);
+
+    final width = math.max(1, (contentWidth + (padding * 2)).ceil());
+
+    final height = math.max(1, (contentHeight + (padding * 2)).ceil());
 
     final recorder = ui.PictureRecorder();
     final canvas = ui.Canvas(recorder);
 
     // Intentionally no background fill.
     // PNG assets export with transparency.
+
+    // Translate the original canvas-space artwork into a compact
+    // asset-local image while leaving the source strokes unchanged.
+    canvas.translate(-minX + padding, -minY + padding);
 
     for (final stroke in strokes) {
       _paintStroke(canvas, stroke);
@@ -246,10 +287,155 @@ class AnimationExportService {
     }
   }
 
+  List<VectorPoint> _smoothPoints(List<VectorPoint> source) {
+    if (source.length < 3) {
+      return source;
+    }
+
+    final smoothed = <VectorPoint>[source.first];
+
+    for (var i = 1; i < source.length - 1; i++) {
+      final previous = source[i - 1];
+      final current = source[i];
+      final next = source[i + 1];
+
+      smoothed.add(
+        VectorPoint(
+          dx: (previous.dx * 0.25) + (current.dx * 0.50) + (next.dx * 0.25),
+          dy: (previous.dy * 0.25) + (current.dy * 0.50) + (next.dy * 0.25),
+          pressure:
+              (previous.pressure * 0.25) +
+              (current.pressure * 0.50) +
+              (next.pressure * 0.25),
+        ),
+      );
+    }
+
+    smoothed.add(source.last);
+    return smoothed;
+  }
+
+  double _pressureWidth(VectorPoint point, double maximumWidth) {
+    final pressure = point.pressure.clamp(0.0, 1.0);
+
+    // Keep export rendering identical to AnimationCanvasPainter.
+    final response = math.pow(pressure, 1.35).toDouble();
+
+    const minimumFactor = 0.015;
+
+    final factor = minimumFactor + (response * (1.0 - minimumFactor));
+
+    return maximumWidth * factor;
+  }
+
+  void _paintPressureStroke(
+    ui.Canvas canvas,
+    List<VectorPoint> points,
+    double maximumWidth,
+    ui.Color color,
+  ) {
+    if (points.isEmpty) {
+      return;
+    }
+
+    final paint = ui.Paint()
+      ..color = color
+      ..style = ui.PaintingStyle.fill
+      ..isAntiAlias = true;
+
+    if (points.length == 1) {
+      final point = points.first;
+
+      final radius = _pressureWidth(point, maximumWidth) / 2;
+
+      canvas.drawCircle(ui.Offset(point.dx, point.dy), radius, paint);
+
+      return;
+    }
+
+    final left = <ui.Offset>[];
+    final right = <ui.Offset>[];
+
+    for (var i = 0; i < points.length; i++) {
+      final point = points[i];
+
+      final previous = i == 0 ? points[i] : points[i - 1];
+
+      final next = i == points.length - 1 ? points[i] : points[i + 1];
+
+      var dx = next.dx - previous.dx;
+      var dy = next.dy - previous.dy;
+
+      final length = math.sqrt((dx * dx) + (dy * dy));
+
+      if (length > 0.0001) {
+        dx /= length;
+        dy /= length;
+      } else {
+        dx = 1;
+        dy = 0;
+      }
+
+      final normalX = -dy;
+      final normalY = dx;
+
+      final halfWidth = _pressureWidth(point, maximumWidth) / 2;
+
+      left.add(
+        ui.Offset(
+          point.dx + (normalX * halfWidth),
+          point.dy + (normalY * halfWidth),
+        ),
+      );
+
+      right.add(
+        ui.Offset(
+          point.dx - (normalX * halfWidth),
+          point.dy - (normalY * halfWidth),
+        ),
+      );
+    }
+
+    final path = ui.Path()..moveTo(left.first.dx, left.first.dy);
+
+    for (var i = 1; i < left.length; i++) {
+      path.lineTo(left[i].dx, left[i].dy);
+    }
+
+    for (var i = right.length - 1; i >= 0; i--) {
+      path.lineTo(right[i].dx, right[i].dy);
+    }
+
+    path.close();
+
+    canvas.drawPath(path, paint);
+
+    final first = points.first;
+    final last = points.last;
+
+    canvas.drawCircle(
+      ui.Offset(first.dx, first.dy),
+      _pressureWidth(first, maximumWidth) / 2,
+      paint,
+    );
+
+    canvas.drawCircle(
+      ui.Offset(last.dx, last.dy),
+      _pressureWidth(last, maximumWidth) / 2,
+      paint,
+    );
+  }
+
   void _paintStroke(ui.Canvas canvas, VectorStroke stroke) {
-    final points = stroke.points;
+    final points = _smoothPoints(stroke.points);
 
     if (points.isEmpty) {
+      return;
+    }
+
+    if (!stroke.filled && stroke.brushType == StrokeBrushType.pressure) {
+      _paintPressureStroke(canvas, points, stroke.strokeWidth, stroke.color);
+
       return;
     }
 
@@ -265,6 +451,7 @@ class AnimationExportService {
       canvas.drawPoints(ui.PointMode.points, [
         ui.Offset(points.first.dx, points.first.dy),
       ], paint);
+
       return;
     }
 
