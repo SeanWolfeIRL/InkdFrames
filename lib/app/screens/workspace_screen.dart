@@ -24,7 +24,15 @@ import '../services/bag_service.dart';
 import 'bag_screen.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
-enum _ShapeToolType { line, rectangle, square, circle }
+enum _ShapeToolType {
+  line,
+  rectangle,
+  filledRectangle,
+  square,
+  filledSquare,
+  circle,
+  filledCircle,
+}
 
 typedef FrameHistorySnapshot = Map<String, List<VectorStroke>>;
 
@@ -92,6 +100,21 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
   bool _showOnionSkin = true;
   bool _isEraserActive = false;
   bool _isFillToolActive = false;
+
+  // Vector Tint Brush.
+  //
+  // Tint does not create new geometry. It blends the colour of existing
+  // strokes on the active drawing layer toward the current brush colour.
+  bool _isTintToolActive = false;
+
+  // Tint tool modes:
+  // false = gradually blend toward the selected colour.
+  // true = replace the entire touched stroke colour.
+  bool _isSolidRecolourMode = false;
+
+  final Set<int> _tintTouchedStrokeIndices = <int>{};
+  bool _tintGestureChanged = false;
+  bool _tintGestureUndoCaptured = false;
   List<VectorPoint> _fillLassoPoints = const <VectorPoint>[];
   Offset? _fillStabilizerTrailingPosition;
 
@@ -1150,7 +1173,17 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
       }
     }
 
-    pocketAssignments[item.id] = selectedPocket;
+    const builtInPocketIds = <String, String>{
+      'Sketches': 'built_in_sketches',
+      'Characters': 'built_in_characters',
+      'Textures': 'built_in_textures',
+      'Props': 'built_in_props',
+      'Brushes': 'built_in_brushes',
+      'Misc.': 'built_in_misc',
+    };
+
+    pocketAssignments[item.id] =
+        builtInPocketIds[selectedPocket] ?? selectedPocket;
 
     await prefs.setString(pocketAssignmentsKey, jsonEncode(pocketAssignments));
 
@@ -1376,7 +1409,17 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
       }
     }
 
-    pocketAssignments[item.id] = selectedPocket;
+    const builtInPocketIds = <String, String>{
+      'Sketches': 'built_in_sketches',
+      'Characters': 'built_in_characters',
+      'Textures': 'built_in_textures',
+      'Props': 'built_in_props',
+      'Brushes': 'built_in_brushes',
+      'Misc.': 'built_in_misc',
+    };
+
+    pocketAssignments[item.id] =
+        builtInPocketIds[selectedPocket] ?? selectedPocket;
 
     await prefs.setString(pocketAssignmentsKey, jsonEncode(pocketAssignments));
 
@@ -3791,31 +3834,93 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
       return VectorPoint(dx: offset.dx, dy: offset.dy, pressure: 1);
     }
 
-    VectorStroke stroke(List<Offset> points) {
+    VectorStroke outlineStroke(List<Offset> points) {
       return VectorStroke(
         points: points.map(point).toList(),
         strokeWidth: _brushSize,
-        color: _brushColor.withValues(alpha: _brushOpacity),
+        color: Colors.black,
+        filled: false,
+        brushType: StrokeBrushType.solid,
       );
+    }
+
+    VectorStroke fillStroke(List<Offset> points) {
+      return VectorStroke(
+        points: points.map(point).toList(),
+        strokeWidth: 0,
+        color: _brushColor.withValues(alpha: _brushOpacity),
+        filled: true,
+        brushType: StrokeBrushType.solid,
+      );
+    }
+
+    List<VectorStroke> rectangleStrokes(Rect rect, {required bool filled}) {
+      // The outline is centred on the requested shape boundary.
+      // Keep the colour inside the inner half of that black line so the
+      // linework acts as the visible boundary of the filled shape.
+      final fillInset = math.max(1.0, _brushSize / 2);
+
+      final canInset =
+          rect.width > (fillInset * 2) && rect.height > (fillInset * 2);
+
+      final fillRect = canInset ? rect.deflate(fillInset) : rect;
+
+      final fillCorners = <Offset>[
+        fillRect.topLeft,
+        fillRect.topRight,
+        fillRect.bottomRight,
+        fillRect.bottomLeft,
+      ];
+
+      return <VectorStroke>[
+        if (filled) fillStroke(fillCorners),
+        outlineStroke(<Offset>[rect.topLeft, rect.topRight]),
+        outlineStroke(<Offset>[rect.topRight, rect.bottomRight]),
+        outlineStroke(<Offset>[rect.bottomRight, rect.bottomLeft]),
+        outlineStroke(<Offset>[rect.bottomLeft, rect.topLeft]),
+      ];
+    }
+
+    List<Offset> ellipsePoints(Rect rect) {
+      final center = rect.center;
+      final radiusX = rect.width / 2;
+      final radiusY = rect.height / 2;
+
+      if (radiusX < 0.5 || radiusY < 0.5) {
+        return const <Offset>[];
+      }
+
+      const segments = 64;
+      final points = <Offset>[];
+
+      for (var i = 0; i <= segments; i++) {
+        final angle = (i / segments) * math.pi * 2;
+
+        points.add(
+          Offset(
+            center.dx + math.cos(angle) * radiusX,
+            center.dy + math.sin(angle) * radiusY,
+          ),
+        );
+      }
+
+      return points;
     }
 
     switch (_shapeToolType) {
       case _ShapeToolType.line:
         return <VectorStroke>[
-          stroke(<Offset>[start, end]),
+          outlineStroke(<Offset>[start, end]),
         ];
 
       case _ShapeToolType.rectangle:
-        final rect = Rect.fromPoints(start, end);
+        return rectangleStrokes(Rect.fromPoints(start, end), filled: false);
 
-        return <VectorStroke>[
-          stroke(<Offset>[rect.topLeft, rect.topRight]),
-          stroke(<Offset>[rect.topRight, rect.bottomRight]),
-          stroke(<Offset>[rect.bottomRight, rect.bottomLeft]),
-          stroke(<Offset>[rect.bottomLeft, rect.topLeft]),
-        ];
+      case _ShapeToolType.filledRectangle:
+        return rectangleStrokes(Rect.fromPoints(start, end), filled: true);
 
       case _ShapeToolType.square:
+      case _ShapeToolType.filledSquare:
         final dx = end.dx - start.dx;
         final dy = end.dy - start.dy;
 
@@ -3826,40 +3931,35 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
           start.dy + (dy < 0 ? -side : side),
         );
 
-        final rect = Rect.fromPoints(start, squareEnd);
-
-        return <VectorStroke>[
-          stroke(<Offset>[rect.topLeft, rect.topRight]),
-          stroke(<Offset>[rect.topRight, rect.bottomRight]),
-          stroke(<Offset>[rect.bottomRight, rect.bottomLeft]),
-          stroke(<Offset>[rect.bottomLeft, rect.topLeft]),
-        ];
+        return rectangleStrokes(
+          Rect.fromPoints(start, squareEnd),
+          filled: _shapeToolType == _ShapeToolType.filledSquare,
+        );
 
       case _ShapeToolType.circle:
-        final rect = Rect.fromPoints(start, end);
-        final center = rect.center;
-        final radiusX = rect.width / 2;
-        final radiusY = rect.height / 2;
+      case _ShapeToolType.filledCircle:
+        final points = ellipsePoints(Rect.fromPoints(start, end));
 
-        if (radiusX < 0.5 || radiusY < 0.5) {
+        if (points.isEmpty) {
           return const <VectorStroke>[];
         }
 
-        const segments = 64;
-        final points = <Offset>[];
+        final circleRect = Rect.fromPoints(start, end);
+        final fillInset = math.max(1.0, _brushSize / 2);
 
-        for (var i = 0; i <= segments; i++) {
-          final angle = (i / segments) * math.pi * 2;
+        final canInset =
+            circleRect.width > (fillInset * 2) &&
+            circleRect.height > (fillInset * 2);
 
-          points.add(
-            Offset(
-              center.dx + math.cos(angle) * radiusX,
-              center.dy + math.sin(angle) * radiusY,
-            ),
-          );
-        }
+        final fillPoints = ellipsePoints(
+          canInset ? circleRect.deflate(fillInset) : circleRect,
+        );
 
-        return <VectorStroke>[stroke(points)];
+        return <VectorStroke>[
+          if (_shapeToolType == _ShapeToolType.filledCircle)
+            fillStroke(fillPoints),
+          outlineStroke(points),
+        ];
     }
   }
 
@@ -4710,6 +4810,185 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     }
   }
 
+  double _distanceFromPointToSegment(Offset point, Offset start, Offset end) {
+    final segment = end - start;
+    final lengthSquared = (segment.dx * segment.dx) + (segment.dy * segment.dy);
+
+    if (lengthSquared <= 0.000001) {
+      return (point - start).distance;
+    }
+
+    final fromStart = point - start;
+
+    final projection =
+        ((fromStart.dx * segment.dx) + (fromStart.dy * segment.dy)) /
+        lengthSquared;
+
+    final t = projection.clamp(0.0, 1.0);
+
+    final closest = Offset(
+      start.dx + (segment.dx * t),
+      start.dy + (segment.dy * t),
+    );
+
+    return (point - closest).distance;
+  }
+
+  bool _pointInsideTintFill(Offset point, List<VectorPoint> points) {
+    if (points.length < 3) {
+      return false;
+    }
+
+    var inside = false;
+    var previousIndex = points.length - 1;
+
+    for (var index = 0; index < points.length; index++) {
+      final current = points[index];
+      final previous = points[previousIndex];
+
+      final crossesY = (current.dy > point.dy) != (previous.dy > point.dy);
+
+      if (crossesY) {
+        final intersectionX =
+            ((previous.dx - current.dx) *
+                (point.dy - current.dy) /
+                (previous.dy - current.dy)) +
+            current.dx;
+
+        if (point.dx < intersectionX) {
+          inside = !inside;
+        }
+      }
+
+      previousIndex = index;
+    }
+
+    return inside;
+  }
+
+  bool _tintStrokeHit(VectorStroke stroke, Offset position, double radius) {
+    if (stroke.points.isEmpty) {
+      return false;
+    }
+
+    if (stroke.filled && _pointInsideTintFill(position, stroke.points)) {
+      return true;
+    }
+
+    final hitRadius = radius + (stroke.strokeWidth / 2);
+
+    if (stroke.points.length == 1) {
+      final point = stroke.points.first;
+
+      return (position - Offset(point.dx, point.dy)).distance <= hitRadius;
+    }
+
+    for (var index = 1; index < stroke.points.length; index++) {
+      final previous = stroke.points[index - 1];
+      final current = stroke.points[index];
+
+      final distance = _distanceFromPointToSegment(
+        position,
+        Offset(previous.dx, previous.dy),
+        Offset(current.dx, current.dy),
+      );
+
+      if (distance <= hitRadius) {
+        return true;
+      }
+    }
+
+    return false;
+  }
+
+  VectorStroke _tintedStroke(VectorStroke stroke) {
+    // Preserve the original alpha. Tint/Recolour changes pigment,
+    // never the transparency of the existing artwork.
+    final targetColor = _brushColor.withValues(alpha: stroke.color.a);
+
+    final resultColor = _isSolidRecolourMode
+        ? targetColor
+        : (Color.lerp(
+                stroke.color,
+                targetColor,
+                _brushOpacity.clamp(0.0, 1.0),
+              ) ??
+              stroke.color);
+
+    return VectorStroke(
+      points: stroke.points.map((point) => point.copy()).toList(),
+      strokeWidth: stroke.strokeWidth,
+      color: resultColor,
+      filled: stroke.filled,
+      brushType: stroke.brushType,
+    );
+  }
+
+  void _applyTintAt(Offset position, double pressure) {
+    if (_activeLayerIndex < 0 || _activeLayerIndex >= _layers.length) {
+      return;
+    }
+
+    final layer = _activeLayer;
+
+    if (_selectedFrameIndex < 0 || _selectedFrameIndex >= layer.frames.length) {
+      return;
+    }
+
+    final sourceStrokes = layer.frames[_selectedFrameIndex];
+
+    if (sourceStrokes.isEmpty) {
+      return;
+    }
+
+    // S Pen pressure affects the Tint Brush's reach without modifying
+    // the pressure data stored in the artwork itself.
+    final safePressure = pressure.clamp(0.0, 1.0);
+    final pressureFactor = 0.5 + safePressure;
+
+    final radius = math.max(4.0, _brushSize * 2.0 * pressureFactor);
+
+    final hitIndices = <int>[];
+
+    for (var index = 0; index < sourceStrokes.length; index++) {
+      // A stroke is tinted only once during a single gesture.
+      // Lift the pen/finger and paint over it again to build more tint.
+      if (_tintTouchedStrokeIndices.contains(index)) {
+        continue;
+      }
+
+      if (_tintStrokeHit(sourceStrokes[index], position, radius)) {
+        hitIndices.add(index);
+      }
+    }
+
+    if (hitIndices.isEmpty) {
+      return;
+    }
+
+    // Capture exactly one undo state for the entire Tint gesture.
+    if (!_tintGestureUndoCaptured) {
+      _saveUndoState();
+      _tintGestureUndoCaptured = true;
+    }
+
+    final frames = _copyLayerFrames(layer.frames);
+    final updatedStrokes = frames[_selectedFrameIndex];
+
+    for (final index in hitIndices) {
+      updatedStrokes[index] = _tintedStroke(updatedStrokes[index]);
+    }
+
+    setState(() {
+      _layers[_activeLayerIndex] = layer.copyWith(frames: frames);
+
+      _tintTouchedStrokeIndices.addAll(hitIndices);
+      _tintGestureChanged = true;
+
+      _rebuildCompositeFrames();
+    });
+  }
+
   void _handlePointerDown(PointerDownEvent event, BuildContext canvasContext) {
     _updateCanvasRotationPointerDown(event);
     _activePointerCount += 1;
@@ -4948,6 +5227,15 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
       return;
     }
 
+    if (_isTintToolActive) {
+      _tintTouchedStrokeIndices.clear();
+      _tintGestureChanged = false;
+      _tintGestureUndoCaptured = false;
+
+      _applyTintAt(canvasPosition, event.pressure);
+      return;
+    }
+
     if (_isEraserActive) {
       _saveUndoState();
       setState(() {
@@ -5169,6 +5457,11 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
       return;
     }
 
+    if (_isTintToolActive) {
+      _applyTintAt(canvasPosition, event.pressure);
+      return;
+    }
+
     if (_isEraserActive) {
       setState(() {
         _eraseAt(canvasPosition);
@@ -5294,6 +5587,20 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
       return;
     }
 
+    if (_isTintToolActive) {
+      final changed = _tintGestureChanged;
+
+      _tintTouchedStrokeIndices.clear();
+      _tintGestureChanged = false;
+      _tintGestureUndoCaptured = false;
+
+      if (changed) {
+        _scheduleAutosave();
+      }
+
+      return;
+    }
+
     if (_isTransformActive) {
       setState(() {
         if (_isTransformPivotDragging) {
@@ -5366,6 +5673,9 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     }
     setState(() {
       _draftStroke = const <VectorPoint>[];
+      _tintTouchedStrokeIndices.clear();
+      _tintGestureChanged = false;
+      _tintGestureUndoCaptured = false;
       _clearFillLasso();
       _clearShapeDraft();
     });
@@ -8898,6 +9208,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                                     onPressed: () {
                                       setState(() {
                                         _isEraserActive = !_isEraserActive;
+                                        _isTintToolActive = false;
                                         _isFillToolActive = false;
                                         _clearFillLasso();
                                         _isShapeToolActive = false;
@@ -8909,6 +9220,108 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                                     icon: Icon(
                                       Icons.auto_fix_off,
                                       color: _isEraserActive
+                                          ? Colors.deepPurpleAccent
+                                          : Colors.white70,
+                                    ),
+                                  ),
+                                  IconButton(
+                                    tooltip:
+                                        'Tint Brush · Size = reach · Opacity = strength',
+                                    visualDensity: VisualDensity.compact,
+                                    onPressed: _isPlaying
+                                        ? null
+                                        : () {
+                                            setState(() {
+                                              final alreadyActive =
+                                                  _isTintToolActive &&
+                                                  !_isSolidRecolourMode;
+
+                                              _isTintToolActive =
+                                                  !alreadyActive;
+                                              _isSolidRecolourMode = false;
+
+                                              _isEraserActive = false;
+                                              _isFillToolActive = false;
+                                              _isShapeToolActive = false;
+                                              _isTransformActive = false;
+
+                                              _textureActive = false;
+                                              _stampBrushActive = false;
+                                              _stampBrushItem = null;
+                                              _blendSamplingArmed = false;
+
+                                              _draftStroke =
+                                                  const <VectorPoint>[];
+                                              _draftTextureStrokes =
+                                                  <VectorStroke>[];
+                                              _draftStampStrokes =
+                                                  <VectorStroke>[];
+
+                                              _tintTouchedStrokeIndices.clear();
+                                              _tintGestureChanged = false;
+                                              _tintGestureUndoCaptured = false;
+
+                                              _clearFillLasso();
+                                              _clearShapeDraft();
+                                              _clearTransformSelection();
+                                            });
+                                          },
+                                    icon: Icon(
+                                      Icons.format_paint_outlined,
+                                      color:
+                                          _isTintToolActive &&
+                                              !_isSolidRecolourMode
+                                          ? Colors.deepPurpleAccent
+                                          : Colors.white70,
+                                    ),
+                                  ),
+                                  IconButton(
+                                    tooltip:
+                                        'Recolour Stroke · Replace full colour',
+                                    visualDensity: VisualDensity.compact,
+                                    onPressed: _isPlaying
+                                        ? null
+                                        : () {
+                                            setState(() {
+                                              final alreadyActive =
+                                                  _isTintToolActive &&
+                                                  _isSolidRecolourMode;
+
+                                              _isTintToolActive =
+                                                  !alreadyActive;
+                                              _isSolidRecolourMode = true;
+
+                                              _isEraserActive = false;
+                                              _isFillToolActive = false;
+                                              _isShapeToolActive = false;
+                                              _isTransformActive = false;
+
+                                              _textureActive = false;
+                                              _stampBrushActive = false;
+                                              _stampBrushItem = null;
+                                              _blendSamplingArmed = false;
+
+                                              _draftStroke =
+                                                  const <VectorPoint>[];
+                                              _draftTextureStrokes =
+                                                  <VectorStroke>[];
+                                              _draftStampStrokes =
+                                                  <VectorStroke>[];
+
+                                              _tintTouchedStrokeIndices.clear();
+                                              _tintGestureChanged = false;
+                                              _tintGestureUndoCaptured = false;
+
+                                              _clearFillLasso();
+                                              _clearShapeDraft();
+                                              _clearTransformSelection();
+                                            });
+                                          },
+                                    icon: Icon(
+                                      Icons.format_color_fill_outlined,
+                                      color:
+                                          _isTintToolActive &&
+                                              _isSolidRecolourMode
                                           ? Colors.deepPurpleAccent
                                           : Colors.white70,
                                     ),
@@ -8946,6 +9359,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                                                   !_isFillToolActive;
 
                                               _isEraserActive = false;
+                                              _isTintToolActive = false;
                                               _isShapeToolActive = false;
                                               _isTransformActive = false;
 
@@ -8977,6 +9391,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                                         _isFillToolActive = false;
                                         _clearFillLasso();
                                         _isEraserActive = false;
+                                        _isTintToolActive = false;
                                         _isTransformActive = false;
                                         _activeLayerGroupId = null;
 
@@ -9003,6 +9418,13 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                                         ),
                                       ),
                                       PopupMenuItem(
+                                        value: _ShapeToolType.filledRectangle,
+                                        child: ListTile(
+                                          leading: Icon(Icons.rectangle),
+                                          title: Text('Filled Rectangle'),
+                                        ),
+                                      ),
+                                      PopupMenuItem(
                                         value: _ShapeToolType.square,
                                         child: ListTile(
                                           leading: Icon(Icons.crop_square),
@@ -9010,10 +9432,24 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                                         ),
                                       ),
                                       PopupMenuItem(
+                                        value: _ShapeToolType.filledSquare,
+                                        child: ListTile(
+                                          leading: Icon(Icons.square),
+                                          title: Text('Filled Square'),
+                                        ),
+                                      ),
+                                      PopupMenuItem(
                                         value: _ShapeToolType.circle,
                                         child: ListTile(
                                           leading: Icon(Icons.circle_outlined),
                                           title: Text('Circle'),
+                                        ),
+                                      ),
+                                      PopupMenuItem(
+                                        value: _ShapeToolType.filledCircle,
+                                        child: ListTile(
+                                          leading: Icon(Icons.circle),
+                                          title: Text('Filled Circle'),
                                         ),
                                       ),
                                     ],
@@ -9080,6 +9516,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                                                 !_isTransformActive;
 
                                             _isEraserActive = false;
+                                            _isTintToolActive = false;
                                             _isFillToolActive = false;
                                             _isShapeToolActive = false;
 

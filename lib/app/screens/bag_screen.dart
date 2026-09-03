@@ -7,7 +7,6 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../models/bag_item.dart';
 import '../models/vector_stroke.dart';
 import '../painters/bag_item_preview_painter.dart';
-import '../painters/frame_thumbnail_painter.dart';
 import '../services/bag_service.dart';
 import '../services/bag_asset_transfer_service.dart';
 
@@ -758,7 +757,7 @@ class _BagScreenState extends State<BagScreen> {
       child: CustomPaint(
         painter: strokes.isEmpty
             ? null
-            : FrameThumbnailPainter(strokes: strokes),
+            : BagItemPreviewPainter(strokes: strokes, fitFraction: 0.78),
         child: strokes.isEmpty
             ? const Center(
                 child: Icon(
