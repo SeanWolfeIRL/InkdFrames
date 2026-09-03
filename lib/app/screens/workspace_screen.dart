@@ -74,6 +74,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
   ];
   int _activeLayerIndex = 0;
   final List<LayerGroup> _layerGroups = <LayerGroup>[];
+  final List<String> _rootLayerOrder = <String>['layer:linework'];
   String? _activeLayerGroupId;
 
   // Persistent reference-media layers.
@@ -560,6 +561,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
       frames: _frames,
       layers: _layers,
       layerGroups: _layerGroups,
+      rootOrder: _rootLayerOrder,
       referenceLayers: _referenceLayers,
       activeReferenceLayerId: _activeReferenceLayerId,
       frameDurations: _frameDurations,
@@ -731,12 +733,73 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     );
   }
 
+  List<DrawingLayer> _orderedDrawingLayers() {
+    final ordered = <DrawingLayer>[];
+    final visitedLayerIds = <String>{};
+    final visitedGroupIds = <String>{};
+
+    void addEntry(String entry) {
+      if (entry.startsWith('layer:')) {
+        final layerId = entry.substring(6);
+
+        if (!visitedLayerIds.add(layerId)) {
+          return;
+        }
+
+        final layerIndex = _layers.indexWhere((layer) => layer.id == layerId);
+
+        if (layerIndex != -1) {
+          ordered.add(_layers[layerIndex]);
+        }
+
+        return;
+      }
+
+      if (entry.startsWith('group:')) {
+        final groupId = entry.substring(6);
+
+        // Defensive cycle guard.
+        if (!visitedGroupIds.add(groupId)) {
+          return;
+        }
+
+        final groupIndex = _layerGroups.indexWhere(
+          (group) => group.id == groupId,
+        );
+
+        if (groupIndex == -1) {
+          return;
+        }
+
+        for (final childEntry in _layerGroups[groupIndex].childOrder) {
+          addEntry(childEntry);
+        }
+      }
+    }
+
+    for (final entry in _rootLayerOrder) {
+      addEntry(entry);
+    }
+
+    // Safety net for legacy or temporarily inconsistent project data.
+    // Any valid drawing layer missing from the hierarchy remains visible
+    // at the bottom rather than disappearing completely.
+    for (final layer in _layers) {
+      if (visitedLayerIds.add(layer.id)) {
+        ordered.add(layer);
+      }
+    }
+
+    return ordered;
+  }
+
   List<VectorStroke> _compositeFrame(int frameIndex) {
     final strokes = <VectorStroke>[];
+    final orderedLayers = _orderedDrawingLayers();
 
-    // Layer list is displayed top-to-bottom.
-    // Paint bottom layers first so the first layer remains visually on top.
-    for (final layer in _layers.reversed) {
+    // Hierarchy order is displayed top-to-bottom.
+    // Paint bottom entries first so the top entry remains visually in front.
+    for (final layer in orderedLayers.reversed) {
       if (!_isLayerEffectivelyVisible(layer) ||
           frameIndex < 0 ||
           frameIndex >= layer.frames.length) {
@@ -809,12 +872,57 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     return null;
   }
 
+  LayerGroup? _groupContainingGroup(String groupId) {
+    for (final group in _layerGroups) {
+      if (group.childGroupIds.contains(groupId)) {
+        return group;
+      }
+    }
+
+    return null;
+  }
+
+  bool _isGroupEffectivelyVisible(String groupId, {Set<String>? visited}) {
+    final seen = visited ?? <String>{};
+
+    // Defensive cycle guard for future drag-and-drop nesting.
+    if (!seen.add(groupId)) {
+      return false;
+    }
+
+    final groupIndex = _layerGroups.indexWhere((group) => group.id == groupId);
+
+    if (groupIndex == -1) {
+      return true;
+    }
+
+    final group = _layerGroups[groupIndex];
+
+    if (!group.visible) {
+      return false;
+    }
+
+    final parent = _groupContainingGroup(groupId);
+
+    if (parent == null) {
+      return true;
+    }
+
+    return _isGroupEffectivelyVisible(parent.id, visited: seen);
+  }
+
   bool _isLayerEffectivelyVisible(DrawingLayer layer) {
-    if (!layer.visible) return false;
+    if (!layer.visible) {
+      return false;
+    }
 
     final group = _groupContainingLayer(layer.id);
 
-    return group == null || group.visible;
+    if (group == null) {
+      return true;
+    }
+
+    return _isGroupEffectivelyVisible(group.id);
   }
 
   void _selectLayerGroup(String groupId) {
@@ -837,6 +945,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
 
     final frameCount = _frameDurations.length;
     final stamp = DateTime.now().microsecondsSinceEpoch;
+    final parentGroupId = _activeLayerGroupId;
 
     final newLayers = <DrawingLayer>[];
     final newLayerIds = <String>[];
@@ -845,7 +954,6 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
       final bagLayer = item.layers[index];
 
       final layerId = 'bag_layer_${stamp}_$index';
-
       final frames = List.generate(frameCount, (_) => <VectorStroke>[]);
 
       if (_selectedFrameIndex >= 0 && _selectedFrameIndex < frames.length) {
@@ -875,17 +983,52 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
       id: 'bag_group_$stamp',
       name: item.name,
       childLayerIds: newLayerIds,
+      childOrder: <String>[for (final layerId in newLayerIds) 'layer:$layerId'],
       visible: true,
       expanded: true,
     );
 
     setState(() {
-      // Insert the Bag artwork at the top of the layer stack.
       _layers.insertAll(0, newLayers);
       _layerGroups.add(newGroup);
 
+      final groupEntry = 'group:${newGroup.id}';
+
+      if (parentGroupId != null) {
+        final parentIndex = _layerGroups.indexWhere(
+          (group) => group.id == parentGroupId,
+        );
+
+        if (parentIndex != -1) {
+          final parent = _layerGroups[parentIndex];
+
+          final childGroupIds = List<String>.from(parent.childGroupIds)
+            ..remove(newGroup.id)
+            ..insert(0, newGroup.id);
+
+          final childOrder = List<String>.from(parent.childOrder)
+            ..remove(groupEntry)
+            ..insert(0, groupEntry);
+
+          _layerGroups[parentIndex] = parent.copyWith(
+            childGroupIds: childGroupIds,
+            childOrder: childOrder,
+            expanded: true,
+          );
+        } else {
+          _rootLayerOrder
+            ..remove(groupEntry)
+            ..insert(0, groupEntry);
+        }
+      } else {
+        _rootLayerOrder
+          ..remove(groupEntry)
+          ..insert(0, groupEntry);
+      }
+
       // Select the newly unpacked group.
       _activeLayerGroupId = newGroup.id;
+      _layerInsertionGroupId = newGroup.id;
       _activeLayerIndex = 0;
 
       _draftStroke = const <VectorPoint>[];
@@ -1660,14 +1803,54 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
   }
 
   void _addLayerGroup() {
+    final parentGroupId = _activeLayerGroupId;
+
     setState(() {
       final group = LayerGroup(
         id: 'group_${DateTime.now().microsecondsSinceEpoch}',
         name: 'Group ${_layerGroups.length + 1}',
         childLayerIds: <String>[],
+        childGroupIds: <String>[],
+        childOrder: <String>[],
       );
 
       _layerGroups.add(group);
+
+      final groupEntry = 'group:${group.id}';
+
+      // Selected group becomes the parent.
+      if (parentGroupId != null) {
+        final parentIndex = _layerGroups.indexWhere(
+          (candidate) => candidate.id == parentGroupId,
+        );
+
+        if (parentIndex != -1) {
+          final parent = _layerGroups[parentIndex];
+
+          final childGroupIds = List<String>.from(parent.childGroupIds)
+            ..remove(group.id)
+            ..insert(0, group.id);
+
+          final childOrder = List<String>.from(parent.childOrder)
+            ..remove(groupEntry)
+            ..insert(0, groupEntry);
+
+          _layerGroups[parentIndex] = parent.copyWith(
+            childGroupIds: childGroupIds,
+            childOrder: childOrder,
+            expanded: true,
+          );
+        } else {
+          _rootLayerOrder
+            ..remove(groupEntry)
+            ..insert(0, groupEntry);
+        }
+      } else {
+        _rootLayerOrder
+          ..remove(groupEntry)
+          ..insert(0, groupEntry);
+      }
+
       _activeLayerGroupId = group.id;
       _layerInsertionGroupId = group.id;
       _clearTransformSelection();
@@ -1752,24 +1935,93 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
   }
 
   void _deleteLayerGroup(String groupId) {
-    final index = _layerGroups.indexWhere((group) => group.id == groupId);
+    final rootIndex = _layerGroups.indexWhere((group) => group.id == groupId);
 
-    if (index == -1) return;
+    if (rootIndex == -1) return;
 
-    final group = _layerGroups[index];
-    final childLayerIds = Set<String>.from(group.childLayerIds);
+    final groupIdsToDelete = <String>{};
+
+    void collectGroupTree(String id) {
+      if (!groupIdsToDelete.add(id)) {
+        return;
+      }
+
+      final index = _layerGroups.indexWhere((group) => group.id == id);
+
+      if (index == -1) {
+        return;
+      }
+
+      for (final childGroupId in _layerGroups[index].childGroupIds) {
+        collectGroupTree(childGroupId);
+      }
+    }
+
+    collectGroupTree(groupId);
+
+    final layerIdsToDelete = <String>{};
+
+    for (final group in _layerGroups) {
+      if (groupIdsToDelete.contains(group.id)) {
+        layerIdsToDelete.addAll(group.childLayerIds);
+      }
+    }
 
     setState(() {
-      // Deleting a group also deletes every layer still contained inside it.
-      // Users can preserve individual layers by removing them from the group first.
-      _layers.removeWhere((layer) => childLayerIds.contains(layer.id));
-      _layerGroups.removeAt(index);
+      _layers.removeWhere((layer) => layerIdsToDelete.contains(layer.id));
 
-      // Never allow a project to end up with no drawing layers.
+      _layerGroups.removeWhere((group) => groupIdsToDelete.contains(group.id));
+
+      // Remove deleted branches from root ordering.
+      _rootLayerOrder.removeWhere((entry) {
+        if (entry.startsWith('group:')) {
+          return groupIdsToDelete.contains(entry.substring(6));
+        }
+
+        if (entry.startsWith('layer:')) {
+          return layerIdsToDelete.contains(entry.substring(6));
+        }
+
+        return false;
+      });
+
+      // Remove deleted branches from every surviving group.
+      for (var i = 0; i < _layerGroups.length; i++) {
+        final group = _layerGroups[i];
+
+        final childGroupIds = List<String>.from(group.childGroupIds)
+          ..removeWhere(groupIdsToDelete.contains);
+
+        final childLayerIds = List<String>.from(group.childLayerIds)
+          ..removeWhere(layerIdsToDelete.contains);
+
+        final childOrder = List<String>.from(group.childOrder)
+          ..removeWhere((entry) {
+            if (entry.startsWith('group:')) {
+              return groupIdsToDelete.contains(entry.substring(6));
+            }
+
+            if (entry.startsWith('layer:')) {
+              return layerIdsToDelete.contains(entry.substring(6));
+            }
+
+            return false;
+          });
+
+        _layerGroups[i] = group.copyWith(
+          childGroupIds: childGroupIds,
+          childLayerIds: childLayerIds,
+          childOrder: childOrder,
+        );
+      }
+
+      // Never allow a project to contain zero drawing layers.
       if (_layers.isEmpty) {
+        final fallbackId = 'linework_${DateTime.now().microsecondsSinceEpoch}';
+
         _layers.add(
           DrawingLayer(
-            id: 'linework_${DateTime.now().microsecondsSinceEpoch}',
+            id: fallbackId,
             name: 'Linework',
             frames: List.generate(
               _frameDurations.length,
@@ -1777,10 +2029,20 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
             ),
           ),
         );
+
+        _rootLayerOrder
+          ..clear()
+          ..add('layer:$fallbackId');
       }
 
-      if (_activeLayerGroupId == groupId) {
+      if (_activeLayerGroupId != null &&
+          groupIdsToDelete.contains(_activeLayerGroupId)) {
         _activeLayerGroupId = null;
+      }
+
+      if (_layerInsertionGroupId != null &&
+          groupIdsToDelete.contains(_layerInsertionGroupId)) {
+        _layerInsertionGroupId = null;
       }
 
       _activeLayerIndex = _activeLayerIndex.clamp(0, _layers.length - 1);
@@ -1793,19 +2055,212 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     _scheduleAutosave();
   }
 
-  void _assignLayerToGroup(String layerId, String? groupId) {
+  Set<String> _groupDescendantIds(String groupId) {
+    final descendants = <String>{};
+
+    void collect(String parentId) {
+      final parentIndex = _layerGroups.indexWhere(
+        (group) => group.id == parentId,
+      );
+
+      if (parentIndex == -1) {
+        return;
+      }
+
+      for (final childId in _layerGroups[parentIndex].childGroupIds) {
+        if (descendants.add(childId)) {
+          collect(childId);
+        }
+      }
+    }
+
+    collect(groupId);
+    return descendants;
+  }
+
+  void _assignGroupToGroup(String groupId, String? parentGroupId) {
+    if (parentGroupId == groupId) {
+      return;
+    }
+
+    if (parentGroupId != null) {
+      final descendants = _groupDescendantIds(groupId);
+
+      // Prevent cycles such as:
+      // A contains B, then attempting to move A inside B.
+      if (descendants.contains(parentGroupId)) {
+        return;
+      }
+    }
+
+    final groupExists = _layerGroups.any((group) => group.id == groupId);
+
+    if (!groupExists) {
+      return;
+    }
+
+    final groupEntry = 'group:$groupId';
+
     setState(() {
-      // A drawing layer belongs to at most one group.
+      // Remove the group from its previous hierarchy location.
+      _rootLayerOrder.remove(groupEntry);
+
       for (var i = 0; i < _layerGroups.length; i++) {
         final group = _layerGroups[i];
 
-        if (group.childLayerIds.contains(layerId)) {
-          final ids = List<String>.from(group.childLayerIds)..remove(layerId);
-
-          _layerGroups[i] = group.copyWith(childLayerIds: ids);
+        if (group.id == groupId) {
+          continue;
         }
+
+        final childGroupIds = List<String>.from(group.childGroupIds)
+          ..remove(groupId);
+
+        final childOrder = List<String>.from(group.childOrder)
+          ..remove(groupEntry);
+
+        _layerGroups[i] = group.copyWith(
+          childGroupIds: childGroupIds,
+          childOrder: childOrder,
+        );
       }
 
+      // Insert into the new parent.
+      if (parentGroupId != null) {
+        final parentIndex = _layerGroups.indexWhere(
+          (group) => group.id == parentGroupId,
+        );
+
+        if (parentIndex != -1) {
+          final parent = _layerGroups[parentIndex];
+
+          final childGroupIds = List<String>.from(parent.childGroupIds)
+            ..remove(groupId)
+            ..insert(0, groupId);
+
+          final childOrder = List<String>.from(parent.childOrder)
+            ..remove(groupEntry)
+            ..insert(0, groupEntry);
+
+          _layerGroups[parentIndex] = parent.copyWith(
+            childGroupIds: childGroupIds,
+            childOrder: childOrder,
+            expanded: true,
+          );
+        } else {
+          _rootLayerOrder
+            ..remove(groupEntry)
+            ..insert(0, groupEntry);
+        }
+      } else {
+        _rootLayerOrder
+          ..remove(groupEntry)
+          ..insert(0, groupEntry);
+      }
+
+      _rebuildCompositeFrames();
+      _clearTransformSelection();
+    });
+
+    _scheduleAutosave();
+  }
+
+  Future<void> _showMoveGroupDialog(String groupId) async {
+    final groupIndex = _layerGroups.indexWhere((group) => group.id == groupId);
+
+    if (groupIndex == -1 || !mounted) {
+      return;
+    }
+
+    final movingGroup = _layerGroups[groupIndex];
+    final descendants = _groupDescendantIds(groupId);
+    final currentParent = _groupContainingGroup(groupId);
+
+    final validParents = _layerGroups.where((group) {
+      if (group.id == groupId) {
+        return false;
+      }
+
+      if (descendants.contains(group.id)) {
+        return false;
+      }
+
+      return true;
+    }).toList();
+
+    final selectedParentId = await showDialog<String?>(
+      context: context,
+      builder: (context) {
+        return AlertDialog(
+          title: Text('Move "${movingGroup.name}"'),
+          content: SizedBox(
+            width: 360,
+            child: ListView(
+              shrinkWrap: true,
+              children: [
+                ListTile(
+                  leading: const Icon(Icons.layers_outlined),
+                  title: const Text('Root'),
+                  trailing: currentParent == null
+                      ? const Icon(Icons.check)
+                      : null,
+                  onTap: () => Navigator.of(context).pop('__root__'),
+                ),
+                for (final group in validParents)
+                  ListTile(
+                    leading: const Icon(Icons.folder_outlined),
+                    title: Text(group.name),
+                    trailing: currentParent?.id == group.id
+                        ? const Icon(Icons.check)
+                        : null,
+                    onTap: () => Navigator.of(context).pop(group.id),
+                  ),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(),
+              child: const Text('Cancel'),
+            ),
+          ],
+        );
+      },
+    );
+
+    if (!mounted || selectedParentId == null) {
+      return;
+    }
+
+    if (selectedParentId == '__root__') {
+      _assignGroupToGroup(groupId, null);
+    } else {
+      _assignGroupToGroup(groupId, selectedParentId);
+    }
+  }
+
+  void _assignLayerToGroup(String layerId, String? groupId) {
+    setState(() {
+      final layerEntry = 'layer:$layerId';
+
+      // Remove the layer from its previous hierarchy location.
+      _rootLayerOrder.remove(layerEntry);
+
+      for (var i = 0; i < _layerGroups.length; i++) {
+        final group = _layerGroups[i];
+
+        final childLayerIds = List<String>.from(group.childLayerIds)
+          ..remove(layerId);
+
+        final childOrder = List<String>.from(group.childOrder)
+          ..remove(layerEntry);
+
+        _layerGroups[i] = group.copyWith(
+          childLayerIds: childLayerIds,
+          childOrder: childOrder,
+        );
+      }
+
+      // Insert into its new hierarchy location.
       if (groupId != null) {
         final groupIndex = _layerGroups.indexWhere(
           (group) => group.id == groupId,
@@ -1814,14 +2269,24 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
         if (groupIndex != -1) {
           final group = _layerGroups[groupIndex];
 
-          final ids = List<String>.from(group.childLayerIds);
+          final childLayerIds = List<String>.from(group.childLayerIds)
+            ..remove(layerId)
+            ..insert(0, layerId);
 
-          if (!ids.contains(layerId)) {
-            ids.add(layerId);
-          }
+          final childOrder = List<String>.from(group.childOrder)
+            ..remove(layerEntry)
+            ..insert(0, layerEntry);
 
-          _layerGroups[groupIndex] = group.copyWith(childLayerIds: ids);
+          _layerGroups[groupIndex] = group.copyWith(
+            childLayerIds: childLayerIds,
+            childOrder: childOrder,
+            expanded: true,
+          );
+        } else {
+          _rootLayerOrder.insert(0, layerEntry);
         }
+      } else {
+        _rootLayerOrder.insert(0, layerEntry);
       }
 
       _rebuildCompositeFrames();
@@ -1870,6 +2335,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
         ),
       );
 
+      final layerEntry = 'layer:$newLayerId';
       final insertionGroupId = _layerInsertionGroupId;
 
       if (insertionGroupId != null) {
@@ -1879,14 +2345,31 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
 
         if (groupIndex != -1) {
           final group = _layerGroups[groupIndex];
-          final ids = List<String>.from(group.childLayerIds)
+
+          final childLayerIds = List<String>.from(group.childLayerIds)
             ..remove(newLayerId)
             ..insert(0, newLayerId);
 
-          _layerGroups[groupIndex] = group.copyWith(childLayerIds: ids);
+          final childOrder = List<String>.from(group.childOrder)
+            ..remove(layerEntry)
+            ..insert(0, layerEntry);
+
+          _layerGroups[groupIndex] = group.copyWith(
+            childLayerIds: childLayerIds,
+            childOrder: childOrder,
+            expanded: true,
+          );
         } else {
           _layerInsertionGroupId = null;
+
+          _rootLayerOrder
+            ..remove(layerEntry)
+            ..insert(0, layerEntry);
         }
+      } else {
+        _rootLayerOrder
+          ..remove(layerEntry)
+          ..insert(0, layerEntry);
       }
 
       _activeLayerIndex = 0;
@@ -1907,17 +2390,24 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
 
     setState(() {
       final deletedLayerId = _layers[index].id;
+      final deletedEntry = 'layer:$deletedLayerId';
+
       _layers.removeAt(index);
+      _rootLayerOrder.remove(deletedEntry);
 
       for (var groupIndex = 0; groupIndex < _layerGroups.length; groupIndex++) {
         final group = _layerGroups[groupIndex];
 
-        if (group.childLayerIds.contains(deletedLayerId)) {
-          final ids = List<String>.from(group.childLayerIds)
-            ..remove(deletedLayerId);
+        final childLayerIds = List<String>.from(group.childLayerIds)
+          ..remove(deletedLayerId);
 
-          _layerGroups[groupIndex] = group.copyWith(childLayerIds: ids);
-        }
+        final childOrder = List<String>.from(group.childOrder)
+          ..remove(deletedEntry);
+
+        _layerGroups[groupIndex] = group.copyWith(
+          childLayerIds: childLayerIds,
+          childOrder: childOrder,
+        );
       }
 
       if (_activeLayerIndex >= _layers.length) {
@@ -1927,30 +2417,6 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
       }
 
       _resetUndoRedo();
-      _rebuildCompositeFrames();
-    });
-
-    _scheduleAutosave();
-  }
-
-  void _moveDrawingLayer(int oldIndex, int newIndex) {
-    if (oldIndex < 0 ||
-        oldIndex >= _layers.length ||
-        newIndex < 0 ||
-        newIndex >= _layers.length ||
-        oldIndex == newIndex) {
-      return;
-    }
-
-    setState(() {
-      final activeId = _activeLayer.id;
-      final layer = _layers.removeAt(oldIndex);
-      _layers.insert(newIndex, layer);
-
-      _activeLayerIndex = _layers.indexWhere(
-        (candidate) => candidate.id == activeId,
-      );
-
       _rebuildCompositeFrames();
     });
 
@@ -2037,9 +2503,15 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
               visible: group.visible,
               expanded: group.expanded,
               childLayerIds: List<String>.from(group.childLayerIds),
+              childGroupIds: List<String>.from(group.childGroupIds),
+              childOrder: List<String>.from(group.childOrder),
             ),
           ),
         );
+
+      _rootLayerOrder
+        ..clear()
+        ..addAll(project.rootOrder);
 
       _activeLayerGroupId = null;
 
@@ -2054,6 +2526,10 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
             ),
           ),
         );
+
+        _rootLayerOrder
+          ..clear()
+          ..add('layer:linework');
       }
 
       _activeLayerIndex = 0;
@@ -6872,18 +7348,251 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     );
   }
 
+  String? _hierarchyParentGroupId(String entry) {
+    if (entry.startsWith('group:')) {
+      final groupId = entry.substring(6);
+      return _groupContainingGroup(groupId)?.id;
+    }
+
+    if (entry.startsWith('layer:')) {
+      final layerId = entry.substring(6);
+      return _groupContainingLayer(layerId)?.id;
+    }
+
+    return null;
+  }
+
+  bool _canReorderHierarchyEntries(String draggedEntry, String targetEntry) {
+    if (draggedEntry == targetEntry) {
+      return false;
+    }
+
+    final draggedParent = _hierarchyParentGroupId(draggedEntry);
+    final targetParent = _hierarchyParentGroupId(targetEntry);
+
+    if (draggedParent != targetParent) {
+      return false;
+    }
+
+    if (draggedParent == null) {
+      return _rootLayerOrder.contains(draggedEntry) &&
+          _rootLayerOrder.contains(targetEntry);
+    }
+
+    final parentIndex = _layerGroups.indexWhere(
+      (group) => group.id == draggedParent,
+    );
+
+    if (parentIndex == -1) {
+      return false;
+    }
+
+    final order = _layerGroups[parentIndex].childOrder;
+
+    return order.contains(draggedEntry) && order.contains(targetEntry);
+  }
+
+  void _moveHierarchyEntryToTarget(String draggedEntry, String targetEntry) {
+    if (!_canReorderHierarchyEntries(draggedEntry, targetEntry)) {
+      return;
+    }
+
+    final parentGroupId = _hierarchyParentGroupId(draggedEntry);
+    var changed = false;
+
+    setState(() {
+      if (parentGroupId == null) {
+        final oldIndex = _rootLayerOrder.indexOf(draggedEntry);
+        final oldTargetIndex = _rootLayerOrder.indexOf(targetEntry);
+
+        if (oldIndex == -1 || oldTargetIndex == -1) {
+          return;
+        }
+
+        _rootLayerOrder.removeAt(oldIndex);
+
+        var targetIndex = _rootLayerOrder.indexOf(targetEntry);
+
+        if (oldIndex < oldTargetIndex) {
+          targetIndex += 1;
+        }
+
+        _rootLayerOrder.insert(targetIndex, draggedEntry);
+        changed = true;
+      } else {
+        final parentIndex = _layerGroups.indexWhere(
+          (group) => group.id == parentGroupId,
+        );
+
+        if (parentIndex == -1) {
+          return;
+        }
+
+        final parent = _layerGroups[parentIndex];
+        final updatedOrder = List<String>.from(parent.childOrder);
+
+        final oldIndex = updatedOrder.indexOf(draggedEntry);
+        final oldTargetIndex = updatedOrder.indexOf(targetEntry);
+
+        if (oldIndex == -1 || oldTargetIndex == -1) {
+          return;
+        }
+
+        updatedOrder.removeAt(oldIndex);
+
+        var targetIndex = updatedOrder.indexOf(targetEntry);
+
+        if (oldIndex < oldTargetIndex) {
+          targetIndex += 1;
+        }
+
+        updatedOrder.insert(targetIndex, draggedEntry);
+
+        _layerGroups[parentIndex] = parent.copyWith(childOrder: updatedOrder);
+
+        changed = true;
+      }
+
+      if (changed) {
+        _rebuildCompositeFrames();
+      }
+    });
+
+    if (changed) {
+      _scheduleAutosave();
+    }
+  }
+
+  Widget _buildHierarchyDragHandle(String entry) {
+    return Draggable<String>(
+      data: entry,
+      axis: Axis.vertical,
+      maxSimultaneousDrags: _isPlaying ? 0 : 1,
+      feedback: Material(
+        color: Colors.transparent,
+        child: Container(
+          width: 34,
+          height: 34,
+          alignment: Alignment.center,
+          decoration: BoxDecoration(
+            color: Colors.black87,
+            borderRadius: BorderRadius.circular(8),
+            border: Border.all(color: Colors.white24),
+          ),
+          child: const Icon(
+            Icons.drag_indicator,
+            size: 22,
+            color: Colors.white,
+          ),
+        ),
+      ),
+      childWhenDragging: const SizedBox(
+        width: 30,
+        height: 30,
+        child: Opacity(
+          opacity: 0.25,
+          child: Icon(Icons.drag_indicator, size: 20),
+        ),
+      ),
+      child: const SizedBox(
+        width: 30,
+        height: 30,
+        child: Icon(Icons.drag_indicator, size: 20),
+      ),
+    );
+  }
+
+  Widget _buildHierarchyDropTarget({
+    required String entry,
+    required Widget child,
+  }) {
+    return DragTarget<String>(
+      onWillAcceptWithDetails: (details) {
+        return _canReorderHierarchyEntries(details.data, entry);
+      },
+      onAcceptWithDetails: (details) {
+        _moveHierarchyEntryToTarget(details.data, entry);
+      },
+      builder: (context, candidateData, rejectedData) {
+        final accepting = candidateData.isNotEmpty;
+
+        return AnimatedContainer(
+          duration: const Duration(milliseconds: 120),
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(10),
+            color: accepting
+                ? Colors.deepPurpleAccent.withValues(alpha: 0.10)
+                : Colors.transparent,
+          ),
+          child: child,
+        );
+      },
+    );
+  }
+
+  Widget? _buildHierarchyEntry(String entry, {required int depth}) {
+    if (entry.startsWith('group:')) {
+      final groupId = entry.substring(6);
+      final groupIndex = _layerGroups.indexWhere(
+        (group) => group.id == groupId,
+      );
+
+      if (groupIndex == -1) {
+        return null;
+      }
+
+      return _buildHierarchyDropTarget(
+        entry: entry,
+        child: _buildLayerGroupCard(_layerGroups[groupIndex], depth: depth),
+      );
+    }
+
+    if (entry.startsWith('layer:')) {
+      final layerId = entry.substring(6);
+      final layerIndex = _layers.indexWhere((layer) => layer.id == layerId);
+
+      if (layerIndex == -1) {
+        return null;
+      }
+
+      return _buildHierarchyDropTarget(
+        entry: entry,
+        child: _buildDrawingLayerCard(
+          layerIndex,
+          indented: depth > 0,
+          hierarchyDepth: depth,
+        ),
+      );
+    }
+
+    return null;
+  }
+
+  List<Widget> _buildOrderedChildEntries(
+    LayerGroup parent, {
+    required int depth,
+  }) {
+    final widgets = <Widget>[];
+
+    for (final entry in parent.childOrder) {
+      final widget = _buildHierarchyEntry(entry, depth: depth);
+
+      if (widget != null) {
+        widgets.add(widget);
+      }
+    }
+
+    return widgets;
+  }
+
   List<Widget> _buildLayerPanelEntries() {
     final widgets = <Widget>[];
 
-    for (final group in _layerGroups) {
-      widgets.add(_buildLayerGroupCard(group));
-    }
+    for (final entry in _rootLayerOrder) {
+      final widget = _buildHierarchyEntry(entry, depth: 0);
 
-    for (var index = 0; index < _layers.length; index++) {
-      final layer = _layers[index];
-
-      if (_groupContainingLayer(layer.id) == null) {
-        widgets.add(_buildDrawingLayerCard(index, indented: false));
+      if (widget != null) {
+        widgets.add(widget);
       }
     }
 
@@ -6903,7 +7612,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     return widgets;
   }
 
-  Widget _buildLayerGroupCard(LayerGroup group) {
+  Widget _buildLayerGroupCard(LayerGroup group, {int depth = 0}) {
     final selected = _activeLayerGroupId == group.id;
 
     final childIndices = <int>[];
@@ -6915,7 +7624,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     }
 
     return Container(
-      margin: const EdgeInsets.fromLTRB(6, 4, 6, 0),
+      margin: EdgeInsets.fromLTRB(6.0 + (depth * 16.0), 4, 6, 0),
       decoration: BoxDecoration(
         color: selected
             ? Colors.deepPurpleAccent.withValues(alpha: 0.14)
@@ -6937,6 +7646,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
             onDoubleTap: _isPlaying ? null : () => _renameLayerGroup(group.id),
             child: Row(
               children: [
+                _buildHierarchyDragHandle('group:${group.id}'),
                 IconButton(
                   tooltip: group.expanded ? 'Collapse Group' : 'Expand Group',
                   visualDensity: VisualDensity.compact,
@@ -6964,13 +7674,17 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                 const Icon(Icons.folder_outlined, size: 19),
                 const SizedBox(width: 6),
                 Expanded(
-                  child: Text(
-                    group.name,
-                    overflow: TextOverflow.ellipsis,
-                    style: TextStyle(
-                      fontWeight: selected
-                          ? FontWeight.w600
-                          : FontWeight.normal,
+                  child: Tooltip(
+                    message: group.name,
+                    preferBelow: false,
+                    child: Text(
+                      group.name,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        fontWeight: selected
+                            ? FontWeight.w600
+                            : FontWeight.normal,
+                      ),
                     ),
                   ),
                 ),
@@ -6985,6 +7699,8 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                       _addLayerGroupToBag(group.id);
                     } else if (value == 'png') {
                       _exportLayerGroupPng(group.id);
+                    } else if (value == 'move-group') {
+                      _showMoveGroupDialog(group.id);
                     } else if (value == 'rename') {
                       _renameLayerGroup(group.id);
                     } else if (value == 'delete') {
@@ -7007,6 +7723,14 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                       ),
                     ),
                     PopupMenuDivider(),
+                    PopupMenuItem(
+                      value: 'move-group',
+                      child: ListTile(
+                        leading: Icon(Icons.drive_file_move_outline),
+                        title: Text('Move to Group'),
+                      ),
+                    ),
+                    PopupMenuDivider(),
                     PopupMenuItem(value: 'rename', child: Text('Rename')),
                     PopupMenuItem(value: 'delete', child: Text('Delete Group')),
                   ],
@@ -7014,17 +7738,18 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
               ],
             ),
           ),
-
-          if (group.expanded) ...[
-            for (final layerIndex in childIndices)
-              _buildDrawingLayerCard(layerIndex, indented: true),
-          ],
+          if (group.expanded)
+            ..._buildOrderedChildEntries(group, depth: depth + 1),
         ],
       ),
     );
   }
 
-  Widget _buildDrawingLayerCard(int index, {required bool indented}) {
+  Widget _buildDrawingLayerCard(
+    int index, {
+    required bool indented,
+    int hierarchyDepth = 0,
+  }) {
     final layer = _layers[index];
     final selected = _activeLayerGroupId == null && index == _activeLayerIndex;
     final selectedForMerge = _mergeSelectedLayerIds.contains(layer.id);
@@ -7032,7 +7757,14 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     final currentGroup = _groupContainingLayer(layer.id);
 
     return Container(
-      margin: EdgeInsets.fromLTRB(indented ? 22 : 6, 4, 6, 0),
+      margin: EdgeInsets.fromLTRB(
+        hierarchyDepth > 0
+            ? 6.0 + (hierarchyDepth * 16.0)
+            : (indented ? 22.0 : 6.0),
+        4,
+        6,
+        0,
+      ),
       decoration: BoxDecoration(
         color: selectedForMerge
             ? Colors.tealAccent.withValues(alpha: 0.12)
@@ -7060,6 +7792,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
               padding: const EdgeInsets.symmetric(horizontal: 4),
               child: Row(
                 children: [
+                  _buildHierarchyDragHandle('layer:${layer.id}'),
                   IconButton(
                     tooltip: layer.visible ? 'Hide Layer' : 'Show Layer',
                     visualDensity: VisualDensity.compact,
@@ -7081,31 +7814,19 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                       ),
                     ),
                   Expanded(
-                    child: Text(
-                      layer.name,
-                      overflow: TextOverflow.ellipsis,
-                      style: TextStyle(
-                        fontWeight: selected
-                            ? FontWeight.w600
-                            : FontWeight.normal,
+                    child: Tooltip(
+                      message: layer.name,
+                      preferBelow: false,
+                      child: Text(
+                        layer.name,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                          fontWeight: selected
+                              ? FontWeight.w600
+                              : FontWeight.normal,
+                        ),
                       ),
                     ),
-                  ),
-                  IconButton(
-                    tooltip: 'Move Layer Up',
-                    visualDensity: VisualDensity.compact,
-                    onPressed: _isPlaying || index == 0
-                        ? null
-                        : () => _moveDrawingLayer(index, index - 1),
-                    icon: const Icon(Icons.keyboard_arrow_up, size: 20),
-                  ),
-                  IconButton(
-                    tooltip: 'Move Layer Down',
-                    visualDensity: VisualDensity.compact,
-                    onPressed: _isPlaying || index == _layers.length - 1
-                        ? null
-                        : () => _moveDrawingLayer(index, index + 1),
-                    icon: const Icon(Icons.keyboard_arrow_down, size: 20),
                   ),
                   PopupMenuButton<String>(
                     tooltip: 'Layer Options',

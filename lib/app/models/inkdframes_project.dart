@@ -17,6 +17,7 @@ class InkdFramesProject {
     this.referenceMediaType,
     List<DrawingLayer>? layers,
     List<LayerGroup>? layerGroups,
+    List<String>? rootOrder,
     List<ReferenceLayer>? referenceLayers,
     this.activeReferenceLayerId,
     List<int>? referenceFrameTimesMs,
@@ -24,6 +25,12 @@ class InkdFramesProject {
     this.referenceOpacity = 1.0,
   }) : layers = layers ?? _layersFromLegacyFrames(frames),
        layerGroups = layerGroups ?? <LayerGroup>[],
+       rootOrder =
+           rootOrder ??
+           _deriveRootOrder(
+             layers ?? _layersFromLegacyFrames(frames),
+             layerGroups ?? <LayerGroup>[],
+           ),
        referenceLayers =
            referenceLayers ??
            _referenceLayersFromLegacy(
@@ -40,6 +47,7 @@ class InkdFramesProject {
 
     final rawLayers = json['layers'];
     final rawLayerGroups = json['layerGroups'];
+    final rawRootOrder = json['rootOrder'];
     final rawReferenceLayers = json['referenceLayers'];
 
     final layers = rawLayers is List && rawLayers.isNotEmpty
@@ -121,6 +129,9 @@ class InkdFramesProject {
           (json['referenceOpacity'] as num?)?.toDouble().clamp(0.0, 1.0) ?? 1.0,
       layers: layers,
       layerGroups: layerGroups,
+      rootOrder: rawRootOrder is List
+          ? rawRootOrder.map((entry) => entry.toString()).toList()
+          : null,
       referenceLayers: referenceLayers,
       activeReferenceLayerId:
           json['activeReferenceLayerId'] as String? ??
@@ -141,6 +152,15 @@ class InkdFramesProject {
 
   final List<DrawingLayer> layers;
   final List<LayerGroup> layerGroups;
+
+  /// Ordered root-level drawing hierarchy.
+  ///
+  /// Entries use:
+  ///   `group:<id>`
+  ///   `layer:<id>`
+  ///
+  /// Reference layers remain separate from the drawing hierarchy.
+  final List<String> rootOrder;
 
   /// Persistent image/video reference layers.
   ///
@@ -181,6 +201,7 @@ class InkdFramesProject {
 
       'layers': layers.map((layer) => layer.toJson()).toList(),
       'layerGroups': layerGroups.map((group) => group.toJson()).toList(),
+      'rootOrder': rootOrder,
 
       'referenceLayers': referenceLayers
           .map((reference) => reference.toJson())
@@ -197,6 +218,26 @@ class InkdFramesProject {
       'referenceOpacity': referenceOpacity,
       'referenceFrameTimesMs': referenceFrameTimesMs,
     };
+  }
+
+  static List<String> _deriveRootOrder(
+    List<DrawingLayer> layers,
+    List<LayerGroup> groups,
+  ) {
+    final nestedGroupIds = <String>{};
+    final groupedLayerIds = <String>{};
+
+    for (final group in groups) {
+      nestedGroupIds.addAll(group.childGroupIds);
+      groupedLayerIds.addAll(group.childLayerIds);
+    }
+
+    return <String>[
+      for (final group in groups)
+        if (!nestedGroupIds.contains(group.id)) 'group:${group.id}',
+      for (final layer in layers)
+        if (!groupedLayerIds.contains(layer.id)) 'layer:${layer.id}',
+    ];
   }
 
   static List<List<VectorStroke>> _readLegacyFrames(dynamic rawFrames) {
