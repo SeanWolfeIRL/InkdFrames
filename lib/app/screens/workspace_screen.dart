@@ -28,6 +28,7 @@ enum _ShapeToolType {
   line,
   rectangle,
   filledRectangle,
+  perspectiveRectangle,
   square,
   filledSquare,
   circle,
@@ -122,6 +123,21 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
   _ShapeToolType _shapeToolType = _ShapeToolType.line;
   Offset? _shapeStartPosition;
   List<VectorStroke> _draftShapeStrokes = const <VectorStroke>[];
+
+  // Temporary four-corner editing state for Perspective Rectangle.
+  bool _perspectiveShapeEditing = false;
+  List<Offset> _perspectiveShapeCorners = const <Offset>[];
+  int? _perspectiveDraggingCorner;
+
+  // Precision Loupe.
+  //
+  // A canvas snapshot is captured when a Perspective corner is grabbed.
+  // During the drag we only move the magnified crop, keeping S Pen/touch
+  // interaction lightweight.
+  ui.Image? _perspectiveLoupeImage;
+  Offset? _perspectiveLoupeCanvasPosition;
+  Offset? _perspectiveLoupeScreenPosition;
+  final GlobalKey _workspaceStackKey = GlobalKey();
 
   bool _isTransformActive = false;
   bool _isTransformDragging = false;
@@ -3919,6 +3935,16 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
       case _ShapeToolType.filledRectangle:
         return rectangleStrokes(Rect.fromPoints(start, end), filled: true);
 
+      case _ShapeToolType.perspectiveRectangle:
+        final rect = Rect.fromPoints(start, end);
+
+        return _perspectiveRectangleStrokes(<Offset>[
+          rect.topLeft,
+          rect.topRight,
+          rect.bottomRight,
+          rect.bottomLeft,
+        ]);
+
       case _ShapeToolType.square:
       case _ShapeToolType.filledSquare:
         final dx = end.dx - start.dx;
@@ -3963,10 +3989,165 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     }
   }
 
+  List<VectorStroke> _perspectiveRectangleStrokes(List<Offset> corners) {
+    if (corners.length != 4) {
+      return const <VectorStroke>[];
+    }
+
+    VectorPoint point(Offset offset) {
+      return VectorPoint(dx: offset.dx, dy: offset.dy, pressure: 1);
+    }
+
+    VectorStroke edge(Offset start, Offset end) {
+      return VectorStroke(
+        points: <VectorPoint>[point(start), point(end)],
+        strokeWidth: _brushSize,
+        color: Colors.black,
+        filled: false,
+        brushType: StrokeBrushType.solid,
+      );
+    }
+
+    final center = Offset(
+      corners.fold<double>(0, (sum, corner) => sum + corner.dx) / 4,
+      corners.fold<double>(0, (sum, corner) => sum + corner.dy) / 4,
+    );
+
+    final fillInset = math.max(1.0, _brushSize / 2);
+
+    final fillCorners = corners.map((corner) {
+      final direction = center - corner;
+      final distance = direction.distance;
+
+      if (distance <= 0.001 || distance <= fillInset) {
+        return corner;
+      }
+
+      return corner + ((direction / distance) * fillInset);
+    }).toList();
+
+    return <VectorStroke>[
+      VectorStroke(
+        points: fillCorners.map(point).toList(),
+        strokeWidth: 0,
+        color: _brushColor.withValues(alpha: _brushOpacity),
+        filled: true,
+        brushType: StrokeBrushType.solid,
+      ),
+      edge(corners[0], corners[1]),
+      edge(corners[1], corners[2]),
+      edge(corners[2], corners[3]),
+      edge(corners[3], corners[0]),
+    ];
+  }
+
+  Future<void> _capturePerspectiveLoupe(
+    Offset canvasPosition,
+    Offset globalPosition,
+  ) async {
+    final renderObject = _canvasSampleKey.currentContext?.findRenderObject();
+
+    final stackObject = _workspaceStackKey.currentContext?.findRenderObject();
+
+    if (renderObject is! RenderRepaintBoundary || stackObject is! RenderBox) {
+      return;
+    }
+
+    try {
+      final image = await renderObject.toImage(pixelRatio: 1);
+
+      if (!mounted || _perspectiveDraggingCorner == null) {
+        image.dispose();
+        return;
+      }
+
+      final localScreenPosition = stackObject.globalToLocal(globalPosition);
+
+      setState(() {
+        _perspectiveLoupeImage?.dispose();
+
+        _perspectiveLoupeImage = image;
+        _perspectiveLoupeCanvasPosition = canvasPosition;
+        _perspectiveLoupeScreenPosition = localScreenPosition;
+      });
+    } catch (_) {
+      // Corner editing must continue even if the
+      // optional Precision Loupe cannot be captured.
+    }
+  }
+
+  void _updatePerspectiveLoupe(Offset canvasPosition, Offset globalPosition) {
+    final stackObject = _workspaceStackKey.currentContext?.findRenderObject();
+
+    if (stackObject is! RenderBox) {
+      return;
+    }
+
+    _perspectiveLoupeCanvasPosition = canvasPosition;
+
+    _perspectiveLoupeScreenPosition = stackObject.globalToLocal(globalPosition);
+  }
+
+  void _clearPerspectiveLoupe() {
+    _perspectiveLoupeImage?.dispose();
+    _perspectiveLoupeImage = null;
+    _perspectiveLoupeCanvasPosition = null;
+    _perspectiveLoupeScreenPosition = null;
+  }
+
+  int? _perspectiveCornerHit(Offset position) {
+    if (!_perspectiveShapeEditing || _perspectiveShapeCorners.length != 4) {
+      return null;
+    }
+
+    final currentScale = _transformationController.value.getMaxScaleOnAxis();
+
+    // Roughly constant finger-friendly hit size regardless of canvas zoom.
+    final hitRadius = 24.0 / math.max(0.1, currentScale);
+
+    for (var index = 0; index < _perspectiveShapeCorners.length; index++) {
+      if ((position - _perspectiveShapeCorners[index]).distance <= hitRadius) {
+        return index;
+      }
+    }
+
+    return null;
+  }
+
+  void _updatePerspectiveCorner(int index, Offset position) {
+    if (index < 0 || index >= _perspectiveShapeCorners.length) {
+      return;
+    }
+
+    final corners = List<Offset>.from(_perspectiveShapeCorners);
+
+    corners[index] = position;
+
+    _perspectiveShapeCorners = corners;
+    _draftShapeStrokes = _perspectiveRectangleStrokes(corners);
+  }
+
   void _updateShapePreview(Offset position) {
     final start = _shapeStartPosition;
 
     if (start == null) return;
+
+    if (_shapeToolType == _ShapeToolType.perspectiveRectangle) {
+      final rect = Rect.fromPoints(start, position);
+
+      _perspectiveShapeCorners = <Offset>[
+        rect.topLeft,
+        rect.topRight,
+        rect.bottomRight,
+        rect.bottomLeft,
+      ];
+
+      _draftShapeStrokes = _perspectiveRectangleStrokes(
+        _perspectiveShapeCorners,
+      );
+
+      return;
+    }
 
     _draftShapeStrokes = _shapeStrokes(start, position);
   }
@@ -3974,6 +4155,28 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
   void _clearShapeDraft() {
     _shapeStartPosition = null;
     _draftShapeStrokes = const <VectorStroke>[];
+
+    _perspectiveShapeEditing = false;
+    _perspectiveShapeCorners = const <Offset>[];
+    _perspectiveDraggingCorner = null;
+  }
+
+  void _confirmPerspectiveShape() {
+    if (!_perspectiveShapeEditing || _draftShapeStrokes.isEmpty) {
+      return;
+    }
+
+    setState(() {
+      _commitShape();
+    });
+
+    _scheduleAutosave();
+  }
+
+  void _cancelPerspectiveShape() {
+    setState(() {
+      _clearShapeDraft();
+    });
   }
 
   void _commitShape() {
@@ -5219,6 +5422,25 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     }
 
     if (_isShapeToolActive) {
+      if (_shapeToolType == _ShapeToolType.perspectiveRectangle &&
+          _perspectiveShapeEditing) {
+        final corner = _perspectiveCornerHit(canvasPosition);
+
+        setState(() {
+          _perspectiveDraggingCorner = corner;
+
+          if (corner == null) {
+            _clearPerspectiveLoupe();
+          }
+        });
+
+        if (corner != null) {
+          unawaited(_capturePerspectiveLoupe(canvasPosition, event.position));
+        }
+
+        return;
+      }
+
       setState(() {
         _shapeStartPosition = canvasPosition;
         _draftShapeStrokes = _shapeStrokes(canvasPosition, canvasPosition);
@@ -5449,6 +5671,22 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
       return;
     }
 
+    if (_isShapeToolActive &&
+        _shapeToolType == _ShapeToolType.perspectiveRectangle &&
+        _perspectiveShapeEditing) {
+      final corner = _perspectiveDraggingCorner;
+
+      if (corner != null) {
+        setState(() {
+          _updatePerspectiveCorner(corner, canvasPosition);
+
+          _updatePerspectiveLoupe(canvasPosition, event.position);
+        });
+      }
+
+      return;
+    }
+
     if (_isShapeToolActive && _shapeStartPosition != null) {
       setState(() {
         _updateShapePreview(canvasPosition);
@@ -5578,7 +5816,32 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
       return;
     }
 
+    if (_isShapeToolActive &&
+        _shapeToolType == _ShapeToolType.perspectiveRectangle &&
+        _perspectiveShapeEditing) {
+      setState(() {
+        _perspectiveDraggingCorner = null;
+        _clearPerspectiveLoupe();
+      });
+
+      return;
+    }
+
     if (_isShapeToolActive && _shapeStartPosition != null) {
+      if (_shapeToolType == _ShapeToolType.perspectiveRectangle) {
+        setState(() {
+          _shapeStartPosition = null;
+
+          _perspectiveShapeEditing =
+              _perspectiveShapeCorners.length == 4 &&
+              _draftShapeStrokes.isNotEmpty;
+
+          _perspectiveDraggingCorner = null;
+        });
+
+        return;
+      }
+
       setState(() {
         _commitShape();
       });
@@ -5668,9 +5931,20 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     if (_activePointerCount > 0) {
       _activePointerCount -= 1;
     }
+
     if (_isPlaying) {
       return;
     }
+
+    if (_perspectiveShapeEditing) {
+      setState(() {
+        _perspectiveDraggingCorner = null;
+        _clearPerspectiveLoupe();
+      });
+
+      return;
+    }
+
     setState(() {
       _draftStroke = const <VectorPoint>[];
       _tintTouchedStrokeIndices.clear();
@@ -7031,6 +7305,54 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     );
   }
 
+  Widget _buildPerspectiveLoupe(BoxConstraints constraints) {
+    final image = _perspectiveLoupeImage;
+    final canvasPosition = _perspectiveLoupeCanvasPosition;
+    final pointerPosition = _perspectiveLoupeScreenPosition;
+
+    if (image == null || canvasPosition == null || pointerPosition == null) {
+      return const SizedBox.shrink();
+    }
+
+    const loupeSize = 132.0;
+    const loupeRadius = loupeSize / 2;
+    const verticalOffset = 96.0;
+
+    var centerX = pointerPosition.dx;
+    var centerY = pointerPosition.dy - verticalOffset;
+
+    // If there isn't enough room above the pointer, put the loupe below it.
+    if (centerY - loupeRadius < 8) {
+      centerY = pointerPosition.dy + verticalOffset;
+    }
+
+    centerX = centerX.clamp(
+      loupeRadius + 8,
+      math.max(loupeRadius + 8, constraints.maxWidth - loupeRadius - 8),
+    );
+
+    centerY = centerY.clamp(
+      loupeRadius + 8,
+      math.max(loupeRadius + 8, constraints.maxHeight - loupeRadius - 8),
+    );
+
+    return Positioned(
+      left: centerX - loupeRadius,
+      top: centerY - loupeRadius,
+      width: loupeSize,
+      height: loupeSize,
+      child: IgnorePointer(
+        child: CustomPaint(
+          painter: _PerspectiveLoupePainter(
+            image: image,
+            canvasPosition: canvasPosition,
+            zoom: 3.5,
+          ),
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final previousFrameStrokes = _getPreviousFrameStrokes();
@@ -7091,6 +7413,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                 final canvasPadding = isPortraitWorkspace ? 0.0 : 16.0;
 
                 return Stack(
+                  key: _workspaceStackKey,
                   children: [
                     Padding(
                       padding: EdgeInsets.all(canvasPadding),
@@ -7238,6 +7561,21 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                                                       const SizedBox.expand(),
                                                 ),
                                               ),
+                                            if (_perspectiveShapeEditing &&
+                                                _perspectiveShapeCorners
+                                                        .length ==
+                                                    4)
+                                              IgnorePointer(
+                                                child: CustomPaint(
+                                                  painter:
+                                                      _PerspectiveShapeHandlesPainter(
+                                                        corners:
+                                                            _perspectiveShapeCorners,
+                                                      ),
+                                                  child:
+                                                      const SizedBox.expand(),
+                                                ),
+                                              ),
                                             if (_isTransformActive)
                                               IgnorePointer(
                                                 child: CustomPaint(
@@ -7263,6 +7601,11 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                         ),
                       ),
                     ),
+                    if (_perspectiveLoupeImage != null &&
+                        _perspectiveLoupeCanvasPosition != null &&
+                        _perspectiveLoupeScreenPosition != null &&
+                        _perspectiveDraggingCorner != null)
+                      _buildPerspectiveLoupe(constraints),
                     if (!_isVideoScrubbing)
                       Positioned(
                         top: 78,
@@ -9425,6 +9768,16 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                                         ),
                                       ),
                                       PopupMenuItem(
+                                        value:
+                                            _ShapeToolType.perspectiveRectangle,
+                                        child: ListTile(
+                                          leading: Icon(
+                                            Icons.crop_free_rounded,
+                                          ),
+                                          title: Text('Perspective Rectangle'),
+                                        ),
+                                      ),
+                                      PopupMenuItem(
                                         value: _ShapeToolType.square,
                                         child: ListTile(
                                           leading: Icon(Icons.crop_square),
@@ -9460,6 +9813,26 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                                           : Colors.white70,
                                     ),
                                   ),
+                                  if (_perspectiveShapeEditing) ...[
+                                    IconButton(
+                                      tooltip: 'Commit Perspective Shape',
+                                      visualDensity: VisualDensity.compact,
+                                      onPressed: _confirmPerspectiveShape,
+                                      icon: const Icon(
+                                        Icons.check_circle_outline,
+                                        color: Colors.greenAccent,
+                                      ),
+                                    ),
+                                    IconButton(
+                                      tooltip: 'Cancel Perspective Shape',
+                                      visualDensity: VisualDensity.compact,
+                                      onPressed: _cancelPerspectiveShape,
+                                      icon: const Icon(
+                                        Icons.cancel_outlined,
+                                        color: Colors.redAccent,
+                                      ),
+                                    ),
+                                  ],
                                 ],
                                 IconButton(
                                   tooltip: editToolbarExpanded
@@ -10505,5 +10878,167 @@ class _RadialColourPickerPainter extends CustomPainter {
   @override
   bool shouldRepaint(covariant _RadialColourPickerPainter oldDelegate) {
     return oldDelegate.hsv != hsv;
+  }
+}
+
+class _PerspectiveShapeHandlesPainter extends CustomPainter {
+  const _PerspectiveShapeHandlesPainter({required this.corners});
+
+  final List<Offset> corners;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    if (corners.length != 4) {
+      return;
+    }
+
+    final guidePaint = Paint()
+      ..color = Colors.cyanAccent.withValues(alpha: 0.75)
+      ..strokeWidth = 1.5
+      ..style = PaintingStyle.stroke
+      ..isAntiAlias = true;
+
+    final handleFillPaint = Paint()
+      ..color = const Color(0xFF1A1720)
+      ..style = PaintingStyle.fill
+      ..isAntiAlias = true;
+
+    final handleOutlinePaint = Paint()
+      ..color = Colors.cyanAccent
+      ..strokeWidth = 2.5
+      ..style = PaintingStyle.stroke
+      ..isAntiAlias = true;
+
+    final guide = Path()
+      ..moveTo(corners[0].dx, corners[0].dy)
+      ..lineTo(corners[1].dx, corners[1].dy)
+      ..lineTo(corners[2].dx, corners[2].dy)
+      ..lineTo(corners[3].dx, corners[3].dy)
+      ..close();
+
+    canvas.drawPath(guide, guidePaint);
+
+    for (final corner in corners) {
+      canvas.drawCircle(corner, 10, handleFillPaint);
+
+      canvas.drawCircle(corner, 10, handleOutlinePaint);
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant _PerspectiveShapeHandlesPainter oldDelegate) {
+    return oldDelegate.corners != corners;
+  }
+}
+
+class _PerspectiveLoupePainter extends CustomPainter {
+  const _PerspectiveLoupePainter({
+    required this.image,
+    required this.canvasPosition,
+    required this.zoom,
+  });
+
+  final ui.Image image;
+  final Offset canvasPosition;
+  final double zoom;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final center = size.center(Offset.zero);
+    final radius = math.min(size.width, size.height) / 2;
+
+    canvas.save();
+
+    final clipPath = Path()
+      ..addOval(Rect.fromCircle(center: center, radius: radius - 3));
+
+    canvas.clipPath(clipPath);
+
+    final sourceWidth = size.width / zoom;
+    final sourceHeight = size.height / zoom;
+
+    final sourceRect = Rect.fromCenter(
+      center: canvasPosition,
+      width: sourceWidth,
+      height: sourceHeight,
+    );
+
+    final destinationRect = Offset.zero & size;
+
+    canvas.drawImageRect(
+      image,
+      sourceRect,
+      destinationRect,
+      Paint()
+        ..filterQuality = FilterQuality.high
+        ..isAntiAlias = true,
+    );
+
+    // A subtle dark centre ring makes the actual target coordinate readable
+    // against both light and dark reference artwork.
+    final centreHalo = Paint()
+      ..color = Colors.black.withValues(alpha: 0.45)
+      ..style = PaintingStyle.fill
+      ..isAntiAlias = true;
+
+    canvas.drawCircle(center, 5, centreHalo);
+
+    final crosshairPaint = Paint()
+      ..color = Colors.cyanAccent
+      ..strokeWidth = 1.6
+      ..style = PaintingStyle.stroke
+      ..isAntiAlias = true;
+
+    const gap = 7.0;
+    const arm = 22.0;
+
+    canvas.drawLine(
+      Offset(center.dx - arm, center.dy),
+      Offset(center.dx - gap, center.dy),
+      crosshairPaint,
+    );
+
+    canvas.drawLine(
+      Offset(center.dx + gap, center.dy),
+      Offset(center.dx + arm, center.dy),
+      crosshairPaint,
+    );
+
+    canvas.drawLine(
+      Offset(center.dx, center.dy - arm),
+      Offset(center.dx, center.dy - gap),
+      crosshairPaint,
+    );
+
+    canvas.drawLine(
+      Offset(center.dx, center.dy + gap),
+      Offset(center.dx, center.dy + arm),
+      crosshairPaint,
+    );
+
+    canvas.restore();
+
+    final borderPaint = Paint()
+      ..color = Colors.cyanAccent
+      ..strokeWidth = 3
+      ..style = PaintingStyle.stroke
+      ..isAntiAlias = true;
+
+    canvas.drawCircle(center, radius - 2, borderPaint);
+
+    final outerPaint = Paint()
+      ..color = Colors.black.withValues(alpha: 0.72)
+      ..strokeWidth = 6
+      ..style = PaintingStyle.stroke
+      ..isAntiAlias = true;
+
+    canvas.drawCircle(center, radius - 5, outerPaint);
+  }
+
+  @override
+  bool shouldRepaint(covariant _PerspectiveLoupePainter oldDelegate) {
+    return oldDelegate.image != image ||
+        oldDelegate.canvasPosition != canvasPosition ||
+        oldDelegate.zoom != zoom;
   }
 }
