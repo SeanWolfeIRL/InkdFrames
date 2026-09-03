@@ -201,7 +201,7 @@ class FrameThumbnailPainter extends CustomPainter {
   }
 
   void _paintStroke(Canvas canvas, VectorStroke stroke, Color color) {
-    final points = _smoothPoints(stroke.points);
+    final points = stroke.filled ? stroke.points : _smoothPoints(stroke.points);
 
     if (points.isEmpty) {
       return;
@@ -209,6 +209,23 @@ class FrameThumbnailPainter extends CustomPainter {
 
     if (!stroke.filled && stroke.brushType == StrokeBrushType.pressure) {
       _paintPressureStroke(canvas, points, stroke.strokeWidth, color);
+      return;
+    }
+
+    if (stroke.filled && points.length == 4) {
+      final fillPaint = Paint()
+        ..color = color
+        ..style = PaintingStyle.fill
+        ..isAntiAlias = true;
+
+      final path = Path()..moveTo(points.first.dx, points.first.dy);
+
+      for (var i = 1; i < points.length; i++) {
+        path.lineTo(points[i].dx, points[i].dy);
+      }
+
+      path.close();
+      canvas.drawPath(path, fillPaint);
       return;
     }
 

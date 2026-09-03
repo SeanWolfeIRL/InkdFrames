@@ -56,7 +56,7 @@ class _ProjectLibraryScreenState extends State<ProjectLibraryScreen> {
   }
 
   Future<void> _renameProject(InkdFramesProject project, int index) async {
-    final controller = TextEditingController(text: project.name);
+    var draftName = project.name;
 
     final newName = await showDialog<String>(
       context: context,
@@ -67,14 +67,24 @@ class _ProjectLibraryScreenState extends State<ProjectLibraryScreen> {
             'Rename project',
             style: TextStyle(color: Color(0xFFF4E7D0)),
           ),
-          content: TextField(
-            controller: controller,
+          content: TextFormField(
+            initialValue: project.name,
             autofocus: true,
             style: const TextStyle(color: Color(0xFFF4E7D0)),
             decoration: const InputDecoration(
               hintText: 'Project name',
               hintStyle: TextStyle(color: Colors.white54),
             ),
+            onChanged: (value) {
+              draftName = value;
+            },
+            onFieldSubmitted: (_) {
+              final name = draftName.trim();
+
+              if (name.isNotEmpty) {
+                Navigator.pop(dialogContext, name);
+              }
+            },
           ),
           actions: [
             TextButton(
@@ -83,7 +93,7 @@ class _ProjectLibraryScreenState extends State<ProjectLibraryScreen> {
             ),
             FilledButton(
               onPressed: () {
-                final name = controller.text.trim();
+                final name = draftName.trim();
 
                 if (name.isNotEmpty) {
                   Navigator.pop(dialogContext, name);
@@ -96,33 +106,45 @@ class _ProjectLibraryScreenState extends State<ProjectLibraryScreen> {
       },
     );
 
-    controller.dispose();
+    if (newName == null || !mounted) {
+      return;
+    }
 
-    if (newName == null || !mounted) return;
+    final trimmedName = newName.trim();
+
+    if (trimmedName.isEmpty || trimmedName == project.name) {
+      return;
+    }
 
     final prefs = await SharedPreferences.getInstance();
 
-    final renamedProject = InkdFramesProject(
-      id: project.id,
-      name: newName,
-      fps: project.fps,
-      frames: project.frames,
-      frameDurations: project.frameDurations,
-      canvasWidth: project.canvasWidth,
-      canvasHeight: project.canvasHeight,
-      referenceMediaPath: project.referenceMediaPath,
-      referenceMediaType: project.referenceMediaType,
-    );
+    // Preserve the complete project structure and change only the name.
+    // This avoids dropping newer fields such as Layers or ReferenceLayers.
+    final renamedJson = Map<String, dynamic>.from(project.toJson());
+    renamedJson['name'] = trimmedName;
+
+    final renamedProject = InkdFramesProject.fromJson(renamedJson);
 
     await prefs.setString(
       'project_${project.id}',
       jsonEncode(renamedProject.toJson()),
     );
 
-    if (!mounted) return;
+    if (!mounted) {
+      return;
+    }
+
+    final currentIndex = _projects.indexWhere(
+      (candidate) => candidate.id == project.id,
+    );
+
+    if (currentIndex == -1) {
+      await _loadProjectIds();
+      return;
+    }
 
     setState(() {
-      _projects[index] = renamedProject;
+      _projects[currentIndex] = renamedProject;
     });
   }
 
@@ -304,9 +326,98 @@ class _ProjectLibraryScreenState extends State<ProjectLibraryScreen> {
   }
 
   List<VectorStroke> _projectThumbnailStrokes(InkdFramesProject project) {
+    final orderedLayerIds = <String>[];
+    final visitedLayerIds = <String>{};
+    final visitedGroupIds = <String>{};
+
+    void visitEntry(String entry) {
+      if (entry.startsWith('layer:')) {
+        final layerId = entry.substring(6);
+
+        final layerIndex = project.layers.indexWhere(
+          (layer) => layer.id == layerId,
+        );
+
+        if (layerIndex == -1 || visitedLayerIds.contains(layerId)) {
+          return;
+        }
+
+        final layer = project.layers[layerIndex];
+
+        if (!layer.visible) {
+          visitedLayerIds.add(layerId);
+          return;
+        }
+
+        visitedLayerIds.add(layerId);
+        orderedLayerIds.add(layerId);
+        return;
+      }
+
+      if (entry.startsWith('group:')) {
+        final groupId = entry.substring(6);
+
+        if (visitedGroupIds.contains(groupId)) {
+          return;
+        }
+
+        final groupIndex = project.layerGroups.indexWhere(
+          (group) => group.id == groupId,
+        );
+
+        if (groupIndex == -1) {
+          return;
+        }
+
+        visitedGroupIds.add(groupId);
+
+        final group = project.layerGroups[groupIndex];
+
+        if (!group.visible) {
+          return;
+        }
+
+        for (final childEntry in group.childOrder) {
+          visitEntry(childEntry);
+        }
+      }
+    }
+
+    // Traverse the saved hierarchy in panel order: top -> bottom.
+    for (final entry in project.rootOrder) {
+      visitEntry(entry);
+    }
+
+    // Legacy/fallback protection: include any groups missing from rootOrder.
+    for (final group in project.layerGroups) {
+      if (!visitedGroupIds.contains(group.id)) {
+        visitEntry('group:${group.id}');
+      }
+    }
+
+    // Legacy/fallback protection: include any loose layers missing from hierarchy.
+    for (final layer in project.layers) {
+      if (!visitedLayerIds.contains(layer.id) && layer.visible) {
+        visitedLayerIds.add(layer.id);
+        orderedLayerIds.add(layer.id);
+      }
+    }
+
     final strokes = <VectorStroke>[];
 
-    for (final layer in project.layers) {
+    // Panel order is top -> bottom, but painting must happen bottom -> top
+    // so the visually highest layer is painted last.
+    for (final layerId in orderedLayerIds.reversed) {
+      final layerIndex = project.layers.indexWhere(
+        (layer) => layer.id == layerId,
+      );
+
+      if (layerIndex == -1) {
+        continue;
+      }
+
+      final layer = project.layers[layerIndex];
+
       if (layer.frames.isEmpty) {
         continue;
       }
