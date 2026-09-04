@@ -1094,18 +1094,71 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     }
 
     final group = _layerGroups[groupIndex];
-    final exportStrokes = <VectorStroke>[];
 
-    for (final layerId in group.childLayerIds) {
-      final layerIndex = _layers.indexWhere((layer) => layer.id == layerId);
+    // Collect drawing layers in Workspace panel order: top -> bottom.
+    // childOrder is the canonical visual hierarchy and can contain
+    // both drawing layers and nested layer groups.
+    final orderedLayers = <DrawingLayer>[];
+    final visitedGroupIds = <String>{};
+    final visitedLayerIds = <String>{};
 
-      if (layerIndex == -1) {
-        continue;
+    void collectGroupLayers(LayerGroup currentGroup) {
+      if (!visitedGroupIds.add(currentGroup.id)) {
+        return;
       }
 
-      final layer = _layers[layerIndex];
+      for (final entry in currentGroup.childOrder) {
+        if (entry.startsWith('layer:')) {
+          final layerId = entry.substring(6);
 
-      if (!layer.visible ||
+          if (!visitedLayerIds.add(layerId)) {
+            continue;
+          }
+
+          final layerIndex = _layers.indexWhere((layer) => layer.id == layerId);
+
+          if (layerIndex != -1) {
+            orderedLayers.add(_layers[layerIndex]);
+          }
+
+          continue;
+        }
+
+        if (entry.startsWith('group:')) {
+          final childGroupId = entry.substring(6);
+
+          final childGroupIndex = _layerGroups.indexWhere(
+            (candidate) => candidate.id == childGroupId,
+          );
+
+          if (childGroupIndex != -1) {
+            collectGroupLayers(_layerGroups[childGroupIndex]);
+          }
+        }
+      }
+
+      // Legacy/fallback protection for projects whose childOrder does
+      // not yet contain every directly-owned drawing layer.
+      for (final layerId in currentGroup.childLayerIds) {
+        if (!visitedLayerIds.add(layerId)) {
+          continue;
+        }
+
+        final layerIndex = _layers.indexWhere((layer) => layer.id == layerId);
+
+        if (layerIndex != -1) {
+          orderedLayers.add(_layers[layerIndex]);
+        }
+      }
+    }
+
+    collectGroupLayers(group);
+
+    final exportStrokes = <VectorStroke>[];
+
+    // Layer panel order is top -> bottom, so paint bottom -> top.
+    for (final layer in orderedLayers.reversed) {
+      if (!_isLayerEffectivelyVisible(layer) ||
           _selectedFrameIndex < 0 ||
           _selectedFrameIndex >= layer.frames.length) {
         continue;
@@ -1172,31 +1225,102 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
 
     final bagLayers = <BagLayer>[];
 
-    for (final layerId in group.childLayerIds) {
-      final layerIndex = _layers.indexWhere((layer) => layer.id == layerId);
+    // BagItem.layers must be stored in the same top-to-bottom order shown
+    // in the Workspace layer hierarchy. Bag/Home renderers reverse this
+    // list when painting so bottom layers are painted first.
+    //
+    // Walk childOrder rather than childLayerIds because childOrder is the
+    // canonical visual hierarchy and can also contain nested groups.
+    final visitedGroupIds = <String>{};
+    final visitedLayerIds = <String>{};
 
-      if (layerIndex == -1) {
-        continue;
+    void collectGroupLayers(LayerGroup currentGroup) {
+      if (!visitedGroupIds.add(currentGroup.id)) {
+        return;
       }
 
-      final layer = _layers[layerIndex];
+      for (final entry in currentGroup.childOrder) {
+        if (entry.startsWith('layer:')) {
+          final layerId = entry.substring(6);
 
-      if (_selectedFrameIndex < 0 ||
-          _selectedFrameIndex >= layer.frames.length) {
-        continue;
+          if (!visitedLayerIds.add(layerId)) {
+            continue;
+          }
+
+          final layerIndex = _layers.indexWhere((layer) => layer.id == layerId);
+
+          if (layerIndex == -1) {
+            continue;
+          }
+
+          final layer = _layers[layerIndex];
+
+          if (_selectedFrameIndex < 0 ||
+              _selectedFrameIndex >= layer.frames.length) {
+            continue;
+          }
+
+          bagLayers.add(
+            BagLayer(
+              name: layer.name,
+              opacity: layer.opacity,
+              visible: _isLayerEffectivelyVisible(layer),
+              strokes: layer.frames[_selectedFrameIndex]
+                  .map((stroke) => stroke.copy())
+                  .toList(),
+            ),
+          );
+
+          continue;
+        }
+
+        if (entry.startsWith('group:')) {
+          final childGroupId = entry.substring(6);
+
+          final childGroupIndex = _layerGroups.indexWhere(
+            (candidate) => candidate.id == childGroupId,
+          );
+
+          if (childGroupIndex != -1) {
+            collectGroupLayers(_layerGroups[childGroupIndex]);
+          }
+        }
       }
 
-      bagLayers.add(
-        BagLayer(
-          name: layer.name,
-          opacity: layer.opacity,
-          visible: layer.visible,
-          strokes: layer.frames[_selectedFrameIndex]
-              .map((stroke) => stroke.copy())
-              .toList(),
-        ),
-      );
+      // Legacy/fallback protection for older projects whose childOrder may
+      // not contain every directly-owned drawing layer.
+      for (final layerId in currentGroup.childLayerIds) {
+        if (!visitedLayerIds.add(layerId)) {
+          continue;
+        }
+
+        final layerIndex = _layers.indexWhere((layer) => layer.id == layerId);
+
+        if (layerIndex == -1) {
+          continue;
+        }
+
+        final layer = _layers[layerIndex];
+
+        if (_selectedFrameIndex < 0 ||
+            _selectedFrameIndex >= layer.frames.length) {
+          continue;
+        }
+
+        bagLayers.add(
+          BagLayer(
+            name: layer.name,
+            opacity: layer.opacity,
+            visible: _isLayerEffectivelyVisible(layer),
+            strokes: layer.frames[_selectedFrameIndex]
+                .map((stroke) => stroke.copy())
+                .toList(),
+          ),
+        );
+      }
     }
+
+    collectGroupLayers(group);
 
     if (bagLayers.isEmpty) {
       if (!mounted) return;
