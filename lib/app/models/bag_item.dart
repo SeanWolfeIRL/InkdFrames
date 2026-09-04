@@ -46,6 +46,8 @@ class BagItem {
     required this.sourceGroupName,
     required this.layers,
     required this.createdAt,
+    this.assetType = 'vector',
+    this.imagePath,
   });
 
   factory BagItem.fromJson(Map<String, dynamic> json) {
@@ -58,6 +60,8 @@ class BagItem {
       createdAt:
           DateTime.tryParse(json['createdAt'] as String? ?? '') ??
           DateTime.now(),
+      assetType: json['assetType'] as String? ?? 'vector',
+      imagePath: json['imagePath'] as String?,
       layers: rawLayers
           .map(
             (layer) =>
@@ -70,8 +74,19 @@ class BagItem {
   final String id;
   final String name;
   final String sourceGroupName;
+
+  /// vector = traditional InkdFrames stroke asset
+  /// image  = native raster asset such as PNG with alpha
+  final String assetType;
+
+  /// Durable app-local source image for native image assets.
+  final String? imagePath;
+
   final List<BagLayer> layers;
   final DateTime createdAt;
+
+  bool get isImage =>
+      assetType == 'image' && imagePath != null && imagePath!.isNotEmpty;
 
   Map<String, dynamic> toJson() {
     return {
@@ -79,6 +94,8 @@ class BagItem {
       'name': name,
       'sourceGroupName': sourceGroupName,
       'createdAt': createdAt.toIso8601String(),
+      'assetType': assetType,
+      if (imagePath != null) 'imagePath': imagePath,
       'layers': layers.map((layer) => layer.toJson()).toList(),
     };
   }

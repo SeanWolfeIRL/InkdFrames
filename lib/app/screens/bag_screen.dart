@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'dart:convert';
 
 import 'package:file_picker/file_picker.dart';
@@ -749,6 +751,25 @@ class _BagScreenState extends State<BagScreen> {
   }
 
   Widget _bagItemThumbnail(BagItem item) {
+    if (item.isImage) {
+      return SizedBox(
+        width: 64,
+        height: 64,
+        child: Padding(
+          padding: const EdgeInsets.all(3),
+          child: Image.file(
+            File(item.imagePath!),
+            fit: BoxFit.contain,
+            errorBuilder: (context, error, stackTrace) {
+              return const Center(
+                child: Icon(Icons.broken_image_outlined, color: Colors.white38),
+              );
+            },
+          ),
+        ),
+      );
+    }
+
     final strokes = _bagItemPreviewStrokes(item);
 
     return SizedBox(
@@ -771,6 +792,42 @@ class _BagScreenState extends State<BagScreen> {
   }
 
   Future<void> _viewBagItem(BagItem item) async {
+    if (item.isImage) {
+      await showDialog<void>(
+        context: context,
+        builder: (dialogContext) {
+          return Dialog(
+            backgroundColor: const Color(0xFF16110E),
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: 720, maxHeight: 720),
+              child: Padding(
+                padding: const EdgeInsets.all(20),
+                child: InteractiveViewer(
+                  minScale: 0.5,
+                  maxScale: 6,
+                  child: Image.file(
+                    File(item.imagePath!),
+                    fit: BoxFit.contain,
+                    errorBuilder: (context, error, stackTrace) {
+                      return const Center(
+                        child: Icon(
+                          Icons.broken_image_outlined,
+                          size: 64,
+                          color: Colors.white38,
+                        ),
+                      );
+                    },
+                  ),
+                ),
+              ),
+            ),
+          );
+        },
+      );
+
+      return;
+    }
+
     final strokes = _bagItemPreviewStrokes(item);
 
     if (strokes.isEmpty) {

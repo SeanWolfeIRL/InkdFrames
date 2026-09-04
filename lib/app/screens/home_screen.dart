@@ -481,11 +481,32 @@ class _HomeScreenState extends State<HomeScreen> {
                                         ),
                                         child: Padding(
                                           padding: const EdgeInsets.all(4),
-                                          child: CustomPaint(
-                                            painter: BagItemPreviewPainter(
-                                              strokes: _bagItemStrokes(item),
-                                            ),
-                                          ),
+                                          child: item.isImage
+                                              ? Image.file(
+                                                  File(item.imagePath!),
+                                                  fit: BoxFit.contain,
+                                                  errorBuilder:
+                                                      (
+                                                        context,
+                                                        error,
+                                                        stackTrace,
+                                                      ) {
+                                                        return const Icon(
+                                                          Icons
+                                                              .broken_image_outlined,
+                                                          color: Colors.white38,
+                                                        );
+                                                      },
+                                                )
+                                              : CustomPaint(
+                                                  painter:
+                                                      BagItemPreviewPainter(
+                                                        strokes:
+                                                            _bagItemStrokes(
+                                                              item,
+                                                            ),
+                                                      ),
+                                                ),
                                         ),
                                       ),
                                     ),
@@ -570,13 +591,211 @@ class _HomeScreenState extends State<HomeScreen> {
     _decorations[index] = updated;
   }
 
+  Size? _bagItemDrawingSize(BagItem item) {
+    final strokes = _bagItemStrokes(
+      item,
+    ).where((stroke) => stroke.points.isNotEmpty).toList();
+
+    if (strokes.isEmpty) {
+      return null;
+    }
+
+    final allPoints = strokes.expand((stroke) => stroke.points).toList();
+
+    var minX = allPoints.first.dx;
+    var maxX = allPoints.first.dx;
+    var minY = allPoints.first.dy;
+    var maxY = allPoints.first.dy;
+
+    var maxStrokeWidth = 1.0;
+
+    for (final stroke in strokes) {
+      if (stroke.strokeWidth > maxStrokeWidth) {
+        maxStrokeWidth = stroke.strokeWidth;
+      }
+
+      for (final point in stroke.points) {
+        if (point.dx < minX) minX = point.dx;
+        if (point.dx > maxX) maxX = point.dx;
+        if (point.dy < minY) minY = point.dy;
+        if (point.dy > maxY) maxY = point.dy;
+      }
+    }
+
+    // Match BagItemPreviewPainter's bounds calculation exactly.
+    final padding = (maxStrokeWidth / 2) + 2;
+
+    minX -= padding;
+    maxX += padding;
+    minY -= padding;
+    maxY += padding;
+
+    return Size(
+      (maxX - minX).clamp(1.0, double.infinity),
+      (maxY - minY).clamp(1.0, double.infinity),
+    );
+  }
+
+  double? _decorationVisibleScaleAtOne({
+    required BagItem item,
+    required double roomWidth,
+    required double roomHeight,
+  }) {
+    final drawingSize = _bagItemDrawingSize(item);
+
+    if (drawingSize == null) {
+      return null;
+    }
+
+    // These match the decoration box and BagItemPreviewPainter.
+    const decorationFraction = 0.18;
+    const previewFitFraction = 0.82;
+
+    final boxWidth = roomWidth * decorationFraction;
+    final boxHeight = roomHeight * decorationFraction;
+
+    final scaleX = (boxWidth * previewFitFraction) / drawingSize.width;
+
+    final scaleY = (boxHeight * previewFitFraction) / drawingSize.height;
+
+    return scaleX < scaleY ? scaleX : scaleY;
+  }
+
+  Future<void> _fitSelectedDecorationWidth({
+    required double roomWidth,
+    required double roomHeight,
+  }) async {
+    final selected = _selectedDecoration;
+
+    if (selected == null) return;
+
+    final item = _bagItemsById[selected.bagItemId];
+
+    if (item == null) return;
+
+    final drawingSize = _bagItemDrawingSize(item);
+
+    final previewScale = _decorationVisibleScaleAtOne(
+      item: item,
+      roomWidth: roomWidth,
+      roomHeight: roomHeight,
+    );
+
+    if (drawingSize == null || previewScale == null) {
+      return;
+    }
+
+    final visibleWidthAtScaleOne = drawingSize.width * previewScale;
+
+    if (visibleWidthAtScaleOne <= 0) {
+      return;
+    }
+
+    final targetScale = (roomWidth / visibleWidthAtScaleOne).clamp(0.15, 20.0);
+
+    setState(() {
+      _replaceDecoration(selected.copyWith(scale: targetScale, x: 0.5));
+    });
+
+    await _saveDecorations();
+  }
+
+  Future<void> _fitSelectedDecorationHeight({
+    required double roomWidth,
+    required double roomHeight,
+  }) async {
+    final selected = _selectedDecoration;
+
+    if (selected == null) return;
+
+    final item = _bagItemsById[selected.bagItemId];
+
+    if (item == null) return;
+
+    final drawingSize = _bagItemDrawingSize(item);
+
+    final previewScale = _decorationVisibleScaleAtOne(
+      item: item,
+      roomWidth: roomWidth,
+      roomHeight: roomHeight,
+    );
+
+    if (drawingSize == null || previewScale == null) {
+      return;
+    }
+
+    final visibleHeightAtScaleOne = drawingSize.height * previewScale;
+
+    if (visibleHeightAtScaleOne <= 0) {
+      return;
+    }
+
+    final targetScale = (roomHeight / visibleHeightAtScaleOne).clamp(
+      0.15,
+      20.0,
+    );
+
+    setState(() {
+      _replaceDecoration(selected.copyWith(scale: targetScale, y: 0.5));
+    });
+
+    await _saveDecorations();
+  }
+
+  Future<void> _fitSelectedDecorationRoom({
+    required double roomWidth,
+    required double roomHeight,
+  }) async {
+    final selected = _selectedDecoration;
+
+    if (selected == null) return;
+
+    final item = _bagItemsById[selected.bagItemId];
+
+    if (item == null) return;
+
+    final drawingSize = _bagItemDrawingSize(item);
+
+    final previewScale = _decorationVisibleScaleAtOne(
+      item: item,
+      roomWidth: roomWidth,
+      roomHeight: roomHeight,
+    );
+
+    if (drawingSize == null || previewScale == null) {
+      return;
+    }
+
+    final visibleWidthAtScaleOne = drawingSize.width * previewScale;
+
+    final visibleHeightAtScaleOne = drawingSize.height * previewScale;
+
+    if (visibleWidthAtScaleOne <= 0 || visibleHeightAtScaleOne <= 0) {
+      return;
+    }
+
+    // Leave a tiny margin for general-purpose room fitting.
+    final widthScale = ((roomWidth * 0.96) / visibleWidthAtScaleOne);
+
+    final heightScale = ((roomHeight * 0.96) / visibleHeightAtScaleOne);
+
+    final targetScale = (widthScale < heightScale ? widthScale : heightScale)
+        .clamp(0.15, 20.0);
+
+    setState(() {
+      _replaceDecoration(selected.copyWith(scale: targetScale, x: 0.5, y: 0.5));
+    });
+
+    await _saveDecorations();
+  }
+
   Future<void> _scaleSelectedDecoration(double factor) async {
     final selected = _selectedDecoration;
     if (selected == null) return;
 
     setState(() {
       _replaceDecoration(
-        selected.copyWith(scale: (selected.scale * factor).clamp(0.15, 8.0)),
+        selected.copyWith(scale: (selected.scale * factor).clamp(0.15, 20.0)),
       );
     });
 
@@ -1108,13 +1327,36 @@ class _HomeScreenState extends State<HomeScreen> {
                                       1.0,
                                       1.0,
                                     ),
-                                    child: CustomPaint(
-                                      painter: BagItemPreviewPainter(
-                                        strokes: _bagItemStrokes(
-                                          _bagItemsById[decoration.bagItemId]!,
-                                        ),
-                                      ),
-                                      child: const SizedBox.expand(),
+                                    child: Builder(
+                                      builder: (context) {
+                                        final bagItem =
+                                            _bagItemsById[decoration
+                                                .bagItemId]!;
+
+                                        if (bagItem.isImage) {
+                                          return Image.file(
+                                            File(bagItem.imagePath!),
+                                            fit: BoxFit.contain,
+                                            errorBuilder:
+                                                (context, error, stackTrace) {
+                                                  return const Center(
+                                                    child: Icon(
+                                                      Icons
+                                                          .broken_image_outlined,
+                                                      color: Colors.white38,
+                                                    ),
+                                                  );
+                                                },
+                                          );
+                                        }
+
+                                        return CustomPaint(
+                                          painter: BagItemPreviewPainter(
+                                            strokes: _bagItemStrokes(bagItem),
+                                          ),
+                                          child: const SizedBox.expand(),
+                                        );
+                                      },
                                     ),
                                   ),
                                 ),
@@ -1411,6 +1653,45 @@ class _HomeScreenState extends State<HomeScreen> {
                                   onPressed: _resetSelectedDecoration,
                                   icon: const Icon(
                                     Icons.restart_alt,
+                                    color: Colors.white,
+                                  ),
+                                ),
+                                IconButton(
+                                  tooltip: 'Fit Width',
+                                  onPressed: () {
+                                    _fitSelectedDecorationWidth(
+                                      roomWidth: roomWidth,
+                                      roomHeight: roomHeight,
+                                    );
+                                  },
+                                  icon: const Icon(
+                                    Icons.swap_horiz,
+                                    color: Colors.white,
+                                  ),
+                                ),
+                                IconButton(
+                                  tooltip: 'Fit Height',
+                                  onPressed: () {
+                                    _fitSelectedDecorationHeight(
+                                      roomWidth: roomWidth,
+                                      roomHeight: roomHeight,
+                                    );
+                                  },
+                                  icon: const Icon(
+                                    Icons.swap_vert,
+                                    color: Colors.white,
+                                  ),
+                                ),
+                                IconButton(
+                                  tooltip: 'Fit Room',
+                                  onPressed: () {
+                                    _fitSelectedDecorationRoom(
+                                      roomWidth: roomWidth,
+                                      roomHeight: roomHeight,
+                                    );
+                                  },
+                                  icon: const Icon(
+                                    Icons.fit_screen,
                                     color: Colors.white,
                                   ),
                                 ),

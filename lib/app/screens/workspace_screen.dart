@@ -939,6 +939,46 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
   }
 
   void _insertBagItem(BagItem item) {
+    if (item.isImage) {
+      final imagePath = item.imagePath;
+
+      if (imagePath == null || !File(imagePath).existsSync()) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('This Bag image could not be found.')),
+        );
+        return;
+      }
+
+      final reference = ReferenceLayer(
+        id: 'reference_${DateTime.now().microsecondsSinceEpoch}',
+        name: item.name,
+        mediaPath: imagePath,
+        mediaType: 'image',
+      );
+
+      setState(() {
+        _syncActiveReferenceLayerFromLegacyState();
+
+        _referenceLayers.insert(0, reference);
+        _activeReferenceLayerId = reference.id;
+
+        _loadLegacyReferenceStateFromActiveLayer();
+
+        _activeLayerGroupId = null;
+        _mergeSelectedLayerIds.clear();
+
+        _videoReady = false;
+      });
+
+      _scheduleAutosave();
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('${item.name} added as an image reference 🖼️')),
+      );
+
+      return;
+    }
+
     if (item.layers.isEmpty) {
       return;
     }
@@ -7182,6 +7222,223 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     }
   }
 
+  Future<void> _addReferenceLayerToBag(ReferenceLayer reference) async {
+    if (reference.mediaType != 'image') {
+      if (!mounted) return;
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+            'Only image references can be added to the Bag for now.',
+          ),
+        ),
+      );
+      return;
+    }
+
+    final sourceFile = File(reference.mediaPath);
+
+    if (!await sourceFile.exists()) {
+      if (!mounted) return;
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('The source image could not be found.')),
+      );
+      return;
+    }
+
+    var itemName = reference.name;
+
+    final result = await showDialog<String>(
+      context: context,
+      builder: (dialogContext) {
+        final controller = TextEditingController(text: itemName);
+
+        return AlertDialog(
+          title: const Text('Add Image to Bag'),
+          content: TextField(
+            controller: controller,
+            autofocus: true,
+            textCapitalization: TextCapitalization.words,
+            decoration: const InputDecoration(labelText: 'Asset name'),
+            onSubmitted: (value) {
+              final trimmed = value.trim();
+
+              if (trimmed.isNotEmpty) {
+                Navigator.pop(dialogContext, trimmed);
+              }
+            },
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(dialogContext),
+              child: const Text('Cancel'),
+            ),
+            FilledButton.icon(
+              onPressed: () {
+                final trimmed = controller.text.trim();
+
+                if (trimmed.isNotEmpty) {
+                  Navigator.pop(dialogContext, trimmed);
+                }
+              },
+              icon: const Icon(Icons.backpack_outlined),
+              label: const Text('Continue'),
+            ),
+          ],
+        );
+      },
+    );
+
+    if (result == null || !mounted) {
+      return;
+    }
+
+    final prefs = await SharedPreferences.getInstance();
+
+    final pockets = <Map<String, String>>[
+      {'id': 'built_in_sketches', 'name': 'Sketches'},
+      {'id': 'built_in_characters', 'name': 'Characters'},
+      {'id': 'built_in_textures', 'name': 'Textures'},
+      {'id': 'built_in_props', 'name': 'Props'},
+      {'id': 'built_in_brushes', 'name': 'Brushes'},
+      {'id': 'built_in_misc', 'name': 'Misc.'},
+    ];
+
+    const customPocketsKey = 'inkdframes_bag_custom_pockets_v1';
+    final rawCustomPockets = prefs.getString(customPocketsKey);
+
+    if (rawCustomPockets != null && rawCustomPockets.isNotEmpty) {
+      try {
+        final decoded = jsonDecode(rawCustomPockets);
+
+        if (decoded is List) {
+          for (final entry in decoded.whereType<Map>()) {
+            final id = entry['id']?.toString() ?? '';
+            final name = entry['name']?.toString() ?? '';
+
+            if (id.isNotEmpty && name.isNotEmpty) {
+              pockets.add({'id': id, 'name': name});
+            }
+          }
+        }
+      } catch (_) {}
+    }
+
+    final selectedPocketId = await showModalBottomSheet<String>(
+      context: context,
+      backgroundColor: const Color(0xFF21160F),
+      showDragHandle: true,
+      builder: (sheetContext) {
+        return SafeArea(
+          child: ListView(
+            shrinkWrap: true,
+            padding: const EdgeInsets.fromLTRB(16, 8, 16, 24),
+            children: [
+              Padding(
+                padding: const EdgeInsets.fromLTRB(8, 4, 8, 12),
+                child: Text(
+                  'Put "$result" in which Pocket?',
+                  style: const TextStyle(
+                    color: Color(0xFFF1D3A2),
+                    fontSize: 18,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+              ),
+              for (final pocket in pockets)
+                ListTile(
+                  leading: const Icon(
+                    Icons.inventory_2_outlined,
+                    color: Color(0xFFF1D3A2),
+                  ),
+                  title: Text(
+                    pocket['name']!,
+                    style: const TextStyle(color: Color(0xFFF4E5CF)),
+                  ),
+                  onTap: () {
+                    Navigator.pop(sheetContext, pocket['id']);
+                  },
+                ),
+            ],
+          ),
+        );
+      },
+    );
+
+    if (selectedPocketId == null || !mounted) {
+      return;
+    }
+
+    try {
+      final bagDirectory = Platform.isLinux
+          ? Directory('/tmp/inkdframes_bag_assets')
+          : Directory('/data/user/0/com.inkdframes.app/files/bag_assets');
+
+      if (!await bagDirectory.exists()) {
+        await bagDirectory.create(recursive: true);
+      }
+
+      final sourceName = sourceFile.path.split('/').last;
+
+      final extension = sourceName.contains('.')
+          ? '.${sourceName.split('.').last}'
+          : '.png';
+
+      final stamp = DateTime.now().microsecondsSinceEpoch;
+
+      final storedPath = '${bagDirectory.path}/bag_image_$stamp$extension';
+
+      await sourceFile.copy(storedPath);
+
+      final item = BagItem(
+        id: 'bag_$stamp',
+        name: result,
+        sourceGroupName: reference.name,
+        assetType: 'image',
+        imagePath: storedPath,
+        layers: const <BagLayer>[],
+        createdAt: DateTime.now(),
+      );
+
+      await BagService().addItem(item);
+
+      const assignmentsKey = 'inkdframes_bag_pocket_assignments_v1';
+
+      Map<String, String> assignments = <String, String>{};
+
+      final rawAssignments = prefs.getString(assignmentsKey);
+
+      if (rawAssignments != null && rawAssignments.isNotEmpty) {
+        try {
+          final decoded = jsonDecode(rawAssignments);
+
+          if (decoded is Map) {
+            assignments = decoded.map<String, String>(
+              (key, value) => MapEntry(key.toString(), value.toString()),
+            );
+          }
+        } catch (_) {}
+      }
+
+      assignments[item.id] = selectedPocketId;
+
+      await prefs.setString(assignmentsKey, jsonEncode(assignments));
+
+      if (!mounted) return;
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('${item.name} tucked into your Bag 🎒')),
+      );
+    } catch (error) {
+      if (!mounted) return;
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Could not add image to Bag: $error')),
+      );
+    }
+  }
+
   Future<void> _renameReferenceLayer(ReferenceLayer reference) async {
     final controller = TextEditingController(text: reference.name);
 
@@ -7409,14 +7666,26 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                   tooltip: 'Reference Options',
                   enabled: !_isPlaying,
                   onSelected: (value) {
-                    if (value == 'rename') {
+                    if (value == 'bag') {
+                      unawaited(_addReferenceLayerToBag(reference));
+                    } else if (value == 'rename') {
                       unawaited(_renameReferenceLayer(reference));
                     } else if (value == 'delete') {
                       unawaited(_deleteReferenceLayer(reference));
                     }
                   },
-                  itemBuilder: (context) => const [
-                    PopupMenuItem<String>(
+                  itemBuilder: (context) => [
+                    if (reference.mediaType == 'image')
+                      const PopupMenuItem<String>(
+                        value: 'bag',
+                        child: ListTile(
+                          dense: true,
+                          contentPadding: EdgeInsets.zero,
+                          leading: Icon(Icons.backpack_outlined),
+                          title: Text('Add to Bag'),
+                        ),
+                      ),
+                    const PopupMenuItem<String>(
                       value: 'rename',
                       child: ListTile(
                         dense: true,
