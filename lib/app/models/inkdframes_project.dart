@@ -1,6 +1,7 @@
 import 'drawing_layer.dart';
 import 'layer_group.dart';
 import 'reference_layer.dart';
+import 'variant_slot.dart';
 import 'vector_stroke.dart';
 
 class InkdFramesProject {
@@ -19,6 +20,7 @@ class InkdFramesProject {
     List<LayerGroup>? layerGroups,
     List<String>? rootOrder,
     List<ReferenceLayer>? referenceLayers,
+    List<VariantSlot>? variantSlots,
     this.activeReferenceLayerId,
     List<int>? referenceFrameTimesMs,
     this.referenceVisible = true,
@@ -31,6 +33,7 @@ class InkdFramesProject {
              layers ?? _layersFromLegacyFrames(frames),
              layerGroups ?? <LayerGroup>[],
            ),
+       variantSlots = variantSlots ?? <VariantSlot>[],
        referenceLayers =
            referenceLayers ??
            _referenceLayersFromLegacy(
@@ -49,6 +52,7 @@ class InkdFramesProject {
     final rawLayerGroups = json['layerGroups'];
     final rawRootOrder = json['rootOrder'];
     final rawReferenceLayers = json['referenceLayers'];
+    final rawVariantSlots = json['variantSlots'];
 
     final layers = rawLayers is List && rawLayers.isNotEmpty
         ? rawLayers
@@ -69,6 +73,16 @@ class InkdFramesProject {
               )
               .toList()
         : <LayerGroup>[];
+
+    final variantSlots = rawVariantSlots is List
+        ? rawVariantSlots
+              .map(
+                (slot) => VariantSlot.fromJson(
+                  Map<String, dynamic>.from(slot as Map),
+                ),
+              )
+              .toList()
+        : <VariantSlot>[];
 
     final legacyReferenceFrameTimesMs = json['referenceFrameTimesMs'] is List
         ? (json['referenceFrameTimesMs'] as List)
@@ -133,6 +147,7 @@ class InkdFramesProject {
           ? rawRootOrder.map((entry) => entry.toString()).toList()
           : null,
       referenceLayers: referenceLayers,
+      variantSlots: variantSlots,
       activeReferenceLayerId:
           json['activeReferenceLayerId'] as String? ??
           (referenceLayers.isNotEmpty ? referenceLayers.first.id : null),
@@ -167,6 +182,12 @@ class InkdFramesProject {
   /// Older projects containing only referenceMediaPath/referenceMediaType are
   /// automatically migrated into a single ReferenceLayer when loaded.
   final List<ReferenceLayer> referenceLayers;
+
+  /// Configurable hierarchy slots whose children represent alternatives.
+  ///
+  /// The slot itself has a stable position in rootOrder or a group's
+  /// childOrder. Upgrade #3B will make only the active child render.
+  final List<VariantSlot> variantSlots;
 
   /// Reference currently driving video playback/scrubbing.
   final String? activeReferenceLayerId;
@@ -206,6 +227,7 @@ class InkdFramesProject {
       'referenceLayers': referenceLayers
           .map((reference) => reference.toJson())
           .toList(),
+      'variantSlots': variantSlots.map((slot) => slot.toJson()).toList(),
       'activeReferenceLayerId': activeReferenceLayerId,
 
       'frameDurations': frameDurations,

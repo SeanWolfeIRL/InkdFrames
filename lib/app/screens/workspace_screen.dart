@@ -14,6 +14,7 @@ import '../models/drawing_layer.dart';
 import '../models/inkdframes_project.dart';
 import '../models/layer_group.dart';
 import '../models/reference_layer.dart';
+import '../models/variant_slot.dart';
 import '../models/vector_point.dart';
 import '../models/vector_stroke.dart';
 import '../painters/animation_canvas_painter.dart';
@@ -35,7 +36,12 @@ enum _ShapeToolType {
   filledCircle,
 }
 
-typedef FrameHistorySnapshot = Map<String, List<VectorStroke>>;
+class FrameHistorySnapshot {
+  const FrameHistorySnapshot({required this.strokes, required this.references});
+
+  final Map<String, List<VectorStroke>> strokes;
+  final List<ReferenceLayer> references;
+}
 
 class WorkspaceScreen extends StatefulWidget {
   const WorkspaceScreen({
@@ -84,6 +90,20 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
   // ReferenceLayer is currently active.
   final List<ReferenceLayer> _referenceLayers = <ReferenceLayer>[];
   String? _activeReferenceLayerId;
+
+  // Configurable hierarchy containers.
+  //
+  // A VariantSlot owns a list of alternative hierarchy entries while the
+  // slot itself keeps one stable position inside its parent group/root.
+  final List<VariantSlot> _variantSlots = <VariantSlot>[];
+
+  // Variant Slot inline rename state.
+  //
+  // Android showed a framework dependency assertion when a rename dialog
+  // and the IME were torn down together. Keeping rename inside the Layers
+  // panel avoids creating a modal route entirely.
+  String? _editingVariantSlotId;
+  String _variantSlotRenameDraft = '';
 
   // Group context used when creating new drawing layers.
   String? _layerInsertionGroupId;
@@ -155,6 +175,14 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
 
   String? _transformReferenceLayerId;
   ReferenceLayer? _referenceTransformSnapshot;
+
+  // Mixed group transform targets.
+  //
+  // A selected group can contain drawing layers, reference/image layers,
+  // and nested groups. References are transformed around the same shared
+  // pivot as the selected drawing strokes.
+  Set<String> _transformGroupReferenceIds = <String>{};
+  Map<String, ReferenceLayer>? _transformGroupReferenceSnapshot;
 
   /// Temporary in-memory clipboard used by Transform copy/paste.
   final Map<String, List<VectorStroke>> _strokeClipboard =
@@ -290,6 +318,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
 
         _referenceLayers.add(initialReference);
         _activeReferenceLayerId = initialReference.id;
+        _rootLayerOrder.insert(0, 'reference:${initialReference.id}');
       }
 
       if (_referenceMediaType == 'video') {
@@ -551,6 +580,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
   }
 
   Future<void> _saveProject() async {
+    _ensureReferenceHierarchyEntries();
     _rebuildCompositeFrames();
     _syncActiveReferenceLayerFromLegacyState();
 
@@ -563,6 +593,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
       layerGroups: _layerGroups,
       rootOrder: _rootLayerOrder,
       referenceLayers: _referenceLayers,
+      variantSlots: _variantSlots,
       activeReferenceLayerId: _activeReferenceLayerId,
       frameDurations: _frameDurations,
       canvasWidth: _canvasWidth,
@@ -645,6 +676,12 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
 
     if (index == -1) {
       _referenceLayers.add(updated);
+
+      final referenceEntry = 'reference:${updated.id}';
+      if (!_hierarchyContainsEntry(referenceEntry)) {
+        _rootLayerOrder.insert(0, referenceEntry);
+      }
+
       return;
     }
 
@@ -956,15 +993,23 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
         mediaType: 'image',
       );
 
+      final parentGroupId = _activeLayerGroupId ?? _layerInsertionGroupId;
+
       setState(() {
         _syncActiveReferenceLayerFromLegacyState();
 
         _referenceLayers.insert(0, reference);
         _activeReferenceLayerId = reference.id;
 
+        _insertReferenceHierarchyEntry(
+          reference.id,
+          parentGroupId: parentGroupId,
+        );
+
         _loadLegacyReferenceStateFromActiveLayer();
 
-        _activeLayerGroupId = null;
+        _activeLayerGroupId = parentGroupId;
+        _layerInsertionGroupId = parentGroupId;
         _mergeSelectedLayerIds.clear();
 
         _videoReady = false;
@@ -2715,6 +2760,20 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
           ),
         );
 
+      _variantSlots
+        ..clear()
+        ..addAll(
+          project.variantSlots.map(
+            (slot) => VariantSlot(
+              id: slot.id,
+              name: slot.name,
+              childOrder: List<String>.from(slot.childOrder),
+              activeIndex: slot.activeIndex,
+              expanded: slot.expanded,
+            ),
+          ),
+        );
+
       _activeReferenceLayerId = project.activeReferenceLayerId;
 
       _loadLegacyReferenceStateFromActiveLayer();
@@ -3250,24 +3309,25 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
   }
 
   FrameHistorySnapshot _frameHistorySnapshot() {
-    final snapshot = <String, List<VectorStroke>>{};
+    final strokes = <String, List<VectorStroke>>{};
 
-    if (_selectedFrameIndex < 0 ||
-        _selectedFrameIndex >= _frameDurations.length) {
-      return snapshot;
-    }
+    if (_selectedFrameIndex >= 0 &&
+        _selectedFrameIndex < _frameDurations.length) {
+      for (final layer in _layers) {
+        if (_selectedFrameIndex >= layer.frames.length) {
+          continue;
+        }
 
-    for (final layer in _layers) {
-      if (_selectedFrameIndex >= layer.frames.length) {
-        continue;
+        strokes[layer.id] = layer.frames[_selectedFrameIndex]
+            .map((stroke) => stroke.copy())
+            .toList();
       }
-
-      snapshot[layer.id] = layer.frames[_selectedFrameIndex]
-          .map((stroke) => stroke.copy())
-          .toList();
     }
 
-    return snapshot;
+    return FrameHistorySnapshot(
+      strokes: strokes,
+      references: List<ReferenceLayer>.from(_referenceLayers),
+    );
   }
 
   void _restoreFrameHistorySnapshot(FrameHistorySnapshot snapshot) {
@@ -3283,7 +3343,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
         continue;
       }
 
-      final savedStrokes = snapshot[layer.id];
+      final savedStrokes = snapshot.strokes[layer.id];
 
       if (savedStrokes == null) {
         continue;
@@ -3298,6 +3358,11 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
       _layers[layerIndex] = layer.copyWith(frames: frames);
     }
 
+    _referenceLayers
+      ..clear()
+      ..addAll(snapshot.references);
+
+    _loadLegacyReferenceStateFromActiveLayer();
     _rebuildCompositeFrames();
   }
 
@@ -3511,7 +3576,27 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
       return _referenceTransformBounds(reference);
     }
 
-    return _selectedStrokeBounds();
+    Rect? bounds = _selectedStrokeBounds();
+
+    for (final referenceId in _transformGroupReferenceIds) {
+      final index = _referenceLayers.indexWhere(
+        (reference) => reference.id == referenceId,
+      );
+
+      if (index == -1) {
+        continue;
+      }
+
+      final referenceBounds = _referenceTransformBounds(
+        _referenceLayers[index],
+      );
+
+      bounds = bounds == null
+          ? referenceBounds
+          : bounds.expandToInclude(referenceBounds);
+    }
+
+    return bounds;
   }
 
   void _replaceReferenceTransform(ReferenceLayer updated) {
@@ -3616,6 +3701,150 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     );
   }
 
+  Map<String, ReferenceLayer> _selectedGroupReferenceSnapshot() {
+    final snapshot = <String, ReferenceLayer>{};
+
+    for (final referenceId in _transformGroupReferenceIds) {
+      final index = _referenceLayers.indexWhere(
+        (reference) => reference.id == referenceId,
+      );
+
+      if (index != -1) {
+        snapshot[referenceId] = _referenceLayers[index];
+      }
+    }
+
+    return snapshot;
+  }
+
+  void _moveGroupReferences(Offset delta) {
+    for (final referenceId in _transformGroupReferenceIds) {
+      final index = _referenceLayers.indexWhere(
+        (reference) => reference.id == referenceId,
+      );
+
+      if (index == -1) {
+        continue;
+      }
+
+      final reference = _referenceLayers[index];
+      final hasStoredPivot =
+          reference.pivotX != null && reference.pivotY != null;
+
+      _referenceLayers[index] = reference.copyWith(
+        offsetX: reference.offsetX + delta.dx,
+        offsetY: reference.offsetY + delta.dy,
+        pivotX: hasStoredPivot
+            ? reference.pivotX! + delta.dx
+            : reference.pivotX,
+        pivotY: hasStoredPivot
+            ? reference.pivotY! + delta.dy
+            : reference.pivotY,
+      );
+    }
+  }
+
+  void _rotateGroupReferences(
+    double angle,
+    Offset pivot,
+    Map<String, ReferenceLayer> snapshot,
+  ) {
+    final cosAngle = math.cos(angle);
+    final sinAngle = math.sin(angle);
+
+    for (final entry in snapshot.entries) {
+      final index = _referenceLayers.indexWhere(
+        (reference) => reference.id == entry.key,
+      );
+
+      if (index == -1) {
+        continue;
+      }
+
+      final source = entry.value;
+      final startCenter = _referenceDisplayedCenter(source);
+      final relative = startCenter - pivot;
+
+      final rotatedCenter = Offset(
+        pivot.dx + (relative.dx * cosAngle) - (relative.dy * sinAngle),
+        pivot.dy + (relative.dx * sinAngle) + (relative.dy * cosAngle),
+      );
+
+      final newOffset = rotatedCenter - _referenceCanvasCenter;
+
+      _referenceLayers[index] = source.copyWith(
+        offsetX: newOffset.dx,
+        offsetY: newOffset.dy,
+        rotation: source.rotation + angle,
+      );
+    }
+  }
+
+  void _scaleGroupReferences(
+    double scaleX,
+    double scaleY,
+    Offset anchor,
+    Map<String, ReferenceLayer> snapshot,
+  ) {
+    final safeScaleX = scaleX.clamp(0.05, 20.0);
+    final safeScaleY = scaleY.clamp(0.05, 20.0);
+
+    for (final entry in snapshot.entries) {
+      final index = _referenceLayers.indexWhere(
+        (reference) => reference.id == entry.key,
+      );
+
+      if (index == -1) {
+        continue;
+      }
+
+      final source = entry.value;
+      final startCenter = _referenceDisplayedCenter(source);
+
+      final newCenter = Offset(
+        anchor.dx + ((startCenter.dx - anchor.dx) * safeScaleX),
+        anchor.dy + ((startCenter.dy - anchor.dy) * safeScaleY),
+      );
+
+      final newOffset = newCenter - _referenceCanvasCenter;
+
+      _referenceLayers[index] = source.copyWith(
+        offsetX: newOffset.dx,
+        offsetY: newOffset.dy,
+        scaleX: source.scaleX * safeScaleX,
+        scaleY: source.scaleY * safeScaleY,
+      );
+    }
+  }
+
+  void _flipGroupReferencesHorizontally(Offset pivot) {
+    for (final referenceId in _transformGroupReferenceIds) {
+      final index = _referenceLayers.indexWhere(
+        (reference) => reference.id == referenceId,
+      );
+
+      if (index == -1) {
+        continue;
+      }
+
+      final reference = _referenceLayers[index];
+      final center = _referenceDisplayedCenter(reference);
+
+      final mirroredCenter = Offset(
+        pivot.dx - (center.dx - pivot.dx),
+        center.dy,
+      );
+
+      final newOffset = mirroredCenter - _referenceCanvasCenter;
+
+      _referenceLayers[index] = reference.copyWith(
+        offsetX: newOffset.dx,
+        offsetY: newOffset.dy,
+        scaleX: -reference.scaleX,
+      );
+    }
+  }
+
   Future<void> _enterReferenceTransform(String referenceId) async {
     await _selectReferenceLayer(referenceId);
 
@@ -3642,7 +3871,9 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
       _clearShapeDraft();
       _clearTransformSelection();
 
-      _activeLayerGroupId = null;
+      final parentGroup = _groupContainingReference(referenceId);
+      _activeLayerGroupId = parentGroup?.id;
+      _layerInsertionGroupId = parentGroup?.id;
 
       _isEraserActive = false;
       _isFillToolActive = false;
@@ -3705,6 +3936,8 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     _selectedTransformStrokes = <String, Set<int>>{};
     _transformReferenceLayerId = null;
     _referenceTransformSnapshot = null;
+    _transformGroupReferenceIds = <String>{};
+    _transformGroupReferenceSnapshot = null;
     _transformLastPosition = null;
     _transformScaleAnchor = null;
     _transformScaleStartDistance = null;
@@ -3740,6 +3973,55 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     return inside;
   }
 
+  void _collectGroupTransformDescendants(
+    String groupId, {
+    required Set<String> layerIds,
+    required Set<String> referenceIds,
+    Set<String>? visited,
+  }) {
+    final seen = visited ?? <String>{};
+
+    if (!seen.add(groupId)) {
+      return;
+    }
+
+    final groupIndex = _layerGroups.indexWhere((group) => group.id == groupId);
+
+    if (groupIndex == -1) {
+      return;
+    }
+
+    final group = _layerGroups[groupIndex];
+
+    for (final entry in group.childOrder) {
+      if (entry.startsWith('layer:')) {
+        layerIds.add(entry.substring('layer:'.length));
+      } else if (entry.startsWith('reference:')) {
+        referenceIds.add(entry.substring('reference:'.length));
+      } else if (entry.startsWith('group:')) {
+        _collectGroupTransformDescendants(
+          entry.substring('group:'.length),
+          layerIds: layerIds,
+          referenceIds: referenceIds,
+          visited: seen,
+        );
+      }
+    }
+
+    // Compatibility fallback for older projects whose childOrder may not
+    // contain every persisted child yet.
+    layerIds.addAll(group.childLayerIds);
+
+    for (final childGroupId in group.childGroupIds) {
+      _collectGroupTransformDescendants(
+        childGroupId,
+        layerIds: layerIds,
+        referenceIds: referenceIds,
+        visited: seen,
+      );
+    }
+  }
+
   List<int> _transformLayerIndices() {
     final group = _activeLayerGroup;
 
@@ -3747,10 +4029,19 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
       return <int>[_activeLayerIndex];
     }
 
+    final layerIds = <String>{};
+    final referenceIds = <String>{};
+
+    _collectGroupTransformDescendants(
+      group.id,
+      layerIds: layerIds,
+      referenceIds: referenceIds,
+    );
+
     final indices = <int>[];
 
     for (var index = 0; index < _layers.length; index++) {
-      if (group.childLayerIds.contains(_layers[index].id)) {
+      if (layerIds.contains(_layers[index].id)) {
         indices.add(index);
       }
     }
@@ -3765,6 +4056,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
   void _enterTransformForLayerIndices(
     List<int> layerIndices, {
     String? groupId,
+    Set<String> referenceIds = const <String>{},
   }) {
     final selected = <String, Set<int>>{};
 
@@ -3791,9 +4083,9 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
       );
     }
 
-    if (selected.isEmpty) {
+    if (selected.isEmpty && referenceIds.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Nothing to transform on this frame')),
+        const SnackBar(content: Text('Nothing to transform in this group')),
       );
       return;
     }
@@ -3831,6 +4123,10 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
       _isTransformPivotDragging = false;
 
       _selectedTransformStrokes = selected;
+      _transformGroupReferenceIds = Set<String>.from(referenceIds);
+
+      final bounds = _transformSelectionBounds();
+      _transformPivot = bounds?.center;
     });
 
     HapticFeedback.mediumImpact();
@@ -3847,16 +4143,28 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
       return;
     }
 
-    final group = _layerGroups[groupIndex];
+    final layerIds = <String>{};
+    final referenceIds = <String>{};
+
+    _collectGroupTransformDescendants(
+      groupId,
+      layerIds: layerIds,
+      referenceIds: referenceIds,
+    );
+
     final layerIndices = <int>[];
 
     for (var index = 0; index < _layers.length; index++) {
-      if (group.childLayerIds.contains(_layers[index].id)) {
+      if (layerIds.contains(_layers[index].id)) {
         layerIndices.add(index);
       }
     }
 
-    _enterTransformForLayerIndices(layerIndices, groupId: group.id);
+    _enterTransformForLayerIndices(
+      layerIndices,
+      groupId: groupId,
+      referenceIds: referenceIds,
+    );
   }
 
   void _finishLassoSelection() {
@@ -4003,11 +4311,12 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
       return;
     }
 
-    if (_selectedTransformStrokes.isEmpty) {
+    if (_selectedTransformStrokes.isEmpty &&
+        _transformGroupReferenceIds.isEmpty) {
       return;
     }
 
-    final bounds = _selectedStrokeBounds();
+    final bounds = _transformSelectionBounds();
 
     if (bounds == null) {
       return;
@@ -4067,6 +4376,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
         _layers[layerIndex] = layer.copyWith(frames: frames);
       }
 
+      _flipGroupReferencesHorizontally(pivot);
       _rebuildCompositeFrames();
     });
 
@@ -5923,9 +6233,12 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
             );
             if (_transformReferenceLayerId != null) {
               _referenceTransformSnapshot = _referenceTransformTarget;
+              _transformGroupReferenceSnapshot = null;
               _transformRotationSnapshot = null;
             } else {
               _referenceTransformSnapshot = null;
+              _transformGroupReferenceSnapshot =
+                  _selectedGroupReferenceSnapshot();
               _transformRotationSnapshot = _selectedTransformSnapshot();
             }
           });
@@ -5960,9 +6273,12 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                 : startDistance;
             if (_transformReferenceLayerId != null) {
               _referenceTransformSnapshot = _referenceTransformTarget;
+              _transformGroupReferenceSnapshot = null;
               _transformScaleSnapshot = null;
             } else {
               _referenceTransformSnapshot = null;
+              _transformGroupReferenceSnapshot =
+                  _selectedGroupReferenceSnapshot();
               _transformScaleSnapshot = _selectedTransformSnapshot();
             }
           });
@@ -6003,9 +6319,12 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
 
             if (_transformReferenceLayerId != null) {
               _referenceTransformSnapshot = _referenceTransformTarget;
+              _transformGroupReferenceSnapshot = null;
               _transformScaleSnapshot = null;
             } else {
               _referenceTransformSnapshot = null;
+              _transformGroupReferenceSnapshot =
+                  _selectedGroupReferenceSnapshot();
               _transformScaleSnapshot = _selectedTransformSnapshot();
             }
           });
@@ -6030,6 +6349,8 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
       } else if (_transformReferenceLayerId == null) {
         setState(() {
           _selectedTransformStrokes = <String, Set<int>>{};
+          _transformGroupReferenceIds = <String>{};
+          _transformGroupReferenceSnapshot = null;
           _transformPivot = null;
           _isTransformPivotDragging = false;
           _lassoPoints = <VectorPoint>[
@@ -6166,7 +6487,8 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
           _transformRotationCenter != null &&
           _transformRotationStartAngle != null &&
           (_transformRotationSnapshot != null ||
-              _referenceTransformSnapshot != null)) {
+              _referenceTransformSnapshot != null ||
+              _transformGroupReferenceSnapshot != null)) {
         final currentAngle = _angleFromCenter(
           canvasPosition,
           _transformRotationCenter!,
@@ -6183,12 +6505,24 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
               _transformRotationCenter!,
               referenceSnapshot,
             );
-          } else if (_transformRotationSnapshot != null) {
-            _rotateSelectedStrokes(
-              angle,
-              _transformRotationCenter!,
-              _transformRotationSnapshot!,
-            );
+          } else {
+            if (_transformRotationSnapshot != null) {
+              _rotateSelectedStrokes(
+                angle,
+                _transformRotationCenter!,
+                _transformRotationSnapshot!,
+              );
+            }
+
+            final groupSnapshot = _transformGroupReferenceSnapshot;
+
+            if (groupSnapshot != null) {
+              _rotateGroupReferences(
+                angle,
+                _transformRotationCenter!,
+                groupSnapshot,
+              );
+            }
           }
         });
 
@@ -6199,7 +6533,8 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
           _transformScaleAnchor != null &&
           _transformScaleStartDistance != null &&
           (_transformScaleSnapshot != null ||
-              _referenceTransformSnapshot != null)) {
+              _referenceTransformSnapshot != null ||
+              _transformGroupReferenceSnapshot != null)) {
         double scaleX = 1.0;
         double scaleY = 1.0;
 
@@ -6233,13 +6568,26 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
               _transformScaleAnchor!,
               referenceSnapshot,
             );
-          } else if (_transformScaleSnapshot != null) {
-            _scaleSelectedStrokes(
-              scaleX,
-              scaleY,
-              _transformScaleAnchor!,
-              _transformScaleSnapshot!,
-            );
+          } else {
+            if (_transformScaleSnapshot != null) {
+              _scaleSelectedStrokes(
+                scaleX,
+                scaleY,
+                _transformScaleAnchor!,
+                _transformScaleSnapshot!,
+              );
+            }
+
+            final groupSnapshot = _transformGroupReferenceSnapshot;
+
+            if (groupSnapshot != null) {
+              _scaleGroupReferences(
+                scaleX,
+                scaleY,
+                _transformScaleAnchor!,
+                groupSnapshot,
+              );
+            }
           }
         });
 
@@ -6254,6 +6602,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
             _moveReferenceTransform(delta);
           } else {
             _moveSelectedStrokes(delta);
+            _moveGroupReferences(delta);
           }
 
           if (_transformPivot != null) {
@@ -6514,12 +6863,14 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
           _transformRotationStartAngle = null;
           _transformRotationSnapshot = null;
           _referenceTransformSnapshot = null;
+          _transformGroupReferenceSnapshot = null;
         } else if (_isTransformScaling) {
           _isTransformScaling = false;
           _transformScaleAnchor = null;
           _transformScaleStartDistance = null;
           _transformScaleSnapshot = null;
           _referenceTransformSnapshot = null;
+          _transformGroupReferenceSnapshot = null;
           _transformScaleHorizontalOnly = false;
           _transformScaleVerticalOnly = false;
         } else if (_isTransformDragging) {
@@ -7011,6 +7362,102 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     );
   }
 
+  bool _hierarchyContainsEntry(String entry) {
+    if (_rootLayerOrder.contains(entry)) {
+      return true;
+    }
+
+    for (final group in _layerGroups) {
+      if (group.childOrder.contains(entry)) {
+        return true;
+      }
+    }
+
+    return false;
+  }
+
+  LayerGroup? _groupContainingReference(String referenceId) {
+    final entry = 'reference:$referenceId';
+
+    for (final group in _layerGroups) {
+      if (group.childOrder.contains(entry)) {
+        return group;
+      }
+    }
+
+    return null;
+  }
+
+  void _insertReferenceHierarchyEntry(
+    String referenceId, {
+    String? parentGroupId,
+  }) {
+    final entry = 'reference:$referenceId';
+
+    _rootLayerOrder.remove(entry);
+
+    for (var index = 0; index < _layerGroups.length; index++) {
+      final group = _layerGroups[index];
+
+      if (!group.childOrder.contains(entry)) {
+        continue;
+      }
+
+      final updatedOrder = List<String>.from(group.childOrder)..remove(entry);
+
+      _layerGroups[index] = group.copyWith(childOrder: updatedOrder);
+    }
+
+    if (parentGroupId != null) {
+      final parentIndex = _layerGroups.indexWhere(
+        (group) => group.id == parentGroupId,
+      );
+
+      if (parentIndex != -1) {
+        final parent = _layerGroups[parentIndex];
+        final updatedOrder = List<String>.from(parent.childOrder)
+          ..insert(0, entry);
+
+        _layerGroups[parentIndex] = parent.copyWith(
+          childOrder: updatedOrder,
+          expanded: true,
+        );
+
+        return;
+      }
+    }
+
+    _rootLayerOrder.insert(0, entry);
+  }
+
+  void _removeReferenceHierarchyEntry(String referenceId) {
+    final entry = 'reference:$referenceId';
+
+    _rootLayerOrder.remove(entry);
+
+    for (var index = 0; index < _layerGroups.length; index++) {
+      final group = _layerGroups[index];
+
+      if (!group.childOrder.contains(entry)) {
+        continue;
+      }
+
+      final updatedOrder = List<String>.from(group.childOrder)..remove(entry);
+
+      _layerGroups[index] = group.copyWith(childOrder: updatedOrder);
+    }
+  }
+
+  void _ensureReferenceHierarchyEntries() {
+    for (final reference in _referenceLayers) {
+      final entry = 'reference:${reference.id}';
+
+      if (!_hierarchyContainsEntry(entry)) {
+        _rootLayerOrder.add(entry);
+      }
+    }
+  }
+
   Future<void> _selectReferenceLayer(String referenceId) async {
     final index = _referenceLayers.indexWhere(
       (reference) => reference.id == referenceId,
@@ -7042,7 +7489,9 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
       _activeReferenceLayerId = referenceId;
       _loadLegacyReferenceStateFromActiveLayer();
 
-      _activeLayerGroupId = null;
+      final parentGroup = _groupContainingReference(referenceId);
+      _activeLayerGroupId = parentGroup?.id;
+      _layerInsertionGroupId = parentGroup?.id;
       _mergeSelectedLayerIds.clear();
 
       _isVideoScrubbing = false;
@@ -7163,15 +7612,21 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
         mediaType: mediaType,
       );
 
+      final parentGroupId = _activeLayerGroupId ?? _layerInsertionGroupId;
+
       setState(() {
-        // References are currently their own stack inside the reference area.
-        // New references are placed at the top of that stack.
         _referenceLayers.insert(0, reference);
+
+        _insertReferenceHierarchyEntry(
+          reference.id,
+          parentGroupId: parentGroupId,
+        );
 
         _activeReferenceLayerId = reference.id;
         _loadLegacyReferenceStateFromActiveLayer();
 
-        _activeLayerGroupId = null;
+        _activeLayerGroupId = parentGroupId;
+        _layerInsertionGroupId = parentGroupId;
         _mergeSelectedLayerIds.clear();
 
         _isVideoScrubbing = false;
@@ -7440,19 +7895,22 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
   }
 
   Future<void> _renameReferenceLayer(ReferenceLayer reference) async {
-    final controller = TextEditingController(text: reference.name);
-
     final result = await showDialog<String>(
       context: context,
       builder: (dialogContext) {
+        var draftName = reference.name;
+
         return AlertDialog(
           title: const Text('Rename Reference'),
-          content: TextField(
-            controller: controller,
+          content: TextFormField(
+            initialValue: reference.name,
             autofocus: true,
             textCapitalization: TextCapitalization.words,
             decoration: const InputDecoration(labelText: 'Reference name'),
-            onSubmitted: (value) {
+            onChanged: (value) {
+              draftName = value;
+            },
+            onFieldSubmitted: (value) {
               final trimmed = value.trim();
 
               if (trimmed.isNotEmpty) {
@@ -7467,7 +7925,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
             ),
             FilledButton(
               onPressed: () {
-                final trimmed = controller.text.trim();
+                final trimmed = draftName.trim();
 
                 if (trimmed.isNotEmpty) {
                   Navigator.pop(dialogContext, trimmed);
@@ -7479,8 +7937,6 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
         );
       },
     );
-
-    controller.dispose();
 
     if (result == null || !mounted) {
       return;
@@ -7542,6 +7998,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     if (!deletingActive) {
       setState(() {
         _referenceLayers.removeAt(index);
+        _removeReferenceHierarchyEntry(reference.id);
       });
 
       _scheduleAutosave();
@@ -7563,6 +8020,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
 
     setState(() {
       _referenceLayers.removeWhere((item) => item.id == reference.id);
+      _removeReferenceHierarchyEntry(reference.id);
 
       _activeReferenceLayerId = _referenceLayers.isEmpty
           ? null
@@ -7598,11 +8056,14 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     ).showSnackBar(SnackBar(content: Text('${reference.name} removed')));
   }
 
-  Widget _buildReferenceLayerCard(ReferenceLayer reference) {
+  Widget _buildReferenceLayerCard(
+    ReferenceLayer reference, {
+    int hierarchyDepth = 0,
+  }) {
     final selected = _activeReferenceLayerId == reference.id;
 
     return Container(
-      margin: const EdgeInsets.fromLTRB(6, 4, 6, 0),
+      margin: EdgeInsets.fromLTRB(6.0 + (hierarchyDepth * 16.0), 4, 6, 0),
       decoration: BoxDecoration(
         color: selected
             ? Colors.amberAccent.withValues(alpha: 0.10)
@@ -7629,6 +8090,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
           children: [
             Row(
               children: [
+                _buildHierarchyDragHandle('reference:${reference.id}'),
                 IconButton(
                   tooltip: reference.visible
                       ? 'Hide Reference'
@@ -7665,7 +8127,17 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                 PopupMenuButton<String>(
                   tooltip: 'Reference Options',
                   enabled: !_isPlaying,
-                  onSelected: (value) {
+                  onSelected: (value) async {
+                    // Let the popup route finish dismissing before opening
+                    // another route such as a rename/delete dialog.
+                    await Future<void>.delayed(
+                      const Duration(milliseconds: 150),
+                    );
+
+                    if (!mounted) {
+                      return;
+                    }
+
                     if (value == 'bag') {
                       unawaited(_addReferenceLayerToBag(reference));
                     } else if (value == 'rename') {
@@ -7741,6 +8213,652 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     );
   }
 
+  VariantSlot? _variantSlotForId(String slotId) {
+    for (final slot in _variantSlots) {
+      if (slot.id == slotId) {
+        return slot;
+      }
+    }
+
+    return null;
+  }
+
+  LayerGroup? _groupContainingVariantSlot(String slotId) {
+    final entry = 'variant:$slotId';
+
+    for (final group in _layerGroups) {
+      if (group.childOrder.contains(entry)) {
+        return group;
+      }
+    }
+
+    return null;
+  }
+
+  void _toggleVariantSlotExpanded(String slotId) {
+    final index = _variantSlots.indexWhere((slot) => slot.id == slotId);
+
+    if (index == -1) {
+      return;
+    }
+
+    setState(() {
+      final slot = _variantSlots[index];
+
+      _variantSlots[index] = slot.copyWith(expanded: !slot.expanded);
+    });
+
+    _scheduleAutosave();
+  }
+
+  Future<void> _createVariantSlot(String parentGroupId) async {
+    final groupIndex = _layerGroups.indexWhere(
+      (group) => group.id == parentGroupId,
+    );
+
+    if (groupIndex == -1 || !mounted) {
+      return;
+    }
+
+    final controller = TextEditingController(text: 'Variant Slot');
+
+    final name = await showDialog<String>(
+      context: context,
+      builder: (dialogContext) {
+        return AlertDialog(
+          title: const Text('Create Variant Slot'),
+          content: TextField(
+            controller: controller,
+            autofocus: true,
+            decoration: const InputDecoration(
+              labelText: 'Slot name',
+              hintText: 'e.g. Window View',
+            ),
+            onSubmitted: (value) {
+              final trimmed = value.trim();
+
+              if (trimmed.isNotEmpty) {
+                Navigator.pop(dialogContext, trimmed);
+              }
+            },
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(dialogContext),
+              child: const Text('Cancel'),
+            ),
+            FilledButton(
+              onPressed: () {
+                final trimmed = controller.text.trim();
+
+                if (trimmed.isNotEmpty) {
+                  Navigator.pop(dialogContext, trimmed);
+                }
+              },
+              child: const Text('Create'),
+            ),
+          ],
+        );
+      },
+    );
+
+    controller.dispose();
+
+    if (name == null || !mounted) {
+      return;
+    }
+
+    final stamp = DateTime.now().microsecondsSinceEpoch;
+    final slot = VariantSlot(id: 'variant_$stamp', name: name);
+
+    setState(() {
+      _variantSlots.add(slot);
+
+      final currentGroupIndex = _layerGroups.indexWhere(
+        (group) => group.id == parentGroupId,
+      );
+
+      if (currentGroupIndex == -1) {
+        return;
+      }
+
+      final group = _layerGroups[currentGroupIndex];
+      final order = List<String>.from(group.childOrder)
+        ..insert(0, 'variant:${slot.id}');
+
+      _layerGroups[currentGroupIndex] = group.copyWith(
+        childOrder: order,
+        expanded: true,
+      );
+
+      _activeLayerGroupId = parentGroupId;
+      _layerInsertionGroupId = parentGroupId;
+    });
+
+    _scheduleAutosave();
+    HapticFeedback.lightImpact();
+  }
+
+  void _beginVariantSlotRename(String slotId) {
+    final index = _variantSlots.indexWhere((slot) => slot.id == slotId);
+
+    if (index == -1) {
+      return;
+    }
+
+    setState(() {
+      _editingVariantSlotId = slotId;
+      _variantSlotRenameDraft = _variantSlots[index].name;
+    });
+
+    HapticFeedback.selectionClick();
+  }
+
+  void _commitVariantSlotRename(String slotId) {
+    final trimmed = _variantSlotRenameDraft.trim();
+
+    if (trimmed.isEmpty) {
+      return;
+    }
+
+    final index = _variantSlots.indexWhere((slot) => slot.id == slotId);
+
+    if (index == -1) {
+      return;
+    }
+
+    setState(() {
+      _variantSlots[index] = _variantSlots[index].copyWith(name: trimmed);
+      _editingVariantSlotId = null;
+      _variantSlotRenameDraft = '';
+    });
+
+    _scheduleAutosave();
+    HapticFeedback.lightImpact();
+  }
+
+  void _cancelVariantSlotRename() {
+    setState(() {
+      _editingVariantSlotId = null;
+      _variantSlotRenameDraft = '';
+    });
+  }
+
+  String _variantEntryDisplayName(String entry) {
+    if (entry.startsWith('layer:')) {
+      final id = entry.substring(6);
+      final index = _layers.indexWhere((layer) => layer.id == id);
+
+      if (index != -1) {
+        return _layers[index].name;
+      }
+    }
+
+    if (entry.startsWith('reference:')) {
+      final id = entry.substring(10);
+      final index = _referenceLayers.indexWhere(
+        (reference) => reference.id == id,
+      );
+
+      if (index != -1) {
+        return _referenceLayers[index].name;
+      }
+    }
+
+    if (entry.startsWith('group:')) {
+      final id = entry.substring(6);
+      final index = _layerGroups.indexWhere((group) => group.id == id);
+
+      if (index != -1) {
+        return _layerGroups[index].name;
+      }
+    }
+
+    return entry;
+  }
+
+  Future<void> _addVariantToSlot(String slotId) async {
+    final slotIndex = _variantSlots.indexWhere((slot) => slot.id == slotId);
+
+    if (slotIndex == -1) {
+      return;
+    }
+
+    final slotEntry = 'variant:$slotId';
+    final parentGroup = _groupContainingVariantSlot(slotId);
+
+    final sourceOrder = parentGroup != null
+        ? List<String>.from(parentGroup.childOrder)
+        : List<String>.from(_rootLayerOrder);
+
+    final candidates = sourceOrder
+        .where(
+          (entry) =>
+              entry != slotEntry &&
+              !entry.startsWith('variant:') &&
+              (entry.startsWith('layer:') ||
+                  entry.startsWith('reference:') ||
+                  entry.startsWith('group:')),
+        )
+        .toList();
+
+    if (candidates.isEmpty) {
+      if (!mounted) {
+        return;
+      }
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('No eligible sibling assets to add as variants.'),
+        ),
+      );
+      return;
+    }
+
+    final selectedEntry = await showModalBottomSheet<String>(
+      context: context,
+      builder: (sheetContext) {
+        return SafeArea(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const ListTile(
+                leading: Icon(Icons.tune),
+                title: Text('Add Variant'),
+                subtitle: Text(
+                  'Choose a sibling asset to move into this Variant Slot.',
+                ),
+              ),
+              const Divider(height: 1),
+              Flexible(
+                child: ListView.builder(
+                  shrinkWrap: true,
+                  itemCount: candidates.length,
+                  itemBuilder: (context, index) {
+                    final entry = candidates[index];
+
+                    IconData icon = Icons.layers_outlined;
+
+                    if (entry.startsWith('reference:')) {
+                      icon = Icons.image_outlined;
+                    } else if (entry.startsWith('group:')) {
+                      icon = Icons.folder_outlined;
+                    }
+
+                    return ListTile(
+                      leading: Icon(icon),
+                      title: Text(_variantEntryDisplayName(entry)),
+                      onTap: () {
+                        Navigator.of(sheetContext).pop(entry);
+                      },
+                    );
+                  },
+                ),
+              ),
+            ],
+          ),
+        );
+      },
+    );
+
+    if (selectedEntry == null || !mounted) {
+      return;
+    }
+
+    final currentSlotIndex = _variantSlots.indexWhere(
+      (slot) => slot.id == slotId,
+    );
+
+    if (currentSlotIndex == -1) {
+      return;
+    }
+
+    setState(() {
+      final currentSlot = _variantSlots[currentSlotIndex];
+      final nextVariants = List<String>.from(currentSlot.childOrder);
+
+      if (!nextVariants.contains(selectedEntry)) {
+        nextVariants.add(selectedEntry);
+      }
+
+      if (parentGroup != null) {
+        final parentIndex = _layerGroups.indexWhere(
+          (group) => group.id == parentGroup.id,
+        );
+
+        if (parentIndex != -1) {
+          final currentParent = _layerGroups[parentIndex];
+          final nextOrder = List<String>.from(currentParent.childOrder)
+            ..remove(selectedEntry);
+
+          _layerGroups[parentIndex] = currentParent.copyWith(
+            childOrder: nextOrder,
+            expanded: true,
+          );
+        }
+      } else {
+        _rootLayerOrder.remove(selectedEntry);
+      }
+
+      _variantSlots[currentSlotIndex] = currentSlot.copyWith(
+        childOrder: nextVariants,
+        activeIndex: nextVariants.length == 1 ? 0 : currentSlot.activeIndex,
+        expanded: true,
+      );
+    });
+
+    _scheduleAutosave();
+    HapticFeedback.lightImpact();
+  }
+
+  void _cycleVariantSlot(String slotId, int delta) {
+    final index = _variantSlots.indexWhere((slot) => slot.id == slotId);
+
+    if (index == -1) {
+      return;
+    }
+
+    final slot = _variantSlots[index];
+
+    if (slot.childOrder.length < 2) {
+      return;
+    }
+
+    final length = slot.childOrder.length;
+    final nextIndex = (slot.activeIndex + delta) % length;
+
+    setState(() {
+      _variantSlots[index] = slot.copyWith(
+        activeIndex: nextIndex < 0 ? nextIndex + length : nextIndex,
+      );
+    });
+
+    _scheduleAutosave();
+    HapticFeedback.selectionClick();
+  }
+
+  void _deleteVariantSlot(String slotId) {
+    final slotIndex = _variantSlots.indexWhere((slot) => slot.id == slotId);
+
+    if (slotIndex == -1) {
+      return;
+    }
+
+    final slot = _variantSlots[slotIndex];
+    final slotEntry = 'variant:$slotId';
+    final children = List<String>.from(slot.childOrder);
+
+    setState(() {
+      final rootIndex = _rootLayerOrder.indexOf(slotEntry);
+
+      if (rootIndex != -1) {
+        _rootLayerOrder
+          ..removeAt(rootIndex)
+          ..insertAll(rootIndex, children);
+      }
+
+      for (var index = 0; index < _layerGroups.length; index++) {
+        final group = _layerGroups[index];
+        final slotPosition = group.childOrder.indexOf(slotEntry);
+
+        if (slotPosition == -1) {
+          continue;
+        }
+
+        final order = List<String>.from(group.childOrder)
+          ..removeAt(slotPosition)
+          ..insertAll(slotPosition, children);
+
+        _layerGroups[index] = group.copyWith(childOrder: order);
+      }
+
+      _variantSlots.removeAt(slotIndex);
+
+      if (_editingVariantSlotId == slotId) {
+        _editingVariantSlotId = null;
+        _variantSlotRenameDraft = '';
+      }
+    });
+
+    _scheduleAutosave();
+    HapticFeedback.lightImpact();
+  }
+
+  Widget _buildVariantSlotCard(VariantSlot slot, {required int depth}) {
+    final activeEntry = slot.activeEntry;
+
+    String activeLabel = 'Empty';
+
+    if (activeEntry != null) {
+      if (activeEntry.startsWith('layer:')) {
+        final id = activeEntry.substring(6);
+        final index = _layers.indexWhere((layer) => layer.id == id);
+
+        if (index != -1) {
+          activeLabel = _layers[index].name;
+        }
+      } else if (activeEntry.startsWith('reference:')) {
+        final id = activeEntry.substring(10);
+        final index = _referenceLayers.indexWhere(
+          (reference) => reference.id == id,
+        );
+
+        if (index != -1) {
+          activeLabel = _referenceLayers[index].name;
+        }
+      } else if (activeEntry.startsWith('group:')) {
+        final id = activeEntry.substring(6);
+        final index = _layerGroups.indexWhere((group) => group.id == id);
+
+        if (index != -1) {
+          activeLabel = _layerGroups[index].name;
+        }
+      }
+    }
+
+    return Container(
+      margin: EdgeInsets.fromLTRB(6.0 + (depth * 16.0), 4, 6, 0),
+      decoration: BoxDecoration(
+        color: Colors.deepPurpleAccent.withValues(alpha: 0.07),
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(
+          color: Colors.deepPurpleAccent.withValues(alpha: 0.45),
+        ),
+      ),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Row(
+            children: [
+              _buildHierarchyDragHandle('variant:${slot.id}'),
+              IconButton(
+                tooltip: slot.expanded
+                    ? 'Collapse Variant Slot'
+                    : 'Expand Variant Slot',
+                visualDensity: VisualDensity.compact,
+                onPressed: () => _toggleVariantSlotExpanded(slot.id),
+                icon: Icon(
+                  slot.expanded
+                      ? Icons.keyboard_arrow_down
+                      : Icons.keyboard_arrow_right,
+                  size: 20,
+                ),
+              ),
+              const Icon(Icons.tune, size: 18),
+              const SizedBox(width: 6),
+              Expanded(
+                child: Tooltip(
+                  message: slot.name,
+                  child: Text(
+                    slot.name,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(fontWeight: FontWeight.w600),
+                  ),
+                ),
+              ),
+              Text(
+                '${slot.childOrder.length}',
+                style: const TextStyle(fontSize: 11, color: Colors.white54),
+              ),
+              IconButton(
+                tooltip: _editingVariantSlotId == slot.id
+                    ? 'Editing Variant Slot'
+                    : 'Rename Variant Slot',
+                visualDensity: VisualDensity.compact,
+                onPressed: _isPlaying || _editingVariantSlotId == slot.id
+                    ? null
+                    : () => _beginVariantSlotRename(slot.id),
+                icon: Icon(
+                  _editingVariantSlotId == slot.id
+                      ? Icons.edit
+                      : Icons.edit_outlined,
+                  size: 18,
+                ),
+              ),
+              PopupMenuButton<String>(
+                tooltip: 'Variant Slot Options',
+                enabled: !_isPlaying,
+                onSelected: (value) {
+                  if (value == 'add') {
+                    WidgetsBinding.instance.addPostFrameCallback((_) {
+                      if (mounted) {
+                        _addVariantToSlot(slot.id);
+                      }
+                    });
+                  } else if (value == 'delete') {
+                    _deleteVariantSlot(slot.id);
+                  }
+                },
+                itemBuilder: (context) => const [
+                  PopupMenuItem<String>(
+                    value: 'add',
+                    child: ListTile(
+                      dense: true,
+                      contentPadding: EdgeInsets.zero,
+                      leading: Icon(Icons.add_circle_outline),
+                      title: Text('Add Variant'),
+                    ),
+                  ),
+                  PopupMenuItem<String>(
+                    value: 'delete',
+                    child: ListTile(
+                      dense: true,
+                      contentPadding: EdgeInsets.zero,
+                      leading: Icon(Icons.delete_outline),
+                      title: Text('Delete Variant Slot'),
+                    ),
+                  ),
+                ],
+              ),
+            ],
+          ),
+          if (_editingVariantSlotId == slot.id)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(42, 4, 10, 8),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: TextFormField(
+                      key: ValueKey('variant-rename-wide-${slot.id}'),
+                      initialValue: slot.name,
+                      autofocus: true,
+                      textCapitalization: TextCapitalization.words,
+                      textInputAction: TextInputAction.done,
+                      decoration: const InputDecoration(
+                        isDense: false,
+                        labelText: 'Variant slot name',
+                        hintText: 'Enter a name',
+                        border: OutlineInputBorder(),
+                        contentPadding: EdgeInsets.symmetric(
+                          horizontal: 12,
+                          vertical: 12,
+                        ),
+                      ),
+                      onChanged: (value) {
+                        _variantSlotRenameDraft = value;
+                      },
+                      onFieldSubmitted: (_) {
+                        _commitVariantSlotRename(slot.id);
+                      },
+                    ),
+                  ),
+                  const SizedBox(width: 6),
+                  IconButton(
+                    tooltip: 'Save Rename',
+                    visualDensity: VisualDensity.compact,
+                    onPressed: () => _commitVariantSlotRename(slot.id),
+                    icon: const Icon(Icons.check),
+                  ),
+                  IconButton(
+                    tooltip: 'Cancel Rename',
+                    visualDensity: VisualDensity.compact,
+                    onPressed: _cancelVariantSlotRename,
+                    icon: const Icon(Icons.close),
+                  ),
+                ],
+              ),
+            ),
+          if (slot.expanded)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(42, 0, 10, 8),
+              child: slot.childOrder.isEmpty
+                  ? const Align(
+                      alignment: Alignment.centerLeft,
+                      child: Text(
+                        'No variants yet',
+                        style: TextStyle(fontSize: 11, color: Colors.white54),
+                      ),
+                    )
+                  : Row(
+                      children: [
+                        IconButton(
+                          tooltip: 'Previous Variant',
+                          visualDensity: VisualDensity.compact,
+                          onPressed: slot.childOrder.length > 1
+                              ? () => _cycleVariantSlot(slot.id, -1)
+                              : null,
+                          icon: const Icon(Icons.chevron_left, size: 20),
+                        ),
+                        Expanded(
+                          child: Text(
+                            'Active: $activeLabel',
+                            textAlign: TextAlign.center,
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(
+                              fontSize: 11,
+                              color: Colors.white70,
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
+                        ),
+                        IconButton(
+                          tooltip: 'Next Variant',
+                          visualDensity: VisualDensity.compact,
+                          onPressed: slot.childOrder.length > 1
+                              ? () => _cycleVariantSlot(slot.id, 1)
+                              : null,
+                          icon: const Icon(Icons.chevron_right, size: 20),
+                        ),
+                      ],
+                    ),
+            ),
+          if (slot.expanded && slot.childOrder.isNotEmpty)
+            ...slot.childOrder.map((entry) {
+              final child = _buildHierarchyEntry(entry, depth: depth + 1);
+
+              if (child == null) {
+                return const SizedBox.shrink();
+              }
+
+              final isActive = entry == slot.activeEntry;
+
+              return Opacity(opacity: isActive ? 1.0 : 0.55, child: child);
+            }),
+        ],
+      ),
+    );
+  }
+
   String? _hierarchyParentGroupId(String entry) {
     if (entry.startsWith('group:')) {
       final groupId = entry.substring(6);
@@ -7750,6 +8868,16 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     if (entry.startsWith('layer:')) {
       final layerId = entry.substring(6);
       return _groupContainingLayer(layerId)?.id;
+    }
+
+    if (entry.startsWith('reference:')) {
+      final referenceId = entry.substring(10);
+      return _groupContainingReference(referenceId)?.id;
+    }
+
+    if (entry.startsWith('variant:')) {
+      final slotId = entry.substring(8);
+      return _groupContainingVariantSlot(slotId)?.id;
     }
 
     return null;
@@ -7958,6 +9086,39 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
       );
     }
 
+    if (entry.startsWith('reference:')) {
+      final referenceId = entry.substring(10);
+      final referenceIndex = _referenceLayers.indexWhere(
+        (reference) => reference.id == referenceId,
+      );
+
+      if (referenceIndex == -1) {
+        return null;
+      }
+
+      return _buildHierarchyDropTarget(
+        entry: entry,
+        child: _buildReferenceLayerCard(
+          _referenceLayers[referenceIndex],
+          hierarchyDepth: depth,
+        ),
+      );
+    }
+
+    if (entry.startsWith('variant:')) {
+      final slotId = entry.substring(8);
+      final slot = _variantSlotForId(slotId);
+
+      if (slot == null) {
+        return null;
+      }
+
+      return _buildHierarchyDropTarget(
+        entry: entry,
+        child: _buildVariantSlotCard(slot, depth: depth),
+      );
+    }
+
     return null;
   }
 
@@ -7979,6 +9140,8 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
   }
 
   List<Widget> _buildLayerPanelEntries() {
+    _ensureReferenceHierarchyEntries();
+
     final widgets = <Widget>[];
 
     for (final entry in _rootLayerOrder) {
@@ -7986,19 +9149,6 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
 
       if (widget != null) {
         widgets.add(widget);
-      }
-    }
-
-    if (_referenceLayers.isNotEmpty) {
-      widgets.add(
-        const Padding(
-          padding: EdgeInsets.symmetric(vertical: 5),
-          child: Divider(height: 1),
-        ),
-      );
-
-      for (final reference in _referenceLayers) {
-        widgets.add(_buildReferenceLayerCard(reference));
       }
     }
 
@@ -8094,6 +9244,12 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                       _exportLayerGroupPng(group.id);
                     } else if (value == 'move-group') {
                       _showMoveGroupDialog(group.id);
+                    } else if (value == 'variant-slot') {
+                      WidgetsBinding.instance.addPostFrameCallback((_) {
+                        if (mounted) {
+                          _createVariantSlot(group.id);
+                        }
+                      });
                     } else if (value == 'rename') {
                       _renameLayerGroup(group.id);
                     } else if (value == 'delete') {
@@ -8116,6 +9272,13 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                       ),
                     ),
                     PopupMenuDivider(),
+                    PopupMenuItem(
+                      value: 'variant-slot',
+                      child: ListTile(
+                        leading: Icon(Icons.tune),
+                        title: Text('Create Variant Slot'),
+                      ),
+                    ),
                     PopupMenuItem(
                       value: 'move-group',
                       child: ListTile(
@@ -8342,6 +9505,277 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
         ],
       ),
     );
+  }
+
+  bool _isReferenceEffectivelyVisible(ReferenceLayer reference) {
+    if (!reference.visible) {
+      return false;
+    }
+
+    final group = _groupContainingReference(reference.id);
+
+    if (group == null) {
+      return true;
+    }
+
+    return _isGroupEffectivelyVisible(group.id);
+  }
+
+  Widget _buildDrawingLayerSceneWidget(DrawingLayer layer) {
+    final layerIndex = _layers.indexWhere((item) => item.id == layer.id);
+    final isActiveLayer = layerIndex == _activeLayerIndex;
+
+    final frameStrokes = <VectorStroke>[];
+
+    if (_selectedFrameIndex >= 0 && _selectedFrameIndex < layer.frames.length) {
+      frameStrokes.addAll(
+        layer.frames[_selectedFrameIndex].map(
+          (stroke) => _strokeWithOpacity(stroke, layer.opacity),
+        ),
+      );
+    }
+
+    if (isActiveLayer) {
+      frameStrokes.addAll(
+        _draftTextureStrokes.map(
+          (stroke) => _strokeWithOpacity(stroke, layer.opacity),
+        ),
+      );
+
+      frameStrokes.addAll(
+        _draftStampStrokes.map(
+          (stroke) => _strokeWithOpacity(stroke, layer.opacity),
+        ),
+      );
+    }
+
+    return IgnorePointer(
+      child: CustomPaint(
+        painter: AnimationCanvasPainter(
+          strokes: frameStrokes,
+          currentStroke: isActiveLayer && _draftStroke.isNotEmpty
+              ? _draftStroke
+              : null,
+          previousOnionSkinStrokes: const <VectorStroke>[],
+          nextOnionSkinStrokes: const <VectorStroke>[],
+          strokeColor: _brushColor.withValues(
+            alpha: (_brushOpacity * layer.opacity).clamp(0.0, 1.0),
+          ),
+          strokeWidth: _brushSize,
+          brushType: _brushType,
+          backgroundColor: _canvasBackgroundColor,
+          paintBackground: false,
+          previousOnionSkinColor: Colors.transparent,
+          nextOnionSkinColor: Colors.transparent,
+        ),
+        child: const SizedBox.expand(),
+      ),
+    );
+  }
+
+  List<Widget> _buildMixedHierarchySceneWidgets() {
+    final widgets = <Widget>[];
+
+    final visitedLayerIds = <String>{};
+    final visitedReferenceIds = <String>{};
+    final visitedGroupIds = <String>{};
+
+    void suppressEntry(String entry) {
+      if (entry.startsWith('layer:')) {
+        visitedLayerIds.add(entry.substring(6));
+        return;
+      }
+
+      if (entry.startsWith('reference:')) {
+        visitedReferenceIds.add(entry.substring(10));
+        return;
+      }
+
+      if (entry.startsWith('group:')) {
+        final groupId = entry.substring(6);
+
+        if (!visitedGroupIds.add(groupId)) {
+          return;
+        }
+
+        final groupIndex = _layerGroups.indexWhere(
+          (group) => group.id == groupId,
+        );
+
+        if (groupIndex == -1) {
+          return;
+        }
+
+        for (final childEntry in _layerGroups[groupIndex].childOrder) {
+          suppressEntry(childEntry);
+        }
+
+        return;
+      }
+
+      if (entry.startsWith('variant:')) {
+        final slotId = entry.substring(8);
+        final slot = _variantSlotForId(slotId);
+
+        if (slot == null) {
+          return;
+        }
+
+        for (final childEntry in slot.childOrder) {
+          suppressEntry(childEntry);
+        }
+      }
+    }
+
+    void addEntry(String entry) {
+      if (entry.startsWith('layer:')) {
+        final layerId = entry.substring(6);
+
+        if (!visitedLayerIds.add(layerId)) {
+          return;
+        }
+
+        final layerIndex = _layers.indexWhere((layer) => layer.id == layerId);
+
+        if (layerIndex == -1) {
+          return;
+        }
+
+        final layer = _layers[layerIndex];
+
+        if (!_isLayerEffectivelyVisible(layer)) {
+          return;
+        }
+
+        widgets.add(_buildDrawingLayerSceneWidget(layer));
+        return;
+      }
+
+      if (entry.startsWith('reference:')) {
+        final referenceId = entry.substring(10);
+
+        if (!visitedReferenceIds.add(referenceId)) {
+          return;
+        }
+
+        final referenceIndex = _referenceLayers.indexWhere(
+          (reference) => reference.id == referenceId,
+        );
+
+        if (referenceIndex == -1) {
+          return;
+        }
+
+        final reference = _referenceLayers[referenceIndex];
+
+        if (!_isReferenceEffectivelyVisible(reference) ||
+            reference.mediaPath.isEmpty) {
+          return;
+        }
+
+        if (reference.mediaType == 'image') {
+          widgets.add(_buildImageReferenceWidget(reference));
+          return;
+        }
+
+        if (reference.mediaType == 'video' &&
+            reference.id == _activeReferenceLayerId &&
+            _videoReady &&
+            _videoController != null) {
+          widgets.add(_buildActiveVideoReferenceWidget());
+        }
+
+        return;
+      }
+
+      if (entry.startsWith('variant:')) {
+        final slotId = entry.substring(8);
+        final slot = _variantSlotForId(slotId);
+
+        if (slot == null) {
+          return;
+        }
+
+        final activeEntry = slot.activeEntry;
+
+        for (final childEntry in slot.childOrder) {
+          if (childEntry != activeEntry) {
+            suppressEntry(childEntry);
+          }
+        }
+
+        if (activeEntry != null) {
+          addEntry(activeEntry);
+        }
+
+        return;
+      }
+
+      if (entry.startsWith('group:')) {
+        final groupId = entry.substring(6);
+
+        if (!visitedGroupIds.add(groupId)) {
+          return;
+        }
+
+        final groupIndex = _layerGroups.indexWhere(
+          (group) => group.id == groupId,
+        );
+
+        if (groupIndex == -1) {
+          return;
+        }
+
+        final group = _layerGroups[groupIndex];
+
+        if (!_isGroupEffectivelyVisible(group.id)) {
+          return;
+        }
+
+        // Layer panel order is top-to-bottom.
+        // Flutter Stack paints first-to-last, so walk children bottom-to-top.
+        for (final childEntry in group.childOrder.reversed) {
+          addEntry(childEntry);
+        }
+      }
+    }
+
+    // Root hierarchy is also displayed top-to-bottom.
+    for (final entry in _rootLayerOrder.reversed) {
+      addEntry(entry);
+    }
+
+    // Legacy safety net. Anything not yet represented in the hierarchy is
+    // rendered underneath the authoritative hierarchy rather than vanishing.
+    final fallbackWidgets = <Widget>[];
+
+    for (final reference in _referenceLayers) {
+      if (visitedReferenceIds.contains(reference.id) ||
+          !_isReferenceEffectivelyVisible(reference) ||
+          reference.mediaPath.isEmpty) {
+        continue;
+      }
+
+      if (reference.mediaType == 'image') {
+        fallbackWidgets.add(_buildImageReferenceWidget(reference));
+      } else if (reference.mediaType == 'video' &&
+          reference.id == _activeReferenceLayerId &&
+          _videoReady &&
+          _videoController != null) {
+        fallbackWidgets.add(_buildActiveVideoReferenceWidget());
+      }
+    }
+
+    for (final layer in _layers) {
+      if (visitedLayerIds.contains(layer.id) ||
+          !_isLayerEffectivelyVisible(layer)) {
+        continue;
+      }
+
+      fallbackWidgets.add(_buildDrawingLayerSceneWidget(layer));
+    }
+
+    return <Widget>[...fallbackWidgets, ...widgets];
   }
 
   Widget _buildReferenceTransformWidget(
@@ -8577,67 +10011,43 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                                             ColoredBox(
                                               color: _canvasBackgroundColor,
                                             ),
-                                            if (_referenceMediaType ==
-                                                    'video' &&
-                                                _videoReady &&
-                                                _videoController != null &&
-                                                _activeReferenceLayer != null &&
-                                                _activeReferenceLayer!.visible)
-                                              _buildActiveVideoReferenceWidget(),
-                                            for (final reference
-                                                in _referenceLayers)
-                                              if (reference.visible &&
-                                                  reference.mediaType ==
-                                                      'image' &&
-                                                  reference
-                                                      .mediaPath
-                                                      .isNotEmpty)
-                                                _buildImageReferenceWidget(
-                                                  reference,
+                                            ..._buildMixedHierarchySceneWidgets(),
+
+                                            // Onion skins remain a workspace
+                                            // guide overlay above the scene.
+                                            if (_showOnionSkin)
+                                              IgnorePointer(
+                                                child: CustomPaint(
+                                                  painter: AnimationCanvasPainter(
+                                                    strokes:
+                                                        const <VectorStroke>[],
+                                                    currentStroke: null,
+                                                    previousOnionSkinStrokes:
+                                                        previousFrameStrokes,
+                                                    nextOnionSkinStrokes:
+                                                        nextFrameStrokes,
+                                                    strokeColor:
+                                                        Colors.transparent,
+                                                    strokeWidth: _brushSize,
+                                                    brushType: _brushType,
+                                                    backgroundColor:
+                                                        _canvasBackgroundColor,
+                                                    paintBackground: false,
+                                                    previousOnionSkinColor:
+                                                        Colors.redAccent
+                                                            .withValues(
+                                                              alpha: 0.40,
+                                                            ),
+                                                    nextOnionSkinColor: Colors
+                                                        .greenAccent
+                                                        .withValues(
+                                                          alpha: 0.40,
+                                                        ),
+                                                  ),
+                                                  child:
+                                                      const SizedBox.expand(),
                                                 ),
-                                            CustomPaint(
-                                              painter: AnimationCanvasPainter(
-                                                strokes: <VectorStroke>[
-                                                  ..._frames[_selectedFrameIndex],
-                                                  ..._draftTextureStrokes,
-                                                  ..._draftStampStrokes,
-                                                ],
-                                                currentStroke:
-                                                    _draftStroke.isEmpty
-                                                    ? null
-                                                    : _draftStroke,
-                                                previousOnionSkinStrokes:
-                                                    _showOnionSkin
-                                                    ? previousFrameStrokes
-                                                    : const <VectorStroke>[],
-                                                nextOnionSkinStrokes:
-                                                    _showOnionSkin
-                                                    ? nextFrameStrokes
-                                                    : const <VectorStroke>[],
-                                                strokeColor: _brushColor
-                                                    .withValues(
-                                                      alpha: _brushOpacity,
-                                                    ),
-                                                strokeWidth: _brushSize,
-                                                brushType: _brushType,
-                                                backgroundColor:
-                                                    _canvasBackgroundColor,
-                                                paintBackground:
-                                                    _referenceMediaPath ==
-                                                        null ||
-                                                    (_referenceMediaType !=
-                                                            'image' &&
-                                                        _referenceMediaType !=
-                                                            'video'),
-                                                previousOnionSkinColor: Colors
-                                                    .redAccent
-                                                    .withValues(alpha: 0.40),
-                                                nextOnionSkinColor: Colors
-                                                    .greenAccent
-                                                    .withValues(alpha: 0.40),
                                               ),
-                                              child: const SizedBox.expand(),
-                                            ),
                                             if (_fillLassoPoints.length > 1)
                                               IgnorePointer(
                                                 child: CustomPaint(
@@ -11031,7 +12441,9 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                                       _isPlaying ||
                                           (_selectedTransformStrokes.isEmpty &&
                                               _transformReferenceLayerId ==
-                                                  null)
+                                                  null &&
+                                              _transformGroupReferenceIds
+                                                  .isEmpty)
                                       ? null
                                       : _flipSelectedStrokesHorizontally,
                                   icon: const Icon(Icons.flip),
