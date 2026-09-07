@@ -751,6 +751,20 @@ class _BagScreenState extends State<BagScreen> {
   }
 
   Widget _bagItemThumbnail(BagItem item) {
+    if (item.isComposite) {
+      return const SizedBox(
+        width: 64,
+        height: 64,
+        child: Center(
+          child: Icon(
+            Icons.view_in_ar_outlined,
+            size: 36,
+            color: Color(0xFFF1D3A2),
+          ),
+        ),
+      );
+    }
+
     if (item.isImage) {
       return SizedBox(
         width: 64,
@@ -792,6 +806,41 @@ class _BagScreenState extends State<BagScreen> {
   }
 
   Future<void> _viewBagItem(BagItem item) async {
+    if (item.isComposite) {
+      await showDialog<void>(
+        context: context,
+        builder: (dialogContext) {
+          final composite = item.composite!;
+
+          return AlertDialog(
+            title: Row(
+              children: [
+                const Icon(Icons.view_in_ar_outlined),
+                const SizedBox(width: 10),
+                Expanded(child: Text(item.name)),
+              ],
+            ),
+            content: Text(
+              'Composite Group\n'
+              '${composite.canvasWidth.round()} × '
+              '${composite.canvasHeight.round()}\n'
+              '${composite.root.children.length} top-level node(s)\n\n'
+              'This asset preserves its editable hierarchy, references, '
+              'groups and Variant Slots.',
+            ),
+            actions: [
+              FilledButton(
+                onPressed: () => Navigator.pop(dialogContext),
+                child: const Text('Close'),
+              ),
+            ],
+          );
+        },
+      );
+
+      return;
+    }
+
     if (item.isImage) {
       await showDialog<void>(
         context: context,

@@ -1,6 +1,7 @@
 import 'dart:io';
 import 'dart:math' as math;
 import 'dart:ui' as ui;
+import 'dart:typed_data';
 
 import 'package:ffmpeg_kit_flutter_new_min_gpl/ffmpeg_kit.dart';
 import 'package:ffmpeg_kit_flutter_new_min_gpl/return_code.dart';
@@ -127,6 +128,208 @@ class AnimationExportService {
         await tempDirectory.delete(recursive: true);
       }
     }
+  }
+
+  Future<String> exportRawRgbaPngAsset({
+    required String assetName,
+    required int width,
+    required int height,
+    required Uint8List rgbaBytes,
+  }) async {
+    if (width <= 0 || height <= 0) {
+      throw StateError('Invalid RGBA image dimensions.');
+    }
+
+    final expectedLength = width * height * 4;
+
+    if (rgbaBytes.length != expectedLength) {
+      throw StateError(
+        'RGBA byte count does not match image dimensions '
+        '($width × $height).',
+      );
+    }
+
+    final pngBytes = _encodeForcedRgbaPng(
+      width: width,
+      height: height,
+      rgbaBytes: rgbaBytes,
+    );
+
+    final exportDirectory = Directory('${_exportRootDirectory().path}/assets');
+
+    await exportDirectory.create(recursive: true);
+
+    final safeName = _safeFileName(assetName);
+    final timestamp = DateTime.now().millisecondsSinceEpoch;
+
+    final outputPath = '${exportDirectory.path}/${safeName}_$timestamp.png';
+
+    await File(outputPath).writeAsBytes(pngBytes, flush: true);
+
+    if (Platform.isAndroid) {
+      await MediaStore.ensureInitialized();
+      MediaStore.appFolder = 'InkdFrames';
+
+      final saveInfo = await MediaStore().saveFile(
+        tempFilePath: outputPath,
+        dirType: DirType.photo,
+        dirName: DirName.pictures,
+      );
+
+      if (saveInfo == null) {
+        throw StateError(
+          'RGBA PNG created successfully but could not be saved to '
+          'Pictures/InkdFrames.',
+        );
+      }
+
+      final privateFile = File(outputPath);
+
+      if (await privateFile.exists()) {
+        await privateFile.delete();
+      }
+
+      return 'Pictures/InkdFrames';
+    }
+
+    return outputPath;
+  }
+
+  Uint8List _encodeForcedRgbaPng({
+    required int width,
+    required int height,
+    required Uint8List rgbaBytes,
+  }) {
+    // PNG scanline format:
+    // one filter byte followed by width * 4 RGBA bytes.
+    //
+    // Filter 0 keeps this deliberately simple and deterministic.
+    final bytesPerRow = width * 4;
+    final scanlines = Uint8List((bytesPerRow + 1) * height);
+
+    for (var y = 0; y < height; y++) {
+      final sourceStart = y * bytesPerRow;
+      final destinationStart = y * (bytesPerRow + 1);
+
+      scanlines[destinationStart] = 0;
+
+      scanlines.setRange(
+        destinationStart + 1,
+        destinationStart + 1 + bytesPerRow,
+        rgbaBytes,
+        sourceStart,
+      );
+    }
+
+    final compressed = Uint8List.fromList(
+      ZLibCodec(level: 6).encode(scanlines),
+    );
+
+    final ihdr = ByteData(13)
+      ..setUint32(0, width, Endian.big)
+      ..setUint32(4, height, Endian.big)
+      ..setUint8(8, 8) // Bit depth.
+      ..setUint8(9, 6) // PNG Color Type 6 = RGBA.
+      ..setUint8(10, 0) // Compression method.
+      ..setUint8(11, 0) // Filter method.
+      ..setUint8(12, 0); // No interlace.
+
+    final output = BytesBuilder(copy: false)
+      ..add(const <int>[137, 80, 78, 71, 13, 10, 26, 10])
+      ..add(_pngChunk('IHDR', ihdr.buffer.asUint8List()))
+      ..add(_pngChunk('IDAT', compressed))
+      ..add(_pngChunk('IEND', Uint8List(0)));
+
+    return output.takeBytes();
+  }
+
+  Uint8List _pngChunk(String type, Uint8List data) {
+    final typeBytes = Uint8List.fromList(type.codeUnits);
+
+    if (typeBytes.length != 4) {
+      throw StateError('PNG chunk type must contain exactly four bytes.');
+    }
+
+    final lengthBytes = ByteData(4)..setUint32(0, data.length, Endian.big);
+
+    final crcSource = Uint8List(typeBytes.length + data.length)
+      ..setRange(0, typeBytes.length, typeBytes)
+      ..setRange(typeBytes.length, typeBytes.length + data.length, data);
+
+    final crcBytes = ByteData(4)
+      ..setUint32(0, _pngCrc32(crcSource), Endian.big);
+
+    return (BytesBuilder(copy: false)
+          ..add(lengthBytes.buffer.asUint8List())
+          ..add(typeBytes)
+          ..add(data)
+          ..add(crcBytes.buffer.asUint8List()))
+        .takeBytes();
+  }
+
+  int _pngCrc32(List<int> bytes) {
+    var crc = 0xFFFFFFFF;
+
+    for (final byte in bytes) {
+      crc ^= byte;
+
+      for (var bit = 0; bit < 8; bit++) {
+        if ((crc & 1) != 0) {
+          crc = (crc >> 1) ^ 0xEDB88320;
+        } else {
+          crc >>= 1;
+        }
+      }
+    }
+
+    return (crc ^ 0xFFFFFFFF) & 0xFFFFFFFF;
+  }
+
+  Future<String> exportRenderedPngAsset({
+    required String assetName,
+    required List<int> pngBytes,
+  }) async {
+    if (pngBytes.isEmpty) {
+      throw StateError('Cannot export an empty PNG.');
+    }
+
+    final exportDirectory = Directory('${_exportRootDirectory().path}/assets');
+
+    await exportDirectory.create(recursive: true);
+
+    final safeName = _safeFileName(assetName);
+    final timestamp = DateTime.now().millisecondsSinceEpoch;
+
+    final outputPath = '${exportDirectory.path}/${safeName}_$timestamp.png';
+
+    await File(outputPath).writeAsBytes(pngBytes, flush: true);
+
+    if (Platform.isAndroid) {
+      await MediaStore.ensureInitialized();
+      MediaStore.appFolder = 'InkdFrames';
+
+      final saveInfo = await MediaStore().saveFile(
+        tempFilePath: outputPath,
+        dirType: DirType.photo,
+        dirName: DirName.pictures,
+      );
+
+      if (saveInfo == null) {
+        throw StateError(
+          'PNG created successfully but could not be saved to Pictures/InkdFrames.',
+        );
+      }
+
+      final privateFile = File(outputPath);
+
+      if (await privateFile.exists()) {
+        await privateFile.delete();
+      }
+
+      return 'Pictures/InkdFrames';
+    }
+
+    return outputPath;
   }
 
   Future<String> exportPngAsset({

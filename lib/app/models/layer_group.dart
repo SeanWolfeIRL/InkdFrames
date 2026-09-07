@@ -55,6 +55,8 @@ class LayerGroup {
   /// Entries use:
   ///   `group:<id>`
   ///   `layer:<id>`
+  ///   `reference:<id>`
+  ///   `variant:<id>`
   ///
   /// Older projects automatically derive this from childGroupIds and
   /// childLayerIds, preserving their previous visible ordering.

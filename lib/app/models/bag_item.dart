@@ -1,3 +1,4 @@
+import 'composite_asset.dart';
 import 'vector_stroke.dart';
 
 class BagLayer {
@@ -48,6 +49,11 @@ class BagItem {
     required this.createdAt,
     this.assetType = 'vector',
     this.imagePath,
+    this.authoredWidth,
+    this.authoredHeight,
+    this.authoredCanvasWidth,
+    this.authoredCanvasHeight,
+    this.composite,
   });
 
   factory BagItem.fromJson(Map<String, dynamic> json) {
@@ -62,6 +68,15 @@ class BagItem {
           DateTime.now(),
       assetType: json['assetType'] as String? ?? 'vector',
       imagePath: json['imagePath'] as String?,
+      authoredWidth: (json['authoredWidth'] as num?)?.toDouble(),
+      authoredHeight: (json['authoredHeight'] as num?)?.toDouble(),
+      authoredCanvasWidth: (json['authoredCanvasWidth'] as num?)?.toDouble(),
+      authoredCanvasHeight: (json['authoredCanvasHeight'] as num?)?.toDouble(),
+      composite: json['composite'] is Map
+          ? CompositeAsset.fromJson(
+              Map<String, dynamic>.from(json['composite'] as Map),
+            )
+          : null,
       layers: rawLayers
           .map(
             (layer) =>
@@ -82,8 +97,36 @@ class BagItem {
   /// Durable app-local source image for native image assets.
   final String? imagePath;
 
+  /// Size established by the artist when this asset was placed/saved.
+  ///
+  /// These values live in the coordinate space described by
+  /// authoredCanvasWidth/authoredCanvasHeight. They are deliberately
+  /// independent from any later scene-instance scale.
+  final double? authoredWidth;
+  final double? authoredHeight;
+  final double? authoredCanvasWidth;
+  final double? authoredCanvasHeight;
+
+  bool get hasAuthoredSize =>
+      authoredWidth != null &&
+      authoredHeight != null &&
+      authoredCanvasWidth != null &&
+      authoredCanvasHeight != null &&
+      authoredWidth! > 0 &&
+      authoredHeight! > 0 &&
+      authoredCanvasWidth! > 0 &&
+      authoredCanvasHeight! > 0;
+
+  /// Structured editable scene payload for composite assets.
+  ///
+  /// Unlike a flattened PNG, this preserves hierarchy, transforms,
+  /// references, drawing layers, nested groups, and Variant Slots.
+  final CompositeAsset? composite;
+
   final List<BagLayer> layers;
   final DateTime createdAt;
+
+  bool get isComposite => assetType == 'composite' && composite != null;
 
   bool get isImage =>
       assetType == 'image' && imagePath != null && imagePath!.isNotEmpty;
@@ -96,6 +139,13 @@ class BagItem {
       'createdAt': createdAt.toIso8601String(),
       'assetType': assetType,
       if (imagePath != null) 'imagePath': imagePath,
+      if (authoredWidth != null) 'authoredWidth': authoredWidth,
+      if (authoredHeight != null) 'authoredHeight': authoredHeight,
+      if (authoredCanvasWidth != null)
+        'authoredCanvasWidth': authoredCanvasWidth,
+      if (authoredCanvasHeight != null)
+        'authoredCanvasHeight': authoredCanvasHeight,
+      if (composite != null) 'composite': composite!.toJson(),
       'layers': layers.map((layer) => layer.toJson()).toList(),
     };
   }

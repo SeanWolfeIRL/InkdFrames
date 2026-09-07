@@ -1,4 +1,5 @@
 import 'dart:ui' as ui;
+import 'dart:typed_data';
 
 import '../models/vector_stroke.dart';
 
@@ -15,6 +16,26 @@ class AnimationExportService {
     required ui.Color backgroundColor,
   }) {
     throw UnsupportedError('MP4 export is not available in the web preview.');
+  }
+
+  Future<String> exportRawRgbaPngAsset({
+    required String assetName,
+    required int width,
+    required int height,
+    required Uint8List rgbaBytes,
+  }) {
+    throw UnsupportedError(
+      'RGBA PNG export is not available in the web preview.',
+    );
+  }
+
+  Future<String> exportRenderedPngAsset({
+    required String assetName,
+    required List<int> pngBytes,
+  }) {
+    throw UnsupportedError(
+      'Rendered PNG export is not available in the web preview.',
+    );
   }
 
   Future<String> exportPngAsset({

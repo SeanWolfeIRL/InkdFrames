@@ -1,9 +1,12 @@
 import 'dart:convert';
 import 'dart:io';
+import 'dart:typed_data';
+import 'dart:ui' as ui;
 
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'project_library_screen.dart';
@@ -11,10 +14,131 @@ import 'welcome_home_screen.dart';
 import 'workspace_screen.dart';
 import 'bag_screen.dart';
 import '../models/bag_item.dart';
+import '../models/composite_asset.dart';
 import '../models/placed_decoration.dart';
 import '../models/vector_stroke.dart';
+import '../painters/animation_canvas_painter.dart';
 import '../painters/bag_item_preview_painter.dart';
 import '../services/bag_service.dart';
+
+class _ImageAlphaMask {
+  const _ImageAlphaMask({
+    required this.width,
+    required this.height,
+    required this.rgba,
+  });
+
+  final int width;
+  final int height;
+  final Uint8List rgba;
+
+  bool hitTest(
+    Offset position,
+    Size boxSize, {
+    required bool mirrored,
+    int alphaThreshold = 32,
+  }) {
+    if (width <= 0 ||
+        height <= 0 ||
+        boxSize.width <= 0 ||
+        boxSize.height <= 0) {
+      return false;
+    }
+
+    // Match Image.file(... fit: BoxFit.contain).
+    final scale = (boxSize.width / width < boxSize.height / height)
+        ? boxSize.width / width
+        : boxSize.height / height;
+
+    final renderedWidth = width * scale;
+    final renderedHeight = height * scale;
+
+    final left = (boxSize.width - renderedWidth) / 2;
+    final top = (boxSize.height - renderedHeight) / 2;
+
+    if (position.dx < left ||
+        position.dy < top ||
+        position.dx >= left + renderedWidth ||
+        position.dy >= top + renderedHeight) {
+      return false;
+    }
+
+    var normalizedX = (position.dx - left) / renderedWidth;
+    final normalizedY = (position.dy - top) / renderedHeight;
+
+    if (mirrored) {
+      normalizedX = 1.0 - normalizedX;
+    }
+
+    final pixelX = (normalizedX * width).floor().clamp(0, width - 1);
+    final pixelY = (normalizedY * height).floor().clamp(0, height - 1);
+
+    final alphaIndex = ((pixelY * width) + pixelX) * 4 + 3;
+
+    if (alphaIndex < 0 || alphaIndex >= rgba.length) {
+      return false;
+    }
+
+    return rgba[alphaIndex] >= alphaThreshold;
+  }
+}
+
+class _AlphaHitTest extends SingleChildRenderObjectWidget {
+  const _AlphaHitTest({
+    required this.mask,
+    required this.mirrored,
+    required super.child,
+  });
+
+  final _ImageAlphaMask? mask;
+  final bool mirrored;
+
+  @override
+  RenderObject createRenderObject(BuildContext context) {
+    return _RenderAlphaHitTest(mask: mask, mirrored: mirrored);
+  }
+
+  @override
+  void updateRenderObject(
+    BuildContext context,
+    covariant _RenderAlphaHitTest renderObject,
+  ) {
+    renderObject
+      ..mask = mask
+      ..mirrored = mirrored;
+  }
+}
+
+class _RenderAlphaHitTest extends RenderProxyBox {
+  _RenderAlphaHitTest({required _ImageAlphaMask? mask, required bool mirrored})
+    : _mask = mask,
+      _mirrored = mirrored;
+
+  _ImageAlphaMask? _mask;
+  bool _mirrored;
+
+  set mask(_ImageAlphaMask? value) {
+    _mask = value;
+  }
+
+  set mirrored(bool value) {
+    _mirrored = value;
+  }
+
+  @override
+  bool hitTest(BoxHitTestResult result, {required Offset position}) {
+    final currentMask = _mask;
+
+    // Vector Bag items keep their existing rectangular hit area.
+    // Raster image items become alpha-aware once their mask is ready.
+    if (currentMask != null &&
+        !currentMask.hitTest(position, size, mirrored: _mirrored)) {
+      return false;
+    }
+
+    return super.hitTest(result, position: position);
+  }
+}
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -39,6 +163,9 @@ class _HomeScreenState extends State<HomeScreen> {
 
   final Map<int, Offset> _decorateTouchPointers = <int, Offset>{};
   Offset? _decoratePanCentroid;
+
+  final Map<String, _ImageAlphaMask> _imageAlphaMasks =
+      <String, _ImageAlphaMask>{};
 
   @override
   void initState() {
@@ -166,6 +293,8 @@ class _HomeScreenState extends State<HomeScreen> {
         for (final item in items) item.id: item,
       };
     });
+
+    await _primeImageAlphaMasks(items);
   }
 
   Future<void> _saveDecorations() async {
@@ -177,6 +306,68 @@ class _HomeScreenState extends State<HomeScreen> {
         _decorations.map((decoration) => decoration.toJson()).toList(),
       ),
     );
+  }
+
+  Future<void> _primeImageAlphaMasks(Iterable<BagItem> items) async {
+    final loaded = <String, _ImageAlphaMask>{};
+
+    for (final item in items) {
+      if (!item.isImage) {
+        continue;
+      }
+
+      final imagePath = item.imagePath;
+
+      if (imagePath == null ||
+          imagePath.isEmpty ||
+          _imageAlphaMasks.containsKey(imagePath) ||
+          loaded.containsKey(imagePath)) {
+        continue;
+      }
+
+      try {
+        final file = File(imagePath);
+
+        if (!await file.exists()) {
+          continue;
+        }
+
+        final bytes = await file.readAsBytes();
+        final codec = await ui.instantiateImageCodec(bytes);
+        final frame = await codec.getNextFrame();
+
+        final byteData = await frame.image.toByteData(
+          format: ui.ImageByteFormat.rawRgba,
+        );
+
+        if (byteData != null) {
+          loaded[imagePath] = _ImageAlphaMask(
+            width: frame.image.width,
+            height: frame.image.height,
+            rgba: Uint8List.fromList(
+              byteData.buffer.asUint8List(
+                byteData.offsetInBytes,
+                byteData.lengthInBytes,
+              ),
+            ),
+          );
+        }
+
+        frame.image.dispose();
+        codec.dispose();
+      } catch (_) {
+        // If an image cannot be decoded, Decorate keeps the old
+        // rectangular hit behaviour rather than making it unreachable.
+      }
+    }
+
+    if (!mounted || loaded.isEmpty) {
+      return;
+    }
+
+    setState(() {
+      _imageAlphaMasks.addAll(loaded);
+    });
   }
 
   List<VectorStroke> _bagItemStrokes(BagItem item) {
@@ -207,9 +398,182 @@ class _HomeScreenState extends State<HomeScreen> {
     return strokes;
   }
 
+  List<VectorStroke> _compositeLayerStrokes(CompositeNode node) {
+    final rawFrames = node.payload['frames'];
+
+    if (rawFrames is! List || rawFrames.isEmpty) {
+      return <VectorStroke>[];
+    }
+
+    final rawFrame = rawFrames.first;
+
+    if (rawFrame is! List) {
+      return <VectorStroke>[];
+    }
+
+    final layerOpacity =
+        (node.payload['opacity'] as num?)?.toDouble().clamp(0.0, 1.0) ?? 1.0;
+
+    final strokes = <VectorStroke>[];
+
+    for (final rawStroke in rawFrame) {
+      if (rawStroke is! Map) {
+        continue;
+      }
+
+      final stroke = VectorStroke.fromJson(
+        Map<String, dynamic>.from(rawStroke),
+      );
+
+      strokes.add(
+        VectorStroke(
+          points: stroke.points.map((point) => point.copy()).toList(),
+          strokeWidth: stroke.strokeWidth,
+          color: stroke.color.withValues(alpha: stroke.color.a * layerOpacity),
+          filled: stroke.filled,
+          brushType: stroke.brushType,
+        ),
+      );
+    }
+
+    return strokes;
+  }
+
+  Widget _buildCompositeNode(
+    CompositeNode node, {
+    required CompositeAsset asset,
+  }) {
+    if (!node.visible) {
+      return const SizedBox.shrink();
+    }
+
+    if (node.type == 'group') {
+      return Stack(
+        fit: StackFit.expand,
+        children: [
+          // Composite children are stored front-to-back, matching the
+          // Workspace Layers panel. Stack paints first-to-last, so reverse.
+          for (final child in node.children.reversed)
+            _buildCompositeNode(child, asset: asset),
+        ],
+      );
+    }
+
+    if (node.type == 'variant') {
+      if (node.children.isEmpty) {
+        return const SizedBox.shrink();
+      }
+
+      final rawIndex = (node.payload['activeIndex'] as num?)?.toInt() ?? 0;
+
+      final activeIndex = rawIndex.clamp(0, node.children.length - 1);
+
+      return _buildCompositeNode(node.children[activeIndex], asset: asset);
+    }
+
+    if (node.type == 'layer') {
+      final strokes = _compositeLayerStrokes(node);
+
+      if (strokes.isEmpty) {
+        return const SizedBox.shrink();
+      }
+
+      return CustomPaint(
+        painter: AnimationCanvasPainter(
+          strokes: strokes,
+          currentStroke: null,
+          previousOnionSkinStrokes: const <VectorStroke>[],
+          nextOnionSkinStrokes: const <VectorStroke>[],
+          strokeColor: Colors.transparent,
+          strokeWidth: 1.0,
+          brushType: StrokeBrushType.solid,
+          backgroundColor: Colors.transparent,
+          paintBackground: false,
+          previousOnionSkinColor: Colors.transparent,
+          nextOnionSkinColor: Colors.transparent,
+        ),
+        child: const SizedBox.expand(),
+      );
+    }
+
+    if (node.type == 'reference') {
+      final mediaPath = node.payload['mediaPath']?.toString() ?? '';
+      final mediaType = node.payload['mediaType']?.toString() ?? 'image';
+
+      // Home V1 renders still-image Composite references.
+      // Video Composite references remain preserved in the structured asset
+      // and can be activated by the future interactive-room renderer.
+      if (mediaType != 'image' || mediaPath.isEmpty) {
+        return const SizedBox.shrink();
+      }
+
+      final opacity =
+          (node.payload['opacity'] as num?)?.toDouble().clamp(0.0, 1.0) ?? 1.0;
+
+      final offsetX = (node.payload['offsetX'] as num?)?.toDouble() ?? 0.0;
+
+      final offsetY = (node.payload['offsetY'] as num?)?.toDouble() ?? 0.0;
+
+      final rotation = (node.payload['rotation'] as num?)?.toDouble() ?? 0.0;
+
+      final scaleX = (node.payload['scaleX'] as num?)?.toDouble() ?? 1.0;
+
+      final scaleY = (node.payload['scaleY'] as num?)?.toDouble() ?? 1.0;
+
+      return Transform.translate(
+        offset: Offset(offsetX, offsetY),
+        child: Transform.rotate(
+          angle: rotation,
+          alignment: Alignment.center,
+          child: Transform.scale(
+            scaleX: scaleX,
+            scaleY: scaleY,
+            alignment: Alignment.center,
+            child: Opacity(
+              opacity: opacity,
+              child: Image.file(
+                File(mediaPath),
+                fit: BoxFit.contain,
+                errorBuilder: (context, error, stackTrace) {
+                  return const SizedBox.shrink();
+                },
+              ),
+            ),
+          ),
+        ),
+      );
+    }
+
+    return const SizedBox.shrink();
+  }
+
+  Widget _buildCompositeDecoration(BagItem item) {
+    final composite = item.composite;
+
+    if (composite == null ||
+        composite.canvasWidth <= 0 ||
+        composite.canvasHeight <= 0) {
+      return const Center(
+        child: Icon(Icons.broken_image_outlined, color: Colors.white38),
+      );
+    }
+
+    return FittedBox(
+      fit: BoxFit.contain,
+      alignment: Alignment.center,
+      child: SizedBox(
+        width: composite.canvasWidth,
+        height: composite.canvasHeight,
+        child: _buildCompositeNode(composite.root, asset: composite),
+      ),
+    );
+  }
+
   Future<void> _chooseDecoration() async {
     final prefs = await SharedPreferences.getInstance();
     final items = await _bagService.loadItems();
+
+    await _primeImageAlphaMasks(items);
 
     if (!mounted) return;
 
@@ -498,6 +862,14 @@ class _HomeScreenState extends State<HomeScreen> {
                                                         );
                                                       },
                                                 )
+                                              : item.isComposite
+                                              ? const Center(
+                                                  child: Icon(
+                                                    Icons.view_in_ar_outlined,
+                                                    size: 34,
+                                                    color: Color(0xFFF1D3A2),
+                                                  ),
+                                                )
                                               : CustomPaint(
                                                   painter:
                                                       BagItemPreviewPainter(
@@ -592,6 +964,18 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   Size? _bagItemDrawingSize(BagItem item) {
+    if (item.isComposite) {
+      final composite = item.composite;
+
+      if (composite == null ||
+          composite.canvasWidth <= 0 ||
+          composite.canvasHeight <= 0) {
+        return null;
+      }
+
+      return Size(composite.canvasWidth, composite.canvasHeight);
+    }
+
     final strokes = _bagItemStrokes(
       item,
     ).where((stroke) => stroke.points.isNotEmpty).toList();
@@ -645,6 +1029,21 @@ class _HomeScreenState extends State<HomeScreen> {
 
     if (drawingSize == null) {
       return null;
+    }
+
+    if (item.isComposite) {
+      final composite = item.composite;
+
+      if (composite == null ||
+          composite.canvasWidth <= 0 ||
+          composite.canvasHeight <= 0) {
+        return null;
+      }
+
+      final scaleX = roomWidth / composite.canvasWidth;
+      final scaleY = roomHeight / composite.canvasHeight;
+
+      return scaleX < scaleY ? scaleX : scaleY;
     }
 
     // These match the decoration box and BagItemPreviewPainter.
@@ -811,6 +1210,41 @@ class _HomeScreenState extends State<HomeScreen> {
     });
 
     await _saveDecorations();
+  }
+
+  Future<void> _duplicateSelectedDecorationAsInstance() async {
+    final selected = _selectedDecoration;
+
+    if (selected == null) {
+      return;
+    }
+
+    final duplicate = selected.copyWith(
+      id: 'decor_${DateTime.now().microsecondsSinceEpoch}',
+      name: '${selected.name} Instance',
+      x: (selected.x + 0.025).clamp(0.0, 1.0),
+      y: (selected.y + 0.025).clamp(0.0, 1.0),
+    );
+
+    setState(() {
+      _decorations.add(duplicate);
+      _selectedDecorationId = duplicate.id;
+      _decorateMode = true;
+    });
+
+    await _saveDecorations();
+
+    if (!mounted) {
+      return;
+    }
+
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          '${selected.name} duplicated as a lightweight instance 🔗',
+        ),
+      ),
+    );
   }
 
   Future<void> _deleteSelectedDecoration() async {
@@ -1230,11 +1664,66 @@ class _HomeScreenState extends State<HomeScreen> {
                     if (_bagItemsById[decoration.bagItemId] != null)
                       Builder(
                         builder: (context) {
-                          final decorationWidth =
-                              roomWidth * 0.18 * decoration.scale;
+                          final bagItem = _bagItemsById[decoration.bagItemId]!;
 
-                          final decorationHeight =
-                              roomHeight * 0.18 * decoration.scale;
+                          double decorationWidth;
+                          double decorationHeight;
+
+                          if (bagItem.isComposite &&
+                              bagItem.composite != null) {
+                            final composite = bagItem.composite!;
+
+                            final roomScaleX =
+                                roomWidth / composite.canvasWidth;
+
+                            final roomScaleY =
+                                roomHeight / composite.canvasHeight;
+
+                            final compositeSceneScale = roomScaleX < roomScaleY
+                                ? roomScaleX
+                                : roomScaleY;
+
+                            decorationWidth =
+                                composite.canvasWidth *
+                                compositeSceneScale *
+                                decoration.scale;
+
+                            decorationHeight =
+                                composite.canvasHeight *
+                                compositeSceneScale *
+                                decoration.scale;
+                          } else if (bagItem.hasAuthoredSize) {
+                            // Map the authored coordinate space into this
+                            // room with one uniform scene scale so the asset
+                            // keeps the proportions established in Workspace.
+                            final roomScaleX =
+                                roomWidth / bagItem.authoredCanvasWidth!;
+
+                            final roomScaleY =
+                                roomHeight / bagItem.authoredCanvasHeight!;
+
+                            final authoredSceneScale = roomScaleX < roomScaleY
+                                ? roomScaleX
+                                : roomScaleY;
+
+                            decorationWidth =
+                                bagItem.authoredWidth! *
+                                authoredSceneScale *
+                                decoration.scale;
+
+                            decorationHeight =
+                                bagItem.authoredHeight! *
+                                authoredSceneScale *
+                                decoration.scale;
+                          } else {
+                            // Backward compatibility for Bag assets created
+                            // before authored-size metadata existed.
+                            decorationWidth =
+                                roomWidth * 0.18 * decoration.scale;
+
+                            decorationHeight =
+                                roomHeight * 0.18 * decoration.scale;
+                          }
 
                           final selected =
                               _decorateMode &&
@@ -1249,114 +1738,124 @@ class _HomeScreenState extends State<HomeScreen> {
                                 (decorationHeight / 2),
                             width: decorationWidth,
                             height: decorationHeight,
-                            child: GestureDetector(
-                              behavior: HitTestBehavior.opaque,
-                              onTap: _decorateMode
-                                  ? () {
-                                      setState(() {
-                                        _selectedDecorationId = decoration.id;
-                                      });
-                                    }
+                            child: _AlphaHitTest(
+                              mask: _bagItemsById[decoration.bagItemId]!.isImage
+                                  ? _imageAlphaMasks[_bagItemsById[decoration
+                                            .bagItemId]!
+                                        .imagePath!]
                                   : null,
-                              onPanStart: !_decorateMode
-                                  ? null
-                                  : (_) {
-                                      setState(() {
-                                        _selectedDecorationId = decoration.id;
-                                      });
-                                    },
-                              onPanUpdate: !_decorateMode
-                                  ? null
-                                  : (details) {
-                                      if (_decorateTouchPointers.length > 1) {
-                                        return;
+                              mirrored: decoration.mirrored,
+                              child: GestureDetector(
+                                behavior: HitTestBehavior.opaque,
+                                onTap: _decorateMode
+                                    ? () {
+                                        setState(() {
+                                          _selectedDecorationId = decoration.id;
+                                        });
                                       }
-
-                                      final currentIndex = _decorations
-                                          .indexWhere(
-                                            (candidate) =>
-                                                candidate.id == decoration.id,
-                                          );
-
-                                      if (currentIndex == -1) {
-                                        return;
-                                      }
-
-                                      final current =
-                                          _decorations[currentIndex];
-
-                                      setState(() {
-                                        _replaceDecoration(
-                                          current.copyWith(
-                                            x:
-                                                (current.x +
-                                                        (details.delta.dx /
-                                                            roomWidth))
-                                                    .clamp(0.0, 1.0),
-                                            y:
-                                                (current.y +
-                                                        (details.delta.dy /
-                                                            roomHeight))
-                                                    .clamp(0.0, 1.0),
-                                          ),
-                                        );
-                                      });
-                                    },
-                              onPanEnd: !_decorateMode
-                                  ? null
-                                  : (_) {
-                                      _saveDecorations();
-                                    },
-                              child: DecoratedBox(
-                                decoration: BoxDecoration(
-                                  border: selected
-                                      ? Border.all(
-                                          color: Colors.cyanAccent,
-                                          width: 2,
-                                        )
-                                      : null,
-                                ),
-                                child: Padding(
-                                  padding: selected
-                                      ? const EdgeInsets.all(2)
-                                      : EdgeInsets.zero,
-                                  child: Transform(
-                                    alignment: Alignment.center,
-                                    transform: Matrix4.diagonal3Values(
-                                      decoration.mirrored ? -1.0 : 1.0,
-                                      1.0,
-                                      1.0,
-                                    ),
-                                    child: Builder(
-                                      builder: (context) {
-                                        final bagItem =
-                                            _bagItemsById[decoration
-                                                .bagItemId]!;
-
-                                        if (bagItem.isImage) {
-                                          return Image.file(
-                                            File(bagItem.imagePath!),
-                                            fit: BoxFit.contain,
-                                            errorBuilder:
-                                                (context, error, stackTrace) {
-                                                  return const Center(
-                                                    child: Icon(
-                                                      Icons
-                                                          .broken_image_outlined,
-                                                      color: Colors.white38,
-                                                    ),
-                                                  );
-                                                },
-                                          );
+                                    : null,
+                                onPanStart: !_decorateMode
+                                    ? null
+                                    : (_) {
+                                        setState(() {
+                                          _selectedDecorationId = decoration.id;
+                                        });
+                                      },
+                                onPanUpdate: !_decorateMode
+                                    ? null
+                                    : (details) {
+                                        if (_decorateTouchPointers.length > 1) {
+                                          return;
                                         }
 
-                                        return CustomPaint(
-                                          painter: BagItemPreviewPainter(
-                                            strokes: _bagItemStrokes(bagItem),
-                                          ),
-                                          child: const SizedBox.expand(),
-                                        );
+                                        final currentIndex = _decorations
+                                            .indexWhere(
+                                              (candidate) =>
+                                                  candidate.id == decoration.id,
+                                            );
+
+                                        if (currentIndex == -1) {
+                                          return;
+                                        }
+
+                                        final current =
+                                            _decorations[currentIndex];
+
+                                        setState(() {
+                                          _replaceDecoration(
+                                            current.copyWith(
+                                              x:
+                                                  (current.x +
+                                                          (details.delta.dx /
+                                                              roomWidth))
+                                                      .clamp(0.0, 1.0),
+                                              y:
+                                                  (current.y +
+                                                          (details.delta.dy /
+                                                              roomHeight))
+                                                      .clamp(0.0, 1.0),
+                                            ),
+                                          );
+                                        });
                                       },
+                                onPanEnd: !_decorateMode
+                                    ? null
+                                    : (_) {
+                                        _saveDecorations();
+                                      },
+                                child: DecoratedBox(
+                                  decoration: BoxDecoration(
+                                    border: selected
+                                        ? Border.all(
+                                            color: Colors.cyanAccent,
+                                            width: 2,
+                                          )
+                                        : null,
+                                  ),
+                                  child: Padding(
+                                    padding: selected
+                                        ? const EdgeInsets.all(2)
+                                        : EdgeInsets.zero,
+                                    child: Transform(
+                                      alignment: Alignment.center,
+                                      transform: Matrix4.diagonal3Values(
+                                        decoration.mirrored ? -1.0 : 1.0,
+                                        1.0,
+                                        1.0,
+                                      ),
+                                      child: Builder(
+                                        builder: (context) {
+                                          if (bagItem.isImage) {
+                                            return Image.file(
+                                              File(bagItem.imagePath!),
+                                              fit: BoxFit.contain,
+                                              errorBuilder:
+                                                  (context, error, stackTrace) {
+                                                    return const Center(
+                                                      child: Icon(
+                                                        Icons
+                                                            .broken_image_outlined,
+                                                        color: Colors.white38,
+                                                      ),
+                                                    );
+                                                  },
+                                            );
+                                          }
+
+                                          if (bagItem.isComposite) {
+                                            return _buildCompositeDecoration(
+                                              bagItem,
+                                            );
+                                          }
+
+                                          return CustomPaint(
+                                            painter: BagItemPreviewPainter(
+                                              strokes: _bagItemStrokes(bagItem),
+                                            ),
+                                            child: const SizedBox.expand(),
+                                          );
+                                        },
+                                      ),
                                     ),
                                   ),
                                 ),
@@ -1720,6 +2219,15 @@ class _HomeScreenState extends State<HomeScreen> {
                                   onPressed: _mirrorSelectedDecoration,
                                   icon: const Icon(
                                     Icons.flip,
+                                    color: Colors.white,
+                                  ),
+                                ),
+                                IconButton(
+                                  tooltip: 'Duplicate Instance',
+                                  onPressed:
+                                      _duplicateSelectedDecorationAsInstance,
+                                  icon: const Icon(
+                                    Icons.copy_outlined,
                                     color: Colors.white,
                                   ),
                                 ),
