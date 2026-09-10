@@ -1414,7 +1414,23 @@ class _HomeScreenState extends State<HomeScreen> {
     return null;
   }
 
-  List<CompositeNode> _variantNodesForSelectedRoomNode() {
+  CompositeNode? _firstVariantNode(CompositeNode node) {
+    if (node.type == 'variant' && node.children.isNotEmpty) {
+      return node;
+    }
+
+    for (final child in node.children) {
+      final match = _firstVariantNode(child);
+
+      if (match != null) {
+        return match;
+      }
+    }
+
+    return null;
+  }
+
+  CompositeNode? get _selectedRoomVariantNode {
     final selectedNodeId = _selectedRoomNodeId;
     final item = _selectedDecorationBagItem;
     final composite = item?.composite;
@@ -1422,45 +1438,17 @@ class _HomeScreenState extends State<HomeScreen> {
     if (!_isEditingRoomContents ||
         selectedNodeId == null ||
         composite == null) {
-      return const <CompositeNode>[];
+      return null;
     }
 
     final selectedNode = _findCompositeNodeById(composite.root, selectedNodeId);
 
     if (selectedNode == null) {
-      return const <CompositeNode>[];
+      return null;
     }
 
-    final variants = <CompositeNode>[];
-
-    void collect(CompositeNode node) {
-      if (!node.visible) {
-        return;
-      }
-
-      if (node.type == 'variant') {
-        if (node.children.isNotEmpty) {
-          variants.add(node);
-        }
-
-        // A Variant node represents one independent slot.
-        // Its children are alternatives belonging to that slot, so do not
-        // interpret descendants inside those alternatives as sibling slots.
-        return;
-      }
-
-      for (final child in node.children) {
-        collect(child);
-      }
-    }
-
-    collect(selectedNode);
-
-    return variants;
+    return _firstVariantNode(selectedNode);
   }
-
-  List<CompositeNode> get _selectedRoomVariantNodes =>
-      _variantNodesForSelectedRoomNode();
 
   int _activeRoomVariantIndex(String? decorationId, CompositeNode variantNode) {
     if (variantNode.children.isEmpty) {
@@ -1476,44 +1464,45 @@ class _HomeScreenState extends State<HomeScreen> {
     return requested.clamp(0, variantNode.children.length - 1);
   }
 
-  String _roomVariantSlotName(CompositeNode variantNode) {
-    final name = variantNode.name.trim();
-
-    if (name.isNotEmpty) {
-      return name;
-    }
-
-    return 'Variant';
-  }
-
-  String _roomVariantChoiceName(CompositeNode variantNode) {
+  String? get _selectedRoomVariantLabel {
     final decorationId = _editingRoomDecorationId;
+    final variantNode = _selectedRoomVariantNode;
 
-    if (decorationId == null || variantNode.children.isEmpty) {
-      return 'None';
+    if (decorationId == null ||
+        variantNode == null ||
+        variantNode.children.isEmpty) {
+      return null;
     }
 
     final activeIndex = _activeRoomVariantIndex(decorationId, variantNode);
 
     final activeChild = variantNode.children[activeIndex];
+
+    final variantName = variantNode.name.trim();
     final childName = activeChild.name.trim();
+
+    if (variantName.isNotEmpty && childName.isNotEmpty) {
+      return '$variantName: $childName';
+    }
 
     if (childName.isNotEmpty) {
       return childName;
     }
 
-    return '${activeIndex + 1}';
+    if (variantName.isNotEmpty) {
+      return '$variantName ${activeIndex + 1}';
+    }
+
+    return 'Variant ${activeIndex + 1}';
   }
 
-  String _roomVariantLabel(CompositeNode variantNode) {
-    return '${_roomVariantSlotName(variantNode)}: '
-        '${_roomVariantChoiceName(variantNode)}';
-  }
-
-  void _stepRoomVariant(CompositeNode variantNode, int delta) {
+  void _stepSelectedRoomVariant(int delta) {
     final decorationId = _editingRoomDecorationId;
+    final variantNode = _selectedRoomVariantNode;
 
-    if (decorationId == null || variantNode.children.isEmpty) {
+    if (decorationId == null ||
+        variantNode == null ||
+        variantNode.children.isEmpty) {
       return;
     }
 
@@ -3618,53 +3607,48 @@ class _HomeScreenState extends State<HomeScreen> {
                                     color: Colors.amberAccent,
                                   ),
                                 ),
-                              if (_isEditingRoomContents)
-                                for (final variantNode
-                                    in _selectedRoomVariantNodes) ...[
-                                  IconButton(
-                                    tooltip:
-                                        'Previous ${_roomVariantSlotName(variantNode)}',
-                                    onPressed: () =>
-                                        _stepRoomVariant(variantNode, -1),
-                                    icon: const Icon(
-                                      Icons.chevron_left,
+                              if (_isEditingRoomContents &&
+                                  _selectedRoomVariantNode != null) ...[
+                                IconButton(
+                                  tooltip: 'Previous Variant',
+                                  onPressed: () => _stepSelectedRoomVariant(-1),
+                                  icon: const Icon(
+                                    Icons.chevron_left,
+                                    color: Colors.amberAccent,
+                                  ),
+                                ),
+                                ConstrainedBox(
+                                  constraints: const BoxConstraints(
+                                    maxWidth: 220,
+                                  ),
+                                  child: Chip(
+                                    avatar: const Icon(
+                                      Icons.auto_awesome_mosaic_outlined,
+                                      size: 18,
                                       color: Colors.amberAccent,
                                     ),
-                                  ),
-                                  ConstrainedBox(
-                                    constraints: const BoxConstraints(
-                                      maxWidth: 220,
+                                    label: Text(
+                                      _selectedRoomVariantLabel ?? 'Variant',
+                                      overflow: TextOverflow.ellipsis,
                                     ),
-                                    child: Chip(
-                                      avatar: const Icon(
-                                        Icons.auto_awesome_mosaic_outlined,
-                                        size: 18,
-                                        color: Colors.amberAccent,
-                                      ),
-                                      label: Text(
-                                        _roomVariantLabel(variantNode),
-                                        overflow: TextOverflow.ellipsis,
-                                      ),
-                                      backgroundColor: Colors.black54,
-                                      side: const BorderSide(
-                                        color: Colors.amberAccent,
-                                      ),
-                                      labelStyle: const TextStyle(
-                                        color: Colors.white,
-                                      ),
-                                    ),
-                                  ),
-                                  IconButton(
-                                    tooltip:
-                                        'Next ${_roomVariantSlotName(variantNode)}',
-                                    onPressed: () =>
-                                        _stepRoomVariant(variantNode, 1),
-                                    icon: const Icon(
-                                      Icons.chevron_right,
+                                    backgroundColor: Colors.black54,
+                                    side: const BorderSide(
                                       color: Colors.amberAccent,
                                     ),
+                                    labelStyle: const TextStyle(
+                                      color: Colors.white,
+                                    ),
                                   ),
-                                ],
+                                ),
+                                IconButton(
+                                  tooltip: 'Next Variant',
+                                  onPressed: () => _stepSelectedRoomVariant(1),
+                                  icon: const Icon(
+                                    Icons.chevron_right,
+                                    color: Colors.amberAccent,
+                                  ),
+                                ),
+                              ],
                               if (_isEditingRoomContents &&
                                   _selectedRoomNodeId != null) ...[
                                 IconButton(

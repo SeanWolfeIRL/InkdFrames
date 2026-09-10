@@ -9,13 +9,11 @@ import 'package:flutter/services.dart';
 import 'package:flutter/rendering.dart';
 import 'package:video_player/video_player.dart';
 import '../models/bag_item.dart';
-import '../models/composite_asset.dart';
 import '../models/brush_preset.dart';
 import '../models/drawing_layer.dart';
 import '../models/inkdframes_project.dart';
 import '../models/layer_group.dart';
 import '../models/reference_layer.dart';
-import '../models/variant_slot.dart';
 import '../models/vector_point.dart';
 import '../models/vector_stroke.dart';
 import '../painters/animation_canvas_painter.dart';
@@ -37,67 +35,7 @@ enum _ShapeToolType {
   filledCircle,
 }
 
-class FrameHistorySnapshot {
-  const FrameHistorySnapshot({required this.strokes, required this.references});
-
-  final Map<String, List<VectorStroke>> strokes;
-  final List<ReferenceLayer> references;
-}
-
-class _WorkspaceImageAlphaMask {
-  const _WorkspaceImageAlphaMask({
-    required this.width,
-    required this.height,
-    required this.rgba,
-  });
-
-  final int width;
-  final int height;
-  final Uint8List rgba;
-
-  bool hitTestContain(
-    Offset position,
-    Size boxSize, {
-    int alphaThreshold = 32,
-  }) {
-    if (width <= 0 ||
-        height <= 0 ||
-        boxSize.width <= 0 ||
-        boxSize.height <= 0) {
-      return false;
-    }
-
-    // Match Image.file(... fit: BoxFit.contain).
-    final scale = math.min(boxSize.width / width, boxSize.height / height);
-
-    final renderedWidth = width * scale;
-    final renderedHeight = height * scale;
-
-    final left = (boxSize.width - renderedWidth) / 2;
-    final top = (boxSize.height - renderedHeight) / 2;
-
-    if (position.dx < left ||
-        position.dy < top ||
-        position.dx >= left + renderedWidth ||
-        position.dy >= top + renderedHeight) {
-      return false;
-    }
-
-    final normalizedX = (position.dx - left) / renderedWidth;
-    final normalizedY = (position.dy - top) / renderedHeight;
-
-    final pixelX = (normalizedX * width).floor().clamp(0, width - 1);
-    final pixelY = (normalizedY * height).floor().clamp(0, height - 1);
-
-    final alphaIndex = ((pixelY * width) + pixelX) * 4 + 3;
-
-    if (alphaIndex < 0 || alphaIndex >= rgba.length) {
-      return false;
-    }
-
-    return rgba[alphaIndex] >= alphaThreshold;
-  }
-}
+typedef FrameHistorySnapshot = Map<String, List<VectorStroke>>;
 
 class WorkspaceScreen extends StatefulWidget {
   const WorkspaceScreen({
@@ -146,28 +84,6 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
   // ReferenceLayer is currently active.
   final List<ReferenceLayer> _referenceLayers = <ReferenceLayer>[];
   String? _activeReferenceLayerId;
-
-  // Raw RGBA masks used for per-pixel reference hit testing.
-  //
-  // Transparent image pixels must not behave like solid rectangular
-  // collision areas when selecting assets directly on the canvas.
-  final Map<String, _WorkspaceImageAlphaMask> _referenceImageAlphaMasks =
-      <String, _WorkspaceImageAlphaMask>{};
-  final Set<String> _referenceImageAlphaLoadsInFlight = <String>{};
-
-  // Configurable hierarchy containers.
-  //
-  // A VariantSlot owns a list of alternative hierarchy entries while the
-  // slot itself keeps one stable position inside its parent group/root.
-  final List<VariantSlot> _variantSlots = <VariantSlot>[];
-
-  // Variant Slot inline rename state.
-  //
-  // Android showed a framework dependency assertion when a rename dialog
-  // and the IME were torn down together. Keeping rename inside the Layers
-  // panel avoids creating a modal route entirely.
-  String? _editingVariantSlotId;
-  String _variantSlotRenameDraft = '';
 
   // Group context used when creating new drawing layers.
   String? _layerInsertionGroupId;
@@ -240,22 +156,6 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
   String? _transformReferenceLayerId;
   ReferenceLayer? _referenceTransformSnapshot;
 
-  // Direct canvas asset selection.
-  //
-  // Holding on visible raster artwork selects the topmost opaque reference
-  // under the pointer. Transparent pixels fall through to references below.
-  Timer? _canvasAssetLongPressTimer;
-  Offset? _canvasAssetLongPressStart;
-  int? _canvasAssetLongPressPointer;
-
-  // Mixed group transform targets.
-  //
-  // A selected group can contain drawing layers, reference/image layers,
-  // and nested groups. References are transformed around the same shared
-  // pivot as the selected drawing strokes.
-  Set<String> _transformGroupReferenceIds = <String>{};
-  Map<String, ReferenceLayer>? _transformGroupReferenceSnapshot;
-
   /// Temporary in-memory clipboard used by Transform copy/paste.
   final Map<String, List<VectorStroke>> _strokeClipboard =
       <String, List<VectorStroke>>{};
@@ -302,14 +202,6 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
   Color _blendSampleColor = Colors.black;
   double _blendAmount = 0.5;
   final GlobalKey _canvasSampleKey = GlobalKey();
-
-  // Composite PNG capture mode.
-  //
-  // During capture the normal Workspace canvas becomes a clean transparent
-  // renderer for one selected hierarchy branch only.
-  bool _isCompositePngCapture = false;
-  String? _compositePngCaptureGroupId;
-
   bool _isExporting = false;
   double _fps = 8;
   double _brushSize = 4.0;
@@ -339,17 +231,6 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
   double _canvasRotationGestureStartValue = 0.0;
 
   final ScrollController _timelineScrollController = ScrollController();
-
-  // Layers hierarchy drag autoscroll.
-  //
-  // While dragging a hierarchy entry near the top/bottom edge of the
-  // Layers viewport, continuously move the scroll position so long scene
-  // hierarchies can be reordered in one uninterrupted drag.
-  final ScrollController _layersScrollController = ScrollController();
-  final GlobalKey _layersScrollViewportKey = GlobalKey();
-  Timer? _hierarchyAutoScrollTimer;
-  double _hierarchyAutoScrollVelocity = 0.0;
-
   final LayerLink _timingButtonLink = LayerLink();
 
   String _projectId = '';
@@ -371,13 +252,10 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
   void dispose() {
     _playbackTimer?.cancel();
     _autosaveTimer?.cancel();
-    _canvasAssetLongPressTimer?.cancel();
     _videoController?.pause();
     _videoController?.dispose();
     _transformationController.dispose();
     _timelineScrollController.dispose();
-    _hierarchyAutoScrollTimer?.cancel();
-    _layersScrollController.dispose();
     super.dispose();
   }
 
@@ -412,7 +290,6 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
 
         _referenceLayers.add(initialReference);
         _activeReferenceLayerId = initialReference.id;
-        _rootLayerOrder.insert(0, 'reference:${initialReference.id}');
       }
 
       if (_referenceMediaType == 'video') {
@@ -674,7 +551,6 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
   }
 
   Future<void> _saveProject() async {
-    _ensureReferenceHierarchyEntries();
     _rebuildCompositeFrames();
     _syncActiveReferenceLayerFromLegacyState();
 
@@ -687,7 +563,6 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
       layerGroups: _layerGroups,
       rootOrder: _rootLayerOrder,
       referenceLayers: _referenceLayers,
-      variantSlots: _variantSlots,
       activeReferenceLayerId: _activeReferenceLayerId,
       frameDurations: _frameDurations,
       canvasWidth: _canvasWidth,
@@ -770,12 +645,6 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
 
     if (index == -1) {
       _referenceLayers.add(updated);
-
-      final referenceEntry = 'reference:${updated.id}';
-      if (!_hierarchyContainsEntry(referenceEntry)) {
-        _rootLayerOrder.insert(0, referenceEntry);
-      }
-
       return;
     }
 
@@ -1069,376 +938,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     });
   }
 
-  Future<void> _insertCompositeBagItem(BagItem item) async {
-    final composite = item.composite;
-
-    if (composite == null) {
-      return;
-    }
-
-    final stamp = DateTime.now().microsecondsSinceEpoch;
-    var serial = 0;
-
-    String freshId(String kind) {
-      final id = '${kind}_${stamp}_${serial++}';
-      return id;
-    }
-
-    double readDouble(
-      Map<String, dynamic> payload,
-      String key, [
-      double fallback = 0.0,
-    ]) {
-      return (payload[key] as num?)?.toDouble() ?? fallback;
-    }
-
-    final rebuiltLayers = <DrawingLayer>[];
-    final rebuiltReferences = <ReferenceLayer>[];
-    final rebuiltGroups = <LayerGroup>[];
-    final rebuiltVariants = <VariantSlot>[];
-
-    var missingReferenceFiles = 0;
-
-    String? rebuildNode(CompositeNode node) {
-      if (node.type == 'layer') {
-        final newId = freshId('composite_layer');
-        final rawFrames = node.payload['frames'] as List? ?? const [];
-
-        final frames = rawFrames
-            .map(
-              (rawFrame) => (rawFrame as List)
-                  .map(
-                    (rawStroke) => VectorStroke.fromJson(
-                      Map<String, dynamic>.from(rawStroke as Map),
-                    ),
-                  )
-                  .toList(),
-            )
-            .toList();
-
-        rebuiltLayers.add(
-          DrawingLayer(
-            id: newId,
-            name: node.name,
-            visible: node.visible,
-            opacity: readDouble(node.payload, 'opacity', 1.0),
-            frames: frames.isEmpty
-                ? List.generate(_frameDurations.length, (_) => <VectorStroke>[])
-                : frames,
-          ),
-        );
-
-        return 'layer:$newId';
-      }
-
-      if (node.type == 'reference') {
-        final newId = freshId('composite_reference');
-
-        final mediaPath = node.payload['mediaPath'] as String? ?? '';
-        final mediaType = node.payload['mediaType'] as String? ?? 'image';
-
-        if (mediaPath.isEmpty || !File(mediaPath).existsSync()) {
-          missingReferenceFiles += 1;
-        }
-
-        rebuiltReferences.add(
-          ReferenceLayer(
-            id: newId,
-            name: node.name,
-            mediaPath: mediaPath,
-            mediaType: mediaType,
-            visible: node.visible,
-            opacity: readDouble(node.payload, 'opacity', 1.0).clamp(0.0, 1.0),
-            offsetX: readDouble(node.payload, 'offsetX'),
-            offsetY: readDouble(node.payload, 'offsetY'),
-            rotation: readDouble(node.payload, 'rotation'),
-            scaleX: readDouble(node.payload, 'scaleX', 1.0),
-            scaleY: readDouble(node.payload, 'scaleY', 1.0),
-            pivotX: (node.payload['pivotX'] as num?)?.toDouble(),
-            pivotY: (node.payload['pivotY'] as num?)?.toDouble(),
-            frameTimesMs: node.payload['frameTimesMs'] is List
-                ? (node.payload['frameTimesMs'] as List)
-                      .map((value) => (value as num).toInt())
-                      .toList()
-                : <int>[],
-          ),
-        );
-
-        return 'reference:$newId';
-      }
-
-      if (node.type == 'variant') {
-        final newId = freshId('composite_variant');
-        final childOrder = <String>[];
-
-        for (final child in node.children) {
-          final childEntry = rebuildNode(child);
-
-          if (childEntry != null) {
-            childOrder.add(childEntry);
-          }
-        }
-
-        final requestedActiveIndex =
-            (node.payload['activeIndex'] as num?)?.toInt() ?? 0;
-
-        final safeActiveIndex = childOrder.isEmpty
-            ? 0
-            : requestedActiveIndex.clamp(0, childOrder.length - 1);
-
-        rebuiltVariants.add(
-          VariantSlot(
-            id: newId,
-            name: node.name,
-            childOrder: childOrder,
-            activeIndex: safeActiveIndex,
-            expanded: node.payload['expanded'] as bool? ?? true,
-          ),
-        );
-
-        return 'variant:$newId';
-      }
-
-      if (node.type == 'group') {
-        final newId = freshId('composite_group');
-
-        final childOrder = <String>[];
-        final childLayerIds = <String>[];
-        final childGroupIds = <String>[];
-
-        for (final child in node.children) {
-          final childEntry = rebuildNode(child);
-
-          if (childEntry == null) {
-            continue;
-          }
-
-          childOrder.add(childEntry);
-
-          if (childEntry.startsWith('layer:')) {
-            childLayerIds.add(childEntry.substring(6));
-          } else if (childEntry.startsWith('group:')) {
-            childGroupIds.add(childEntry.substring(6));
-          }
-        }
-
-        rebuiltGroups.add(
-          LayerGroup(
-            id: newId,
-            name: node.name,
-            childLayerIds: childLayerIds,
-            childGroupIds: childGroupIds,
-            childOrder: childOrder,
-            visible: node.visible,
-            expanded: node.payload['expanded'] as bool? ?? true,
-          ),
-        );
-
-        return 'group:$newId';
-      }
-
-      return null;
-    }
-
-    final rootEntry = rebuildNode(composite.root);
-
-    if (rootEntry == null || !rootEntry.startsWith('group:')) {
-      if (!mounted) {
-        return;
-      }
-
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('This Composite could not be reconstructed.'),
-        ),
-      );
-
-      return;
-    }
-
-    final rootGroupId = rootEntry.substring(6);
-
-    setState(() {
-      _layers.insertAll(0, rebuiltLayers);
-      _referenceLayers.insertAll(0, rebuiltReferences);
-      _variantSlots.addAll(rebuiltVariants);
-      _layerGroups.addAll(rebuiltGroups);
-
-      // Composite Room insertion is intentionally root-level for V1.
-      //
-      // This prevents a selected source Room from accidentally becoming the
-      // parent of its own reconstructed clone.
-      _rootLayerOrder
-        ..remove(rootEntry)
-        ..insert(0, rootEntry);
-
-      _activeLayerGroupId = rootGroupId;
-      _layerInsertionGroupId = rootGroupId;
-
-      _activeReferenceLayerId = null;
-      _mergeSelectedLayerIds.clear();
-
-      _draftStroke = const <VectorPoint>[];
-      _draftTextureStrokes = <VectorStroke>[];
-
-      _clearFillLasso();
-      _clearShapeDraft();
-      _clearTransformSelection();
-
-      _isEraserActive = false;
-      _isFillToolActive = false;
-      _isShapeToolActive = false;
-
-      _stampBrushActive = false;
-      _stampBrushItem = null;
-
-      // Do not auto-transform a reconstructed Composite yet.
-      //
-      // Whole-group Transform needs full Variant-descendant participation
-      // before we allow an entire structured Room to move as one object.
-      _isTransformActive = false;
-      _transformToolbarExpanded = false;
-
-      _resetUndoRedo();
-      _rebuildCompositeFrames();
-    });
-
-    for (final reference in rebuiltReferences) {
-      if (reference.mediaType == 'image' &&
-          reference.mediaPath.isNotEmpty &&
-          File(reference.mediaPath).existsSync()) {
-        _primeReferenceImageAlphaMask(reference.mediaPath);
-      }
-    }
-
-    _scheduleAutosave();
-
-    if (!mounted) {
-      return;
-    }
-
-    final missingMessage = missingReferenceFiles == 0
-        ? ''
-        : ' $missingReferenceFiles source file(s) are missing.';
-
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text(
-          '${item.name} reconstructed from the Bag 🧩🏠$missingMessage',
-        ),
-      ),
-    );
-  }
-
-  Future<void> _insertBagItem(BagItem item) async {
-    if (item.isComposite) {
-      await _insertCompositeBagItem(item);
-      return;
-    }
-
-    if (item.isImage) {
-      final imagePath = item.imagePath;
-
-      if (imagePath == null || !File(imagePath).existsSync()) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('This Bag image could not be found.')),
-        );
-        return;
-      }
-
-      var restoredScaleX = 1.0;
-      var restoredScaleY = 1.0;
-
-      if (item.hasAuthoredSize) {
-        try {
-          final bytes = await File(imagePath).readAsBytes();
-          final codec = await ui.instantiateImageCodec(bytes);
-          final frame = await codec.getNextFrame();
-
-          final imageWidth = frame.image.width.toDouble();
-          final imageHeight = frame.image.height.toDouble();
-
-          if (imageWidth > 0 && imageHeight > 0) {
-            final targetFitX = _canvasWidth / imageWidth;
-            final targetFitY = _canvasHeight / imageHeight;
-            final targetFit = targetFitX < targetFitY ? targetFitX : targetFitY;
-
-            final authoredSceneFitX = _canvasWidth / item.authoredCanvasWidth!;
-            final authoredSceneFitY =
-                _canvasHeight / item.authoredCanvasHeight!;
-
-            final authoredSceneFit = authoredSceneFitX < authoredSceneFitY
-                ? authoredSceneFitX
-                : authoredSceneFitY;
-
-            final desiredWidth = item.authoredWidth! * authoredSceneFit;
-
-            final desiredHeight = item.authoredHeight! * authoredSceneFit;
-
-            final baseWidth = imageWidth * targetFit;
-            final baseHeight = imageHeight * targetFit;
-
-            if (baseWidth > 0) {
-              restoredScaleX = desiredWidth / baseWidth;
-            }
-
-            if (baseHeight > 0) {
-              restoredScaleY = desiredHeight / baseHeight;
-            }
-          }
-
-          frame.image.dispose();
-          codec.dispose();
-        } catch (_) {
-          restoredScaleX = 1.0;
-          restoredScaleY = 1.0;
-        }
-      }
-
-      final reference = ReferenceLayer(
-        id: 'reference_${DateTime.now().microsecondsSinceEpoch}',
-        name: item.name,
-        mediaPath: imagePath,
-        mediaType: 'image',
-        scaleX: restoredScaleX,
-        scaleY: restoredScaleY,
-      );
-
-      final parentGroupId = _activeLayerGroupId ?? _layerInsertionGroupId;
-
-      setState(() {
-        _syncActiveReferenceLayerFromLegacyState();
-
-        _referenceLayers.insert(0, reference);
-        _activeReferenceLayerId = reference.id;
-
-        _insertReferenceHierarchyEntry(
-          reference.id,
-          parentGroupId: parentGroupId,
-        );
-
-        _loadLegacyReferenceStateFromActiveLayer();
-
-        _activeLayerGroupId = parentGroupId;
-        _layerInsertionGroupId = parentGroupId;
-        _mergeSelectedLayerIds.clear();
-
-        _videoReady = false;
-      });
-
-      _scheduleAutosave();
-
-      if (!mounted) {
-        return;
-      }
-
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('${item.name} added as an image reference 🖼️')),
-      );
-
-      return;
-    }
-
+  void _insertBagItem(BagItem item) {
     if (item.layers.isEmpty) {
       return;
     }
@@ -1583,119 +1083,134 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
       return;
     }
 
-    await _insertBagItem(item);
+    _insertBagItem(item);
   }
 
   Future<void> _exportLayerGroupPng(String groupId) async {
     final groupIndex = _layerGroups.indexWhere((group) => group.id == groupId);
 
-    if (groupIndex == -1 || _isExporting) {
+    if (groupIndex == -1) {
       return;
     }
 
     final group = _layerGroups[groupIndex];
 
-    setState(() {
-      _isExporting = true;
-      _isCompositePngCapture = true;
-      _compositePngCaptureGroupId = groupId;
-    });
+    // Collect drawing layers in Workspace panel order: top -> bottom.
+    // childOrder is the canonical visual hierarchy and can contain
+    // both drawing layers and nested layer groups.
+    final orderedLayers = <DrawingLayer>[];
+    final visitedGroupIds = <String>{};
+    final visitedLayerIds = <String>{};
+
+    void collectGroupLayers(LayerGroup currentGroup) {
+      if (!visitedGroupIds.add(currentGroup.id)) {
+        return;
+      }
+
+      for (final entry in currentGroup.childOrder) {
+        if (entry.startsWith('layer:')) {
+          final layerId = entry.substring(6);
+
+          if (!visitedLayerIds.add(layerId)) {
+            continue;
+          }
+
+          final layerIndex = _layers.indexWhere((layer) => layer.id == layerId);
+
+          if (layerIndex != -1) {
+            orderedLayers.add(_layers[layerIndex]);
+          }
+
+          continue;
+        }
+
+        if (entry.startsWith('group:')) {
+          final childGroupId = entry.substring(6);
+
+          final childGroupIndex = _layerGroups.indexWhere(
+            (candidate) => candidate.id == childGroupId,
+          );
+
+          if (childGroupIndex != -1) {
+            collectGroupLayers(_layerGroups[childGroupIndex]);
+          }
+        }
+      }
+
+      // Legacy/fallback protection for projects whose childOrder does
+      // not yet contain every directly-owned drawing layer.
+      for (final layerId in currentGroup.childLayerIds) {
+        if (!visitedLayerIds.add(layerId)) {
+          continue;
+        }
+
+        final layerIndex = _layers.indexWhere((layer) => layer.id == layerId);
+
+        if (layerIndex != -1) {
+          orderedLayers.add(_layers[layerIndex]);
+        }
+      }
+    }
+
+    collectGroupLayers(group);
+
+    final exportStrokes = <VectorStroke>[];
+
+    // Layer panel order is top -> bottom, so paint bottom -> top.
+    for (final layer in orderedLayers.reversed) {
+      if (!_isLayerEffectivelyVisible(layer) ||
+          _selectedFrameIndex < 0 ||
+          _selectedFrameIndex >= layer.frames.length) {
+        continue;
+      }
+
+      for (final stroke in layer.frames[_selectedFrameIndex]) {
+        exportStrokes.add(_strokeWithOpacity(stroke, layer.opacity));
+      }
+    }
+
+    if (exportStrokes.isEmpty) {
+      if (!mounted) return;
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('This group has no visible artwork to export.'),
+        ),
+      );
+
+      return;
+    }
 
     try {
-      // Allow Flutter to repaint the canvas in isolated transparent
-      // Composite-capture mode before reading the RepaintBoundary.
-      await WidgetsBinding.instance.endOfFrame;
+      final outputPath = await const AnimationExportService().exportPngAsset(
+        assetName: group.name,
+        strokes: exportStrokes,
+        canvasWidth: _canvasWidth,
+        canvasHeight: _canvasHeight,
+      );
 
       if (!mounted) {
         return;
       }
 
-      final renderObject = _canvasSampleKey.currentContext?.findRenderObject();
-
-      if (renderObject is! RenderRepaintBoundary) {
-        throw StateError(
-          'Composite canvas renderer is not available for PNG capture.',
-        );
-      }
-
-      final boundarySize = renderObject.size;
-
-      if (boundarySize.width <= 0 || boundarySize.height <= 0) {
-        throw StateError('Composite capture surface has no size.');
-      }
-
-      // Capture at the project's authored canvas resolution rather than
-      // whatever physical size the FittedBox currently occupies on screen.
-      final targetPixelRatioX = _canvasWidth / boundarySize.width;
-      final targetPixelRatioY = _canvasHeight / boundarySize.height;
-
-      final capturePixelRatio = math.max(targetPixelRatioX, targetPixelRatioY);
-
-      final image = await renderObject.toImage(pixelRatio: capturePixelRatio);
-
-      try {
-        final rawRgba = await image.toByteData(
-          format: ui.ImageByteFormat.rawRgba,
-        );
-
-        if (rawRgba == null) {
-          throw StateError('Could not read Composite RGBA pixels.');
-        }
-
-        final rgbaBytes = Uint8List.fromList(
-          rawRgba.buffer.asUint8List(
-            rawRgba.offsetInBytes,
-            rawRgba.lengthInBytes,
-          ),
-        );
-
-        final outputPath = await const AnimationExportService()
-            .exportRawRgbaPngAsset(
-              assetName: group.name,
-              width: image.width,
-              height: image.height,
-              rgbaBytes: rgbaBytes,
-            );
-
-        if (!mounted) {
-          return;
-        }
-
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(
-              '${group.name} exported as transparent PNG\n$outputPath',
-            ),
-            duration: const Duration(seconds: 6),
-          ),
-        );
-      } finally {
-        image.dispose();
-      }
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('${group.name} exported as PNG\n$outputPath'),
+          duration: const Duration(seconds: 6),
+        ),
+      );
     } on UnsupportedError catch (error) {
-      if (!mounted) {
-        return;
-      }
+      if (!mounted) return;
 
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text(error.message ?? error.toString())),
       );
     } catch (error) {
-      if (!mounted) {
-        return;
-      }
+      if (!mounted) return;
 
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Composite PNG export failed: $error')),
-      );
-    } finally {
-      if (mounted) {
-        setState(() {
-          _isCompositePngCapture = false;
-          _compositePngCaptureGroupId = null;
-          _isExporting = false;
-        });
-      }
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('PNG export failed: $error')));
     }
   }
 
@@ -1708,348 +1223,107 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
 
     final group = _layerGroups[groupIndex];
 
-    // ------------------------------------------------------------
-    // Decide whether this can remain a traditional vector Bag item
-    // or requires the structured Composite format.
-    //
-    // A direct drawing-only group remains backwards-compatible.
-    // Anything containing nested groups, references or Variant Slots
-    // must preserve its hierarchy and therefore becomes Composite.
-    // ------------------------------------------------------------
-    bool groupRequiresComposite(LayerGroup currentGroup) {
-      for (final entry in currentGroup.childOrder) {
-        if (entry.startsWith('group:') ||
-            entry.startsWith('reference:') ||
-            entry.startsWith('variant:')) {
-          return true;
-        }
-      }
-
-      return false;
-    }
-
-    final requiresComposite = groupRequiresComposite(group);
-
-    // ------------------------------------------------------------
-    // Traditional vector capture.
-    // ------------------------------------------------------------
     final bagLayers = <BagLayer>[];
 
-    if (!requiresComposite) {
-      final visitedLayerIds = <String>{};
+    // BagItem.layers must be stored in the same top-to-bottom order shown
+    // in the Workspace layer hierarchy. Bag/Home renderers reverse this
+    // list when painting so bottom layers are painted first.
+    //
+    // Walk childOrder rather than childLayerIds because childOrder is the
+    // canonical visual hierarchy and can also contain nested groups.
+    final visitedGroupIds = <String>{};
+    final visitedLayerIds = <String>{};
 
-      for (final entry in group.childOrder) {
-        if (!entry.startsWith('layer:')) {
-          continue;
-        }
-
-        final layerId = entry.substring(6);
-
-        if (!visitedLayerIds.add(layerId)) {
-          continue;
-        }
-
-        final layerIndex = _layers.indexWhere((layer) => layer.id == layerId);
-
-        if (layerIndex == -1) {
-          continue;
-        }
-
-        final layer = _layers[layerIndex];
-
-        if (_selectedFrameIndex < 0 ||
-            _selectedFrameIndex >= layer.frames.length) {
-          continue;
-        }
-
-        bagLayers.add(
-          BagLayer(
-            name: layer.name,
-            opacity: layer.opacity,
-            visible: _isLayerEffectivelyVisible(layer),
-            strokes: layer.frames[_selectedFrameIndex]
-                .map((stroke) => stroke.copy())
-                .toList(),
-          ),
-        );
+    void collectGroupLayers(LayerGroup currentGroup) {
+      if (!visitedGroupIds.add(currentGroup.id)) {
+        return;
       }
 
-      // Legacy protection for old drawing-only groups whose childOrder
-      // may not yet list every directly-owned drawing layer.
-      for (final layerId in group.childLayerIds) {
-        if (!visitedLayerIds.add(layerId)) {
-          continue;
-        }
+      for (final entry in currentGroup.childOrder) {
+        if (entry.startsWith('layer:')) {
+          final layerId = entry.substring(6);
 
-        final layerIndex = _layers.indexWhere((layer) => layer.id == layerId);
-
-        if (layerIndex == -1) {
-          continue;
-        }
-
-        final layer = _layers[layerIndex];
-
-        if (_selectedFrameIndex < 0 ||
-            _selectedFrameIndex >= layer.frames.length) {
-          continue;
-        }
-
-        bagLayers.add(
-          BagLayer(
-            name: layer.name,
-            opacity: layer.opacity,
-            visible: _isLayerEffectivelyVisible(layer),
-            strokes: layer.frames[_selectedFrameIndex]
-                .map((stroke) => stroke.copy())
-                .toList(),
-          ),
-        );
-      }
-    }
-
-    // ------------------------------------------------------------
-    // Recursive Composite capture.
-    // ------------------------------------------------------------
-    CompositeNode? captureHierarchyEntry(
-      String entry, {
-      required Set<String> visitingGroups,
-      required Set<String> visitingVariants,
-    }) {
-      if (entry.startsWith('layer:')) {
-        final layerId = entry.substring(6);
-        final layerIndex = _layers.indexWhere((layer) => layer.id == layerId);
-
-        if (layerIndex == -1) {
-          return null;
-        }
-
-        final layer = _layers[layerIndex];
-
-        return CompositeNode(
-          type: 'layer',
-          id: layer.id,
-          name: layer.name,
-          visible: layer.visible,
-          payload: <String, dynamic>{
-            'opacity': layer.opacity,
-            'frames': layer.frames
-                .map((frame) => frame.map((stroke) => stroke.toJson()).toList())
-                .toList(),
-          },
-        );
-      }
-
-      if (entry.startsWith('reference:')) {
-        final referenceId = entry.substring(10);
-        final referenceIndex = _referenceLayers.indexWhere(
-          (reference) => reference.id == referenceId,
-        );
-
-        if (referenceIndex == -1) {
-          return null;
-        }
-
-        final reference = _referenceLayers[referenceIndex];
-
-        return CompositeNode(
-          type: 'reference',
-          id: reference.id,
-          name: reference.name,
-          visible: reference.visible,
-          payload: <String, dynamic>{
-            'mediaPath': reference.mediaPath,
-            'mediaType': reference.mediaType,
-            'opacity': reference.opacity,
-            'offsetX': reference.offsetX,
-            'offsetY': reference.offsetY,
-            'rotation': reference.rotation,
-            'scaleX': reference.scaleX,
-            'scaleY': reference.scaleY,
-            'pivotX': reference.pivotX,
-            'pivotY': reference.pivotY,
-            'frameTimesMs': List<int>.from(reference.frameTimesMs),
-          },
-        );
-      }
-
-      if (entry.startsWith('group:')) {
-        final childGroupId = entry.substring(6);
-
-        if (!visitingGroups.add(childGroupId)) {
-          return null;
-        }
-
-        final childGroupIndex = _layerGroups.indexWhere(
-          (candidate) => candidate.id == childGroupId,
-        );
-
-        if (childGroupIndex == -1) {
-          visitingGroups.remove(childGroupId);
-          return null;
-        }
-
-        final childGroup = _layerGroups[childGroupIndex];
-        final children = <CompositeNode>[];
-
-        for (final childEntry in childGroup.childOrder) {
-          final child = captureHierarchyEntry(
-            childEntry,
-            visitingGroups: visitingGroups,
-            visitingVariants: visitingVariants,
-          );
-
-          if (child != null) {
-            children.add(child);
-          }
-        }
-
-        // Legacy protection for drawing layers omitted from childOrder.
-        final capturedLayerIds = children
-            .where((child) => child.type == 'layer')
-            .map((child) => child.id)
-            .toSet();
-
-        for (final childLayerId in childGroup.childLayerIds) {
-          if (capturedLayerIds.contains(childLayerId)) {
+          if (!visitedLayerIds.add(layerId)) {
             continue;
           }
 
-          final child = captureHierarchyEntry(
-            'layer:$childLayerId',
-            visitingGroups: visitingGroups,
-            visitingVariants: visitingVariants,
+          final layerIndex = _layers.indexWhere((layer) => layer.id == layerId);
+
+          if (layerIndex == -1) {
+            continue;
+          }
+
+          final layer = _layers[layerIndex];
+
+          if (_selectedFrameIndex < 0 ||
+              _selectedFrameIndex >= layer.frames.length) {
+            continue;
+          }
+
+          bagLayers.add(
+            BagLayer(
+              name: layer.name,
+              opacity: layer.opacity,
+              visible: _isLayerEffectivelyVisible(layer),
+              strokes: layer.frames[_selectedFrameIndex]
+                  .map((stroke) => stroke.copy())
+                  .toList(),
+            ),
           );
 
-          if (child != null) {
-            children.add(child);
-          }
-        }
-
-        visitingGroups.remove(childGroupId);
-
-        return CompositeNode(
-          type: 'group',
-          id: childGroup.id,
-          name: childGroup.name,
-          visible: childGroup.visible,
-          children: children,
-          payload: <String, dynamic>{'expanded': childGroup.expanded},
-        );
-      }
-
-      if (entry.startsWith('variant:')) {
-        final slotId = entry.substring(8);
-
-        if (!visitingVariants.add(slotId)) {
-          return null;
-        }
-
-        final slotIndex = _variantSlots.indexWhere(
-          (candidate) => candidate.id == slotId,
-        );
-
-        if (slotIndex == -1) {
-          visitingVariants.remove(slotId);
-          return null;
-        }
-
-        final slot = _variantSlots[slotIndex];
-        final children = <CompositeNode>[];
-
-        // IMPORTANT: capture every Variant alternative, not only activeEntry.
-        for (final variantEntry in slot.childOrder) {
-          final child = captureHierarchyEntry(
-            variantEntry,
-            visitingGroups: visitingGroups,
-            visitingVariants: visitingVariants,
-          );
-
-          if (child != null) {
-            children.add(child);
-          }
-        }
-
-        visitingVariants.remove(slotId);
-
-        return CompositeNode(
-          type: 'variant',
-          id: slot.id,
-          name: slot.name,
-          children: children,
-          payload: <String, dynamic>{
-            'activeIndex': slot.activeIndex,
-            'expanded': slot.expanded,
-          },
-        );
-      }
-
-      return null;
-    }
-
-    CompositeAsset? composite;
-
-    if (requiresComposite) {
-      final rootChildren = <CompositeNode>[];
-      final visitingGroups = <String>{group.id};
-      final visitingVariants = <String>{};
-
-      for (final entry in group.childOrder) {
-        final child = captureHierarchyEntry(
-          entry,
-          visitingGroups: visitingGroups,
-          visitingVariants: visitingVariants,
-        );
-
-        if (child != null) {
-          rootChildren.add(child);
-        }
-      }
-
-      // Legacy protection for direct drawing layers missing from childOrder.
-      final capturedRootLayerIds = rootChildren
-          .where((child) => child.type == 'layer')
-          .map((child) => child.id)
-          .toSet();
-
-      for (final childLayerId in group.childLayerIds) {
-        if (capturedRootLayerIds.contains(childLayerId)) {
           continue;
         }
 
-        final child = captureHierarchyEntry(
-          'layer:$childLayerId',
-          visitingGroups: visitingGroups,
-          visitingVariants: visitingVariants,
-        );
+        if (entry.startsWith('group:')) {
+          final childGroupId = entry.substring(6);
 
-        if (child != null) {
-          rootChildren.add(child);
+          final childGroupIndex = _layerGroups.indexWhere(
+            (candidate) => candidate.id == childGroupId,
+          );
+
+          if (childGroupIndex != -1) {
+            collectGroupLayers(_layerGroups[childGroupIndex]);
+          }
         }
       }
 
-      composite = CompositeAsset(
-        version: 1,
-        canvasWidth: _canvasWidth,
-        canvasHeight: _canvasHeight,
-        root: CompositeNode(
-          type: 'group',
-          id: group.id,
-          name: group.name,
-          visible: group.visible,
-          children: rootChildren,
-          payload: <String, dynamic>{'expanded': group.expanded},
-        ),
-      );
+      // Legacy/fallback protection for older projects whose childOrder may
+      // not contain every directly-owned drawing layer.
+      for (final layerId in currentGroup.childLayerIds) {
+        if (!visitedLayerIds.add(layerId)) {
+          continue;
+        }
+
+        final layerIndex = _layers.indexWhere((layer) => layer.id == layerId);
+
+        if (layerIndex == -1) {
+          continue;
+        }
+
+        final layer = _layers[layerIndex];
+
+        if (_selectedFrameIndex < 0 ||
+            _selectedFrameIndex >= layer.frames.length) {
+          continue;
+        }
+
+        bagLayers.add(
+          BagLayer(
+            name: layer.name,
+            opacity: layer.opacity,
+            visible: _isLayerEffectivelyVisible(layer),
+            strokes: layer.frames[_selectedFrameIndex]
+                .map((stroke) => stroke.copy())
+                .toList(),
+          ),
+        );
+      }
     }
 
-    final hasContent = requiresComposite
-        ? composite != null && composite.root.children.isNotEmpty
-        : bagLayers.isNotEmpty;
+    collectGroupLayers(group);
 
-    if (!hasContent) {
-      if (!mounted) {
-        return;
-      }
+    if (bagLayers.isEmpty) {
+      if (!mounted) return;
 
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
@@ -2066,9 +1340,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
       context: context,
       builder: (dialogContext) {
         return AlertDialog(
-          title: Text(
-            requiresComposite ? 'Add Composite to Bag' : 'Add to Bag',
-          ),
+          title: const Text('Add to Bag'),
           content: TextFormField(
             initialValue: itemName,
             autofocus: true,
@@ -2132,11 +1404,9 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
               ),
               for (final pocket in pockets)
                 ListTile(
-                  leading: Icon(
-                    requiresComposite
-                        ? Icons.account_tree_outlined
-                        : Icons.inventory_2_outlined,
-                    color: const Color(0xFFF1D3A2),
+                  leading: const Icon(
+                    Icons.inventory_2_outlined,
+                    color: Color(0xFFF1D3A2),
                   ),
                   title: Text(
                     pocket,
@@ -2158,12 +1428,8 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
       id: 'bag_${DateTime.now().microsecondsSinceEpoch}',
       name: result,
       sourceGroupName: group.name,
-      assetType: requiresComposite ? 'composite' : 'vector',
-      layers: requiresComposite ? const <BagLayer>[] : bagLayers,
-      composite: composite,
+      layers: bagLayers,
       createdAt: DateTime.now(),
-      authoredCanvasWidth: requiresComposite ? _canvasWidth : null,
-      authoredCanvasHeight: requiresComposite ? _canvasHeight : null,
     );
 
     await BagService().addItem(item);
@@ -2209,13 +1475,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     }
 
     ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text(
-          requiresComposite
-              ? '${item.name} saved as a Composite in $selectedPocket 🧩🎒'
-              : '${item.name} tucked into $selectedPocket 🎒',
-        ),
-      ),
+      SnackBar(content: Text('${item.name} tucked into $selectedPocket 🎒')),
     );
   }
 
@@ -3415,20 +2675,6 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
           ),
         );
 
-      _variantSlots
-        ..clear()
-        ..addAll(
-          project.variantSlots.map(
-            (slot) => VariantSlot(
-              id: slot.id,
-              name: slot.name,
-              childOrder: List<String>.from(slot.childOrder),
-              activeIndex: slot.activeIndex,
-              expanded: slot.expanded,
-            ),
-          ),
-        );
-
       _activeReferenceLayerId = project.activeReferenceLayerId;
 
       _loadLegacyReferenceStateFromActiveLayer();
@@ -3964,25 +3210,24 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
   }
 
   FrameHistorySnapshot _frameHistorySnapshot() {
-    final strokes = <String, List<VectorStroke>>{};
+    final snapshot = <String, List<VectorStroke>>{};
 
-    if (_selectedFrameIndex >= 0 &&
-        _selectedFrameIndex < _frameDurations.length) {
-      for (final layer in _layers) {
-        if (_selectedFrameIndex >= layer.frames.length) {
-          continue;
-        }
-
-        strokes[layer.id] = layer.frames[_selectedFrameIndex]
-            .map((stroke) => stroke.copy())
-            .toList();
-      }
+    if (_selectedFrameIndex < 0 ||
+        _selectedFrameIndex >= _frameDurations.length) {
+      return snapshot;
     }
 
-    return FrameHistorySnapshot(
-      strokes: strokes,
-      references: List<ReferenceLayer>.from(_referenceLayers),
-    );
+    for (final layer in _layers) {
+      if (_selectedFrameIndex >= layer.frames.length) {
+        continue;
+      }
+
+      snapshot[layer.id] = layer.frames[_selectedFrameIndex]
+          .map((stroke) => stroke.copy())
+          .toList();
+    }
+
+    return snapshot;
   }
 
   void _restoreFrameHistorySnapshot(FrameHistorySnapshot snapshot) {
@@ -3998,7 +3243,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
         continue;
       }
 
-      final savedStrokes = snapshot.strokes[layer.id];
+      final savedStrokes = snapshot[layer.id];
 
       if (savedStrokes == null) {
         continue;
@@ -4013,11 +3258,6 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
       _layers[layerIndex] = layer.copyWith(frames: frames);
     }
 
-    _referenceLayers
-      ..clear()
-      ..addAll(snapshot.references);
-
-    _loadLegacyReferenceStateFromActiveLayer();
     _rebuildCompositeFrames();
   }
 
@@ -4231,27 +3471,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
       return _referenceTransformBounds(reference);
     }
 
-    Rect? bounds = _selectedStrokeBounds();
-
-    for (final referenceId in _transformGroupReferenceIds) {
-      final index = _referenceLayers.indexWhere(
-        (reference) => reference.id == referenceId,
-      );
-
-      if (index == -1) {
-        continue;
-      }
-
-      final referenceBounds = _referenceTransformBounds(
-        _referenceLayers[index],
-      );
-
-      bounds = bounds == null
-          ? referenceBounds
-          : bounds.expandToInclude(referenceBounds);
-    }
-
-    return bounds;
+    return _selectedStrokeBounds();
   }
 
   void _replaceReferenceTransform(ReferenceLayer updated) {
@@ -4356,169 +3576,10 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     );
   }
 
-  Map<String, ReferenceLayer> _selectedGroupReferenceSnapshot() {
-    final snapshot = <String, ReferenceLayer>{};
-
-    for (final referenceId in _transformGroupReferenceIds) {
-      final index = _referenceLayers.indexWhere(
-        (reference) => reference.id == referenceId,
-      );
-
-      if (index != -1) {
-        snapshot[referenceId] = _referenceLayers[index];
-      }
-    }
-
-    return snapshot;
-  }
-
-  void _moveGroupReferences(Offset delta) {
-    for (final referenceId in _transformGroupReferenceIds) {
-      final index = _referenceLayers.indexWhere(
-        (reference) => reference.id == referenceId,
-      );
-
-      if (index == -1) {
-        continue;
-      }
-
-      final reference = _referenceLayers[index];
-      final hasStoredPivot =
-          reference.pivotX != null && reference.pivotY != null;
-
-      _referenceLayers[index] = reference.copyWith(
-        offsetX: reference.offsetX + delta.dx,
-        offsetY: reference.offsetY + delta.dy,
-        pivotX: hasStoredPivot
-            ? reference.pivotX! + delta.dx
-            : reference.pivotX,
-        pivotY: hasStoredPivot
-            ? reference.pivotY! + delta.dy
-            : reference.pivotY,
-      );
-    }
-  }
-
-  void _rotateGroupReferences(
-    double angle,
-    Offset pivot,
-    Map<String, ReferenceLayer> snapshot,
-  ) {
-    final cosAngle = math.cos(angle);
-    final sinAngle = math.sin(angle);
-
-    for (final entry in snapshot.entries) {
-      final index = _referenceLayers.indexWhere(
-        (reference) => reference.id == entry.key,
-      );
-
-      if (index == -1) {
-        continue;
-      }
-
-      final source = entry.value;
-      final startCenter = _referenceDisplayedCenter(source);
-      final relative = startCenter - pivot;
-
-      final rotatedCenter = Offset(
-        pivot.dx + (relative.dx * cosAngle) - (relative.dy * sinAngle),
-        pivot.dy + (relative.dx * sinAngle) + (relative.dy * cosAngle),
-      );
-
-      final newOffset = rotatedCenter - _referenceCanvasCenter;
-
-      _referenceLayers[index] = source.copyWith(
-        offsetX: newOffset.dx,
-        offsetY: newOffset.dy,
-        rotation: source.rotation + angle,
-      );
-    }
-  }
-
-  void _scaleGroupReferences(
-    double scaleX,
-    double scaleY,
-    Offset anchor,
-    Map<String, ReferenceLayer> snapshot,
-  ) {
-    final safeScaleX = scaleX.clamp(0.05, 20.0);
-    final safeScaleY = scaleY.clamp(0.05, 20.0);
-
-    for (final entry in snapshot.entries) {
-      final index = _referenceLayers.indexWhere(
-        (reference) => reference.id == entry.key,
-      );
-
-      if (index == -1) {
-        continue;
-      }
-
-      final source = entry.value;
-      final startCenter = _referenceDisplayedCenter(source);
-
-      final newCenter = Offset(
-        anchor.dx + ((startCenter.dx - anchor.dx) * safeScaleX),
-        anchor.dy + ((startCenter.dy - anchor.dy) * safeScaleY),
-      );
-
-      final newOffset = newCenter - _referenceCanvasCenter;
-
-      _referenceLayers[index] = source.copyWith(
-        offsetX: newOffset.dx,
-        offsetY: newOffset.dy,
-        scaleX: source.scaleX * safeScaleX,
-        scaleY: source.scaleY * safeScaleY,
-      );
-    }
-  }
-
-  void _flipGroupReferencesHorizontally(Offset pivot) {
-    for (final referenceId in _transformGroupReferenceIds) {
-      final index = _referenceLayers.indexWhere(
-        (reference) => reference.id == referenceId,
-      );
-
-      if (index == -1) {
-        continue;
-      }
-
-      final reference = _referenceLayers[index];
-      final center = _referenceDisplayedCenter(reference);
-
-      final mirroredCenter = Offset(
-        pivot.dx - (center.dx - pivot.dx),
-        center.dy,
-      );
-
-      final newOffset = mirroredCenter - _referenceCanvasCenter;
-
-      _referenceLayers[index] = reference.copyWith(
-        offsetX: newOffset.dx,
-        offsetY: newOffset.dy,
-        scaleX: -reference.scaleX,
-      );
-    }
-  }
-
   Future<void> _enterReferenceTransform(String referenceId) async {
-    final referenceEntry = 'reference:$referenceId';
-
-    // A Variant child only exists interactively while it is the active entry.
-    // This guards both canvas selection and Layers-panel long-press.
-    if (!_isVariantEntryActive(referenceEntry)) {
-      return;
-    }
-
     await _selectReferenceLayer(referenceId);
 
     if (!mounted) {
-      return;
-    }
-
-    // The active Variant could theoretically change during the async
-    // reference-selection bridge, so validate it once more before entering
-    // Transform.
-    if (!_isVariantEntryActive(referenceEntry)) {
       return;
     }
 
@@ -4541,9 +3602,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
       _clearShapeDraft();
       _clearTransformSelection();
 
-      final parentGroup = _groupContainingReference(referenceId);
-      _activeLayerGroupId = parentGroup?.id;
-      _layerInsertionGroupId = parentGroup?.id;
+      _activeLayerGroupId = null;
 
       _isEraserActive = false;
       _isFillToolActive = false;
@@ -4606,8 +3665,6 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     _selectedTransformStrokes = <String, Set<int>>{};
     _transformReferenceLayerId = null;
     _referenceTransformSnapshot = null;
-    _transformGroupReferenceIds = <String>{};
-    _transformGroupReferenceSnapshot = null;
     _transformLastPosition = null;
     _transformScaleAnchor = null;
     _transformScaleStartDistance = null;
@@ -4643,96 +3700,6 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     return inside;
   }
 
-  void _collectGroupTransformDescendants(
-    String groupId, {
-    required Set<String> layerIds,
-    required Set<String> referenceIds,
-    Set<String>? visited,
-    Set<String>? visitedVariants,
-  }) {
-    final seenGroups = visited ?? <String>{};
-    final seenVariants = visitedVariants ?? <String>{};
-
-    void collectEntry(String entry) {
-      if (entry.startsWith('layer:')) {
-        layerIds.add(entry.substring('layer:'.length));
-        return;
-      }
-
-      if (entry.startsWith('reference:')) {
-        referenceIds.add(entry.substring('reference:'.length));
-        return;
-      }
-
-      if (entry.startsWith('group:')) {
-        _collectGroupTransformDescendants(
-          entry.substring('group:'.length),
-          layerIds: layerIds,
-          referenceIds: referenceIds,
-          visited: seenGroups,
-          visitedVariants: seenVariants,
-        );
-        return;
-      }
-
-      if (entry.startsWith('variant:')) {
-        final slotId = entry.substring('variant:'.length);
-
-        if (!seenVariants.add(slotId)) {
-          return;
-        }
-
-        final slotIndex = _variantSlots.indexWhere((slot) => slot.id == slotId);
-
-        if (slotIndex == -1) {
-          return;
-        }
-
-        final slot = _variantSlots[slotIndex];
-
-        // Whole-group / Composite transforms deliberately include EVERY
-        // Variant alternative, not only activeEntry.
-        //
-        // Otherwise moving a Room while Kitchen A is active would leave
-        // Kitchen B behind at the old coordinates. When the user switched
-        // variants later, the alternate asset would appear to "snap back".
-        for (final childEntry in slot.childOrder) {
-          collectEntry(childEntry);
-        }
-      }
-    }
-
-    if (!seenGroups.add(groupId)) {
-      return;
-    }
-
-    final groupIndex = _layerGroups.indexWhere((group) => group.id == groupId);
-
-    if (groupIndex == -1) {
-      return;
-    }
-
-    final group = _layerGroups[groupIndex];
-
-    for (final entry in group.childOrder) {
-      collectEntry(entry);
-    }
-
-    // Compatibility fallback for older projects whose childOrder may not
-    // contain every persisted child yet.
-    layerIds.addAll(group.childLayerIds);
-
-    for (final childGroupId in group.childGroupIds) {
-      _collectGroupTransformDescendants(
-        childGroupId,
-        layerIds: layerIds,
-        referenceIds: referenceIds,
-        visited: seenGroups,
-        visitedVariants: seenVariants,
-      );
-    }
-  }
-
   List<int> _transformLayerIndices() {
     final group = _activeLayerGroup;
 
@@ -4740,19 +3707,10 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
       return <int>[_activeLayerIndex];
     }
 
-    final layerIds = <String>{};
-    final referenceIds = <String>{};
-
-    _collectGroupTransformDescendants(
-      group.id,
-      layerIds: layerIds,
-      referenceIds: referenceIds,
-    );
-
     final indices = <int>[];
 
     for (var index = 0; index < _layers.length; index++) {
-      if (layerIds.contains(_layers[index].id)) {
+      if (group.childLayerIds.contains(_layers[index].id)) {
         indices.add(index);
       }
     }
@@ -4767,7 +3725,6 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
   void _enterTransformForLayerIndices(
     List<int> layerIndices, {
     String? groupId,
-    Set<String> referenceIds = const <String>{},
   }) {
     final selected = <String, Set<int>>{};
 
@@ -4794,9 +3751,9 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
       );
     }
 
-    if (selected.isEmpty && referenceIds.isEmpty) {
+    if (selected.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Nothing to transform in this group')),
+        const SnackBar(content: Text('Nothing to transform on this frame')),
       );
       return;
     }
@@ -4834,10 +3791,6 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
       _isTransformPivotDragging = false;
 
       _selectedTransformStrokes = selected;
-      _transformGroupReferenceIds = Set<String>.from(referenceIds);
-
-      final bounds = _transformSelectionBounds();
-      _transformPivot = bounds?.center;
     });
 
     HapticFeedback.mediumImpact();
@@ -4854,28 +3807,16 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
       return;
     }
 
-    final layerIds = <String>{};
-    final referenceIds = <String>{};
-
-    _collectGroupTransformDescendants(
-      groupId,
-      layerIds: layerIds,
-      referenceIds: referenceIds,
-    );
-
+    final group = _layerGroups[groupIndex];
     final layerIndices = <int>[];
 
     for (var index = 0; index < _layers.length; index++) {
-      if (layerIds.contains(_layers[index].id)) {
+      if (group.childLayerIds.contains(_layers[index].id)) {
         layerIndices.add(index);
       }
     }
 
-    _enterTransformForLayerIndices(
-      layerIndices,
-      groupId: groupId,
-      referenceIds: referenceIds,
-    );
+    _enterTransformForLayerIndices(layerIndices, groupId: group.id);
   }
 
   void _finishLassoSelection() {
@@ -5022,12 +3963,11 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
       return;
     }
 
-    if (_selectedTransformStrokes.isEmpty &&
-        _transformGroupReferenceIds.isEmpty) {
+    if (_selectedTransformStrokes.isEmpty) {
       return;
     }
 
-    final bounds = _transformSelectionBounds();
+    final bounds = _selectedStrokeBounds();
 
     if (bounds == null) {
       return;
@@ -5087,7 +4027,6 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
         _layers[layerIndex] = layer.copyWith(frames: frames);
       }
 
-      _flipGroupReferencesHorizontally(pivot);
       _rebuildCompositeFrames();
     });
 
@@ -5095,22 +4034,12 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     HapticFeedback.lightImpact();
   }
 
-  double get _transformViewScale {
-    final scale = _transformationController.value.getMaxScaleOnAxis();
-
-    return math.max(0.1, scale);
-  }
-
-  double _transformScreenPixels(double pixels) {
-    return pixels / _transformViewScale;
-  }
-
   Offset _transformRotationHandle(Rect bounds) {
-    return bounds.topCenter + Offset(0, -_transformScreenPixels(34));
+    return bounds.topCenter + const Offset(0, -34);
   }
 
   bool _transformRotationHandleHit(Offset position, Rect bounds) {
-    final hitRadius = _transformScreenPixels(24);
+    const hitRadius = 24.0;
 
     return (position - _transformRotationHandle(bounds)).distance <= hitRadius;
   }
@@ -5120,7 +4049,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
   }
 
   bool _transformPivotHit(Offset position, Rect bounds) {
-    final hitRadius = _transformScreenPixels(24);
+    const hitRadius = 24.0;
 
     return (position - _effectiveTransformPivot(bounds)).distance <= hitRadius;
   }
@@ -5191,7 +4120,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
   }
 
   Offset? _transformCornerHit(Offset position, Rect bounds) {
-    final hitRadius = _transformScreenPixels(22);
+    const hitRadius = 22.0;
 
     for (final corner in <Offset>[
       bounds.topLeft,
@@ -5224,7 +4153,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
   }
 
   Offset? _transformEdgeHandleHit(Offset position, Rect bounds) {
-    final hitRadius = _transformScreenPixels(22);
+    const hitRadius = 22.0;
 
     for (final handle in <Offset>[
       bounds.centerLeft,
@@ -6863,214 +5792,10 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     });
   }
 
-  void _cancelCanvasAssetLongPress() {
-    _canvasAssetLongPressTimer?.cancel();
-    _canvasAssetLongPressTimer = null;
-    _canvasAssetLongPressStart = null;
-    _canvasAssetLongPressPointer = null;
-  }
-
-  ReferenceLayer? _topmostImageReferenceAt(Offset canvasPosition) {
-    final visitedReferences = <String>{};
-    final visitedGroups = <String>{};
-
-    ReferenceLayer? hitEntry(String entry) {
-      if (entry.startsWith('reference:')) {
-        final referenceId = entry.substring(10);
-
-        if (!visitedReferences.add(referenceId)) {
-          return null;
-        }
-
-        final index = _referenceLayers.indexWhere(
-          (reference) => reference.id == referenceId,
-        );
-
-        if (index == -1) {
-          return null;
-        }
-
-        final reference = _referenceLayers[index];
-        final referenceEntry = 'reference:${reference.id}';
-
-        if (!_isVariantEntryActive(referenceEntry) ||
-            reference.mediaType != 'image' ||
-            reference.mediaPath.isEmpty ||
-            !_isReferenceEffectivelyVisible(reference)) {
-          return null;
-        }
-
-        if (_referenceImageHitTest(reference, canvasPosition)) {
-          return reference;
-        }
-
-        return null;
-      }
-
-      if (entry.startsWith('variant:')) {
-        final slotId = entry.substring(8);
-        final slot = _variantSlotForId(slotId);
-        final activeEntry = slot?.activeEntry;
-
-        if (activeEntry == null) {
-          return null;
-        }
-
-        return hitEntry(activeEntry);
-      }
-
-      if (entry.startsWith('group:')) {
-        final groupId = entry.substring(6);
-
-        if (!visitedGroups.add(groupId) ||
-            !_isGroupEffectivelyVisible(groupId)) {
-          return null;
-        }
-
-        final groupIndex = _layerGroups.indexWhere(
-          (group) => group.id == groupId,
-        );
-
-        if (groupIndex == -1) {
-          return null;
-        }
-
-        final group = _layerGroups[groupIndex];
-
-        // Layer panel order is top-to-bottom, so inspect children in normal
-        // order when hit-testing front-to-back.
-        for (final childEntry in group.childOrder) {
-          final hit = hitEntry(childEntry);
-
-          if (hit != null) {
-            return hit;
-          }
-        }
-      }
-
-      return null;
-    }
-
-    // Root panel order is also front-to-back.
-    for (final entry in _rootLayerOrder) {
-      final hit = hitEntry(entry);
-
-      if (hit != null) {
-        return hit;
-      }
-    }
-
-    // Legacy safety net for genuinely orphaned image references.
-    //
-    // References owned by a Variant Slot must never participate here.
-    // Only the slot's activeEntry is eligible through the authoritative
-    // hierarchy traversal above.
-    for (final reference in _referenceLayers) {
-      final entry = 'reference:${reference.id}';
-
-      if (visitedReferences.contains(reference.id) ||
-          _variantSlotContainingEntry(entry) != null ||
-          reference.mediaType != 'image' ||
-          reference.mediaPath.isEmpty ||
-          !_isReferenceEffectivelyVisible(reference)) {
-        continue;
-      }
-
-      if (_referenceImageHitTest(reference, canvasPosition)) {
-        return reference;
-      }
-    }
-
-    return null;
-  }
-
-  void _armCanvasAssetLongPress(
-    PointerDownEvent event,
-    BuildContext canvasContext,
-  ) {
-    _cancelCanvasAssetLongPress();
-
-    if (_isPlaying ||
-        _activePointerCount != 1 ||
-        _drawingMode ||
-        _isFillToolActive ||
-        _isShapeToolActive ||
-        _isTintToolActive ||
-        _brushEyedropperArmed ||
-        _blendSamplingArmed ||
-        _stampBrushActive ||
-        _textureActive) {
-      return;
-    }
-
-    final renderObject = canvasContext.findRenderObject();
-
-    if (renderObject is! RenderBox) {
-      return;
-    }
-
-    final canvasPosition = renderObject.globalToLocal(event.position);
-
-    _canvasAssetLongPressPointer = event.pointer;
-    _canvasAssetLongPressStart = canvasPosition;
-
-    _canvasAssetLongPressTimer = Timer(const Duration(milliseconds: 650), () {
-      final pointer = _canvasAssetLongPressPointer;
-      final start = _canvasAssetLongPressStart;
-
-      _canvasAssetLongPressTimer = null;
-
-      if (!mounted ||
-          pointer == null ||
-          start == null ||
-          _activePointerCount != 1) {
-        _cancelCanvasAssetLongPress();
-        return;
-      }
-
-      final reference = _topmostImageReferenceAt(start);
-
-      _cancelCanvasAssetLongPress();
-
-      if (reference == null) {
-        return;
-      }
-
-      unawaited(_enterReferenceTransform(reference.id));
-    });
-  }
-
-  void _updateCanvasAssetLongPress(
-    PointerMoveEvent event,
-    BuildContext canvasContext,
-  ) {
-    if (_canvasAssetLongPressPointer != event.pointer ||
-        _canvasAssetLongPressStart == null) {
-      return;
-    }
-
-    final renderObject = canvasContext.findRenderObject();
-
-    if (renderObject is! RenderBox) {
-      _cancelCanvasAssetLongPress();
-      return;
-    }
-
-    final current = renderObject.globalToLocal(event.position);
-    final distance = (current - _canvasAssetLongPressStart!).distance;
-
-    // Small hand/S Pen jitter is fine. Deliberate movement cancels selection.
-    if (distance > 14.0) {
-      _cancelCanvasAssetLongPress();
-    }
-  }
-
   void _handlePointerDown(PointerDownEvent event, BuildContext canvasContext) {
     _updateCanvasRotationPointerDown(event);
     _activePointerCount += 1;
     if (_activePointerCount > 1) {
-      _cancelCanvasAssetLongPress();
-
       setState(() {
         _draftStroke = const <VectorPoint>[];
         _draftStampStrokes = <VectorStroke>[];
@@ -7081,8 +5806,6 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     if (_isPlaying) {
       return;
     }
-
-    _armCanvasAssetLongPress(event, canvasContext);
 
     final renderBox = canvasContext.findRenderObject() as RenderBox;
     final canvasPosition = renderBox.globalToLocal(event.position);
@@ -7160,12 +5883,9 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
             );
             if (_transformReferenceLayerId != null) {
               _referenceTransformSnapshot = _referenceTransformTarget;
-              _transformGroupReferenceSnapshot = null;
               _transformRotationSnapshot = null;
             } else {
               _referenceTransformSnapshot = null;
-              _transformGroupReferenceSnapshot =
-                  _selectedGroupReferenceSnapshot();
               _transformRotationSnapshot = _selectedTransformSnapshot();
             }
           });
@@ -7200,12 +5920,9 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                 : startDistance;
             if (_transformReferenceLayerId != null) {
               _referenceTransformSnapshot = _referenceTransformTarget;
-              _transformGroupReferenceSnapshot = null;
               _transformScaleSnapshot = null;
             } else {
               _referenceTransformSnapshot = null;
-              _transformGroupReferenceSnapshot =
-                  _selectedGroupReferenceSnapshot();
               _transformScaleSnapshot = _selectedTransformSnapshot();
             }
           });
@@ -7246,12 +5963,9 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
 
             if (_transformReferenceLayerId != null) {
               _referenceTransformSnapshot = _referenceTransformTarget;
-              _transformGroupReferenceSnapshot = null;
               _transformScaleSnapshot = null;
             } else {
               _referenceTransformSnapshot = null;
-              _transformGroupReferenceSnapshot =
-                  _selectedGroupReferenceSnapshot();
               _transformScaleSnapshot = _selectedTransformSnapshot();
             }
           });
@@ -7260,8 +5974,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
         }
       }
 
-      if (bounds != null &&
-          bounds.inflate(_transformScreenPixels(16)).contains(canvasPosition)) {
+      if (bounds != null && bounds.inflate(16).contains(canvasPosition)) {
         if (_activeLayerGroup == null) {
           _saveUndoState();
         } else {
@@ -7277,8 +5990,6 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
       } else if (_transformReferenceLayerId == null) {
         setState(() {
           _selectedTransformStrokes = <String, Set<int>>{};
-          _transformGroupReferenceIds = <String>{};
-          _transformGroupReferenceSnapshot = null;
           _transformPivot = null;
           _isTransformPivotDragging = false;
           _lassoPoints = <VectorPoint>[
@@ -7370,7 +6081,6 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
 
   void _handlePointerMove(PointerMoveEvent event, BuildContext canvasContext) {
     _updateCanvasRotationPointerMove(event);
-    _updateCanvasAssetLongPress(event, canvasContext);
 
     if (_isPlaying) {
       return;
@@ -7416,8 +6126,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
           _transformRotationCenter != null &&
           _transformRotationStartAngle != null &&
           (_transformRotationSnapshot != null ||
-              _referenceTransformSnapshot != null ||
-              _transformGroupReferenceSnapshot != null)) {
+              _referenceTransformSnapshot != null)) {
         final currentAngle = _angleFromCenter(
           canvasPosition,
           _transformRotationCenter!,
@@ -7434,24 +6143,12 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
               _transformRotationCenter!,
               referenceSnapshot,
             );
-          } else {
-            if (_transformRotationSnapshot != null) {
-              _rotateSelectedStrokes(
-                angle,
-                _transformRotationCenter!,
-                _transformRotationSnapshot!,
-              );
-            }
-
-            final groupSnapshot = _transformGroupReferenceSnapshot;
-
-            if (groupSnapshot != null) {
-              _rotateGroupReferences(
-                angle,
-                _transformRotationCenter!,
-                groupSnapshot,
-              );
-            }
+          } else if (_transformRotationSnapshot != null) {
+            _rotateSelectedStrokes(
+              angle,
+              _transformRotationCenter!,
+              _transformRotationSnapshot!,
+            );
           }
         });
 
@@ -7462,8 +6159,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
           _transformScaleAnchor != null &&
           _transformScaleStartDistance != null &&
           (_transformScaleSnapshot != null ||
-              _referenceTransformSnapshot != null ||
-              _transformGroupReferenceSnapshot != null)) {
+              _referenceTransformSnapshot != null)) {
         double scaleX = 1.0;
         double scaleY = 1.0;
 
@@ -7497,26 +6193,13 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
               _transformScaleAnchor!,
               referenceSnapshot,
             );
-          } else {
-            if (_transformScaleSnapshot != null) {
-              _scaleSelectedStrokes(
-                scaleX,
-                scaleY,
-                _transformScaleAnchor!,
-                _transformScaleSnapshot!,
-              );
-            }
-
-            final groupSnapshot = _transformGroupReferenceSnapshot;
-
-            if (groupSnapshot != null) {
-              _scaleGroupReferences(
-                scaleX,
-                scaleY,
-                _transformScaleAnchor!,
-                groupSnapshot,
-              );
-            }
+          } else if (_transformScaleSnapshot != null) {
+            _scaleSelectedStrokes(
+              scaleX,
+              scaleY,
+              _transformScaleAnchor!,
+              _transformScaleSnapshot!,
+            );
           }
         });
 
@@ -7531,7 +6214,6 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
             _moveReferenceTransform(delta);
           } else {
             _moveSelectedStrokes(delta);
-            _moveGroupReferences(delta);
           }
 
           if (_transformPivot != null) {
@@ -7708,10 +6390,6 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
   void _handlePointerUp(PointerUpEvent event) {
     _updateCanvasRotationPointerEnd(event);
 
-    if (_canvasAssetLongPressPointer == event.pointer) {
-      _cancelCanvasAssetLongPress();
-    }
-
     if (_activePointerCount > 0) {
       _activePointerCount -= 1;
     }
@@ -7796,14 +6474,12 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
           _transformRotationStartAngle = null;
           _transformRotationSnapshot = null;
           _referenceTransformSnapshot = null;
-          _transformGroupReferenceSnapshot = null;
         } else if (_isTransformScaling) {
           _isTransformScaling = false;
           _transformScaleAnchor = null;
           _transformScaleStartDistance = null;
           _transformScaleSnapshot = null;
           _referenceTransformSnapshot = null;
-          _transformGroupReferenceSnapshot = null;
           _transformScaleHorizontalOnly = false;
           _transformScaleVerticalOnly = false;
         } else if (_isTransformDragging) {
@@ -7851,10 +6527,6 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
 
   void _handlePointerCancel(PointerCancelEvent event) {
     _updateCanvasRotationPointerEnd(event);
-
-    if (_canvasAssetLongPressPointer == event.pointer) {
-      _cancelCanvasAssetLongPress();
-    }
 
     if (_activePointerCount > 0) {
       _activePointerCount -= 1;
@@ -8299,273 +6971,6 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     );
   }
 
-  VariantSlot? _variantSlotContainingEntry(String entry) {
-    for (final slot in _variantSlots) {
-      if (slot.childOrder.contains(entry)) {
-        return slot;
-      }
-    }
-
-    return null;
-  }
-
-  bool _isVariantEntryActive(String entry) {
-    final slot = _variantSlotContainingEntry(entry);
-
-    // Entries outside Variant Slots behave normally.
-    if (slot == null) {
-      return true;
-    }
-
-    return slot.activeEntry == entry;
-  }
-
-  bool _hierarchyContainsEntry(String entry) {
-    if (_rootLayerOrder.contains(entry)) {
-      return true;
-    }
-
-    for (final group in _layerGroups) {
-      if (group.childOrder.contains(entry)) {
-        return true;
-      }
-    }
-
-    for (final slot in _variantSlots) {
-      if (slot.childOrder.contains(entry)) {
-        return true;
-      }
-    }
-
-    return false;
-  }
-
-  LayerGroup? _groupContainingReference(String referenceId) {
-    final entry = 'reference:$referenceId';
-
-    for (final group in _layerGroups) {
-      if (group.childOrder.contains(entry)) {
-        return group;
-      }
-    }
-
-    final slot = _variantSlotContainingEntry(entry);
-
-    if (slot != null) {
-      return _groupContainingVariantSlot(slot.id);
-    }
-
-    return null;
-  }
-
-  void _insertReferenceHierarchyEntry(
-    String referenceId, {
-    String? parentGroupId,
-  }) {
-    final entry = 'reference:$referenceId';
-
-    _rootLayerOrder.remove(entry);
-
-    for (var index = 0; index < _layerGroups.length; index++) {
-      final group = _layerGroups[index];
-
-      if (!group.childOrder.contains(entry)) {
-        continue;
-      }
-
-      final updatedOrder = List<String>.from(group.childOrder)..remove(entry);
-
-      _layerGroups[index] = group.copyWith(childOrder: updatedOrder);
-    }
-
-    if (parentGroupId != null) {
-      final parentIndex = _layerGroups.indexWhere(
-        (group) => group.id == parentGroupId,
-      );
-
-      if (parentIndex != -1) {
-        final parent = _layerGroups[parentIndex];
-        final updatedOrder = List<String>.from(parent.childOrder)
-          ..insert(0, entry);
-
-        _layerGroups[parentIndex] = parent.copyWith(
-          childOrder: updatedOrder,
-          expanded: true,
-        );
-
-        return;
-      }
-    }
-
-    _rootLayerOrder.insert(0, entry);
-  }
-
-  Future<void> _duplicateReferenceAsInstance(ReferenceLayer source) async {
-    final sourceIndex = _referenceLayers.indexWhere(
-      (reference) => reference.id == source.id,
-    );
-
-    if (sourceIndex == -1) {
-      return;
-    }
-
-    // Preserve any compatibility-state edits before cloning the source.
-    if (_activeReferenceLayerId == source.id) {
-      _syncActiveReferenceLayerFromLegacyState();
-    }
-
-    final currentSource = _referenceLayers.firstWhere(
-      (reference) => reference.id == source.id,
-    );
-
-    final stamp = DateTime.now().microsecondsSinceEpoch;
-    final duplicateId = 'reference_instance_$stamp';
-    final sourceEntry = 'reference:${currentSource.id}';
-    final duplicateEntry = 'reference:$duplicateId';
-
-    // A small scene offset makes the new instance immediately visible while
-    // keeping all authored transform values intact.
-    const duplicateOffset = 24.0;
-
-    final duplicate = currentSource.copyWith(
-      id: duplicateId,
-      name: '${currentSource.name} Instance',
-      offsetX: currentSource.offsetX + duplicateOffset,
-      offsetY: currentSource.offsetY + duplicateOffset,
-      pivotX: currentSource.pivotX == null
-          ? null
-          : currentSource.pivotX! + duplicateOffset,
-      pivotY: currentSource.pivotY == null
-          ? null
-          : currentSource.pivotY! + duplicateOffset,
-      frameTimesMs: List<int>.from(currentSource.frameTimesMs),
-    );
-
-    setState(() {
-      _referenceLayers.insert(0, duplicate);
-
-      var inserted = false;
-
-      // Variant Slots own their children directly, so preserve that ownership.
-      for (var index = 0; index < _variantSlots.length; index++) {
-        final slot = _variantSlots[index];
-        final sourcePosition = slot.childOrder.indexOf(sourceEntry);
-
-        if (sourcePosition == -1) {
-          continue;
-        }
-
-        final updatedOrder = List<String>.from(slot.childOrder)
-          ..insert(sourcePosition, duplicateEntry);
-
-        _variantSlots[index] = slot.copyWith(
-          childOrder: updatedOrder,
-          activeIndex: slot.activeIndex >= sourcePosition
-              ? slot.activeIndex + 1
-              : slot.activeIndex,
-        );
-
-        inserted = true;
-        break;
-      }
-
-      // Otherwise preserve the source's group ownership.
-      if (!inserted) {
-        for (var index = 0; index < _layerGroups.length; index++) {
-          final group = _layerGroups[index];
-          final sourcePosition = group.childOrder.indexOf(sourceEntry);
-
-          if (sourcePosition == -1) {
-            continue;
-          }
-
-          final updatedOrder = List<String>.from(group.childOrder)
-            ..insert(sourcePosition, duplicateEntry);
-
-          _layerGroups[index] = group.copyWith(
-            childOrder: updatedOrder,
-            expanded: true,
-          );
-
-          inserted = true;
-          break;
-        }
-      }
-
-      // Finally handle a root-level reference.
-      if (!inserted) {
-        final sourcePosition = _rootLayerOrder.indexOf(sourceEntry);
-
-        if (sourcePosition != -1) {
-          _rootLayerOrder.insert(sourcePosition, duplicateEntry);
-        } else {
-          _rootLayerOrder.insert(0, duplicateEntry);
-        }
-      }
-    });
-
-    _scheduleAutosave();
-
-    if (!mounted) {
-      return;
-    }
-
-    await _enterReferenceTransform(duplicate.id);
-
-    if (!mounted) {
-      return;
-    }
-
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text(
-          '${currentSource.name} duplicated as a lightweight instance 🔗',
-        ),
-      ),
-    );
-  }
-
-  void _removeReferenceHierarchyEntry(String referenceId) {
-    final entry = 'reference:$referenceId';
-
-    _rootLayerOrder.remove(entry);
-
-    for (var index = 0; index < _layerGroups.length; index++) {
-      final group = _layerGroups[index];
-
-      if (!group.childOrder.contains(entry)) {
-        continue;
-      }
-
-      final updatedOrder = List<String>.from(group.childOrder)..remove(entry);
-
-      _layerGroups[index] = group.copyWith(childOrder: updatedOrder);
-    }
-  }
-
-  void _ensureReferenceHierarchyEntries() {
-    final variantOwnedEntries = <String>{
-      for (final slot in _variantSlots) ...slot.childOrder,
-    };
-
-    _rootLayerOrder.removeWhere(variantOwnedEntries.contains);
-
-    for (final reference in _referenceLayers) {
-      final entry = 'reference:${reference.id}';
-
-      // Variant children belong exclusively to their Variant Slot.
-      // Never resurrect them as loose root references during autosave.
-      if (_variantSlotContainingEntry(entry) != null) {
-        _rootLayerOrder.remove(entry);
-        continue;
-      }
-
-      if (!_hierarchyContainsEntry(entry)) {
-        _rootLayerOrder.add(entry);
-      }
-    }
-  }
-
   Future<void> _selectReferenceLayer(String referenceId) async {
     final index = _referenceLayers.indexWhere(
       (reference) => reference.id == referenceId,
@@ -8597,9 +7002,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
       _activeReferenceLayerId = referenceId;
       _loadLegacyReferenceStateFromActiveLayer();
 
-      final parentGroup = _groupContainingReference(referenceId);
-      _activeLayerGroupId = parentGroup?.id;
-      _layerInsertionGroupId = parentGroup?.id;
+      _activeLayerGroupId = null;
       _mergeSelectedLayerIds.clear();
 
       _isVideoScrubbing = false;
@@ -8720,21 +7123,15 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
         mediaType: mediaType,
       );
 
-      final parentGroupId = _activeLayerGroupId ?? _layerInsertionGroupId;
-
       setState(() {
+        // References are currently their own stack inside the reference area.
+        // New references are placed at the top of that stack.
         _referenceLayers.insert(0, reference);
-
-        _insertReferenceHierarchyEntry(
-          reference.id,
-          parentGroupId: parentGroupId,
-        );
 
         _activeReferenceLayerId = reference.id;
         _loadLegacyReferenceStateFromActiveLayer();
 
-        _activeLayerGroupId = parentGroupId;
-        _layerInsertionGroupId = parentGroupId;
+        _activeLayerGroupId = null;
         _mergeSelectedLayerIds.clear();
 
         _isVideoScrubbing = false;
@@ -8785,277 +7182,20 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     }
   }
 
-  Future<void> _addReferenceLayerToBag(ReferenceLayer reference) async {
-    if (reference.mediaType != 'image') {
-      if (!mounted) return;
-
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text(
-            'Only image references can be added to the Bag for now.',
-          ),
-        ),
-      );
-      return;
-    }
-
-    final sourceFile = File(reference.mediaPath);
-
-    if (!await sourceFile.exists()) {
-      if (!mounted) return;
-
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('The source image could not be found.')),
-      );
-      return;
-    }
-
-    var itemName = reference.name;
+  Future<void> _renameReferenceLayer(ReferenceLayer reference) async {
+    final controller = TextEditingController(text: reference.name);
 
     final result = await showDialog<String>(
       context: context,
       builder: (dialogContext) {
-        final controller = TextEditingController(text: itemName);
-
         return AlertDialog(
-          title: const Text('Add Image to Bag'),
+          title: const Text('Rename Reference'),
           content: TextField(
             controller: controller,
             autofocus: true,
             textCapitalization: TextCapitalization.words,
-            decoration: const InputDecoration(labelText: 'Asset name'),
-            onSubmitted: (value) {
-              final trimmed = value.trim();
-
-              if (trimmed.isNotEmpty) {
-                Navigator.pop(dialogContext, trimmed);
-              }
-            },
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(dialogContext),
-              child: const Text('Cancel'),
-            ),
-            FilledButton.icon(
-              onPressed: () {
-                final trimmed = controller.text.trim();
-
-                if (trimmed.isNotEmpty) {
-                  Navigator.pop(dialogContext, trimmed);
-                }
-              },
-              icon: const Icon(Icons.backpack_outlined),
-              label: const Text('Continue'),
-            ),
-          ],
-        );
-      },
-    );
-
-    if (result == null || !mounted) {
-      return;
-    }
-
-    final prefs = await SharedPreferences.getInstance();
-
-    final pockets = <Map<String, String>>[
-      {'id': 'built_in_sketches', 'name': 'Sketches'},
-      {'id': 'built_in_characters', 'name': 'Characters'},
-      {'id': 'built_in_textures', 'name': 'Textures'},
-      {'id': 'built_in_props', 'name': 'Props'},
-      {'id': 'built_in_brushes', 'name': 'Brushes'},
-      {'id': 'built_in_misc', 'name': 'Misc.'},
-    ];
-
-    const customPocketsKey = 'inkdframes_bag_custom_pockets_v1';
-    final rawCustomPockets = prefs.getString(customPocketsKey);
-
-    if (rawCustomPockets != null && rawCustomPockets.isNotEmpty) {
-      try {
-        final decoded = jsonDecode(rawCustomPockets);
-
-        if (decoded is List) {
-          for (final entry in decoded.whereType<Map>()) {
-            final id = entry['id']?.toString() ?? '';
-            final name = entry['name']?.toString() ?? '';
-
-            if (id.isNotEmpty && name.isNotEmpty) {
-              pockets.add({'id': id, 'name': name});
-            }
-          }
-        }
-      } catch (_) {}
-    }
-
-    final selectedPocketId = await showModalBottomSheet<String>(
-      context: context,
-      backgroundColor: const Color(0xFF21160F),
-      showDragHandle: true,
-      builder: (sheetContext) {
-        return SafeArea(
-          child: ListView(
-            shrinkWrap: true,
-            padding: const EdgeInsets.fromLTRB(16, 8, 16, 24),
-            children: [
-              Padding(
-                padding: const EdgeInsets.fromLTRB(8, 4, 8, 12),
-                child: Text(
-                  'Put "$result" in which Pocket?',
-                  style: const TextStyle(
-                    color: Color(0xFFF1D3A2),
-                    fontSize: 18,
-                    fontWeight: FontWeight.w700,
-                  ),
-                ),
-              ),
-              for (final pocket in pockets)
-                ListTile(
-                  leading: const Icon(
-                    Icons.inventory_2_outlined,
-                    color: Color(0xFFF1D3A2),
-                  ),
-                  title: Text(
-                    pocket['name']!,
-                    style: const TextStyle(color: Color(0xFFF4E5CF)),
-                  ),
-                  onTap: () {
-                    Navigator.pop(sheetContext, pocket['id']);
-                  },
-                ),
-            ],
-          ),
-        );
-      },
-    );
-
-    if (selectedPocketId == null || !mounted) {
-      return;
-    }
-
-    try {
-      final bagDirectory = Platform.isLinux
-          ? Directory('/tmp/inkdframes_bag_assets')
-          : Directory('/data/user/0/com.inkdframes.app/files/bag_assets');
-
-      if (!await bagDirectory.exists()) {
-        await bagDirectory.create(recursive: true);
-      }
-
-      final sourceName = sourceFile.path.split('/').last;
-
-      final extension = sourceName.contains('.')
-          ? '.${sourceName.split('.').last}'
-          : '.png';
-
-      final stamp = DateTime.now().microsecondsSinceEpoch;
-
-      final storedPath = '${bagDirectory.path}/bag_image_$stamp$extension';
-
-      await sourceFile.copy(storedPath);
-
-      double? authoredWidth;
-      double? authoredHeight;
-
-      try {
-        final bytes = await sourceFile.readAsBytes();
-        final codec = await ui.instantiateImageCodec(bytes);
-        final frame = await codec.getNextFrame();
-
-        final imageWidth = frame.image.width.toDouble();
-        final imageHeight = frame.image.height.toDouble();
-
-        if (imageWidth > 0 &&
-            imageHeight > 0 &&
-            _canvasWidth > 0 &&
-            _canvasHeight > 0) {
-          // Match Workspace reference rendering: BoxFit.contain inside the
-          // project canvas before the reference's own transform is applied.
-          final fitScaleX = _canvasWidth / imageWidth;
-          final fitScaleY = _canvasHeight / imageHeight;
-          final fitScale = fitScaleX < fitScaleY ? fitScaleX : fitScaleY;
-
-          authoredWidth = imageWidth * fitScale * reference.scaleX.abs();
-
-          authoredHeight = imageHeight * fitScale * reference.scaleY.abs();
-        }
-
-        frame.image.dispose();
-        codec.dispose();
-      } catch (_) {
-        // Authored size is optional. If decoding ever fails, the Bag item
-        // remains valid and falls back to legacy placement behaviour.
-      }
-
-      final item = BagItem(
-        id: 'bag_$stamp',
-        name: result,
-        sourceGroupName: reference.name,
-        assetType: 'image',
-        imagePath: storedPath,
-        authoredWidth: authoredWidth,
-        authoredHeight: authoredHeight,
-        authoredCanvasWidth: authoredWidth == null ? null : _canvasWidth,
-        authoredCanvasHeight: authoredHeight == null ? null : _canvasHeight,
-        layers: const <BagLayer>[],
-        createdAt: DateTime.now(),
-      );
-
-      await BagService().addItem(item);
-
-      const assignmentsKey = 'inkdframes_bag_pocket_assignments_v1';
-
-      Map<String, String> assignments = <String, String>{};
-
-      final rawAssignments = prefs.getString(assignmentsKey);
-
-      if (rawAssignments != null && rawAssignments.isNotEmpty) {
-        try {
-          final decoded = jsonDecode(rawAssignments);
-
-          if (decoded is Map) {
-            assignments = decoded.map<String, String>(
-              (key, value) => MapEntry(key.toString(), value.toString()),
-            );
-          }
-        } catch (_) {}
-      }
-
-      assignments[item.id] = selectedPocketId;
-
-      await prefs.setString(assignmentsKey, jsonEncode(assignments));
-
-      if (!mounted) return;
-
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('${item.name} tucked into your Bag 🎒')),
-      );
-    } catch (error) {
-      if (!mounted) return;
-
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Could not add image to Bag: $error')),
-      );
-    }
-  }
-
-  Future<void> _renameReferenceLayer(ReferenceLayer reference) async {
-    final result = await showDialog<String>(
-      context: context,
-      builder: (dialogContext) {
-        var draftName = reference.name;
-
-        return AlertDialog(
-          title: const Text('Rename Reference'),
-          content: TextFormField(
-            initialValue: reference.name,
-            autofocus: true,
-            textCapitalization: TextCapitalization.words,
             decoration: const InputDecoration(labelText: 'Reference name'),
-            onChanged: (value) {
-              draftName = value;
-            },
-            onFieldSubmitted: (value) {
+            onSubmitted: (value) {
               final trimmed = value.trim();
 
               if (trimmed.isNotEmpty) {
@@ -9070,7 +7210,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
             ),
             FilledButton(
               onPressed: () {
-                final trimmed = draftName.trim();
+                final trimmed = controller.text.trim();
 
                 if (trimmed.isNotEmpty) {
                   Navigator.pop(dialogContext, trimmed);
@@ -9082,6 +7222,8 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
         );
       },
     );
+
+    controller.dispose();
 
     if (result == null || !mounted) {
       return;
@@ -9143,7 +7285,6 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     if (!deletingActive) {
       setState(() {
         _referenceLayers.removeAt(index);
-        _removeReferenceHierarchyEntry(reference.id);
       });
 
       _scheduleAutosave();
@@ -9165,7 +7306,6 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
 
     setState(() {
       _referenceLayers.removeWhere((item) => item.id == reference.id);
-      _removeReferenceHierarchyEntry(reference.id);
 
       _activeReferenceLayerId = _referenceLayers.isEmpty
           ? null
@@ -9201,14 +7341,11 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     ).showSnackBar(SnackBar(content: Text('${reference.name} removed')));
   }
 
-  Widget _buildReferenceLayerCard(
-    ReferenceLayer reference, {
-    int hierarchyDepth = 0,
-  }) {
+  Widget _buildReferenceLayerCard(ReferenceLayer reference) {
     final selected = _activeReferenceLayerId == reference.id;
 
     return Container(
-      margin: EdgeInsets.fromLTRB(6.0 + (hierarchyDepth * 10.0), 4, 6, 0),
+      margin: const EdgeInsets.fromLTRB(6, 4, 6, 0),
       decoration: BoxDecoration(
         color: selected
             ? Colors.amberAccent.withValues(alpha: 0.10)
@@ -9235,7 +7372,6 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
           children: [
             Row(
               children: [
-                _buildHierarchyDragHandle('reference:${reference.id}'),
                 IconButton(
                   tooltip: reference.visible
                       ? 'Hide Reference'
@@ -9258,28 +7394,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                 ),
                 const SizedBox(width: 8),
                 Expanded(
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        reference.name,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                      ),
-                      Text(
-                        reference.mediaType == 'video'
-                            ? 'Reference Video'
-                            : 'Reference Image',
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: const TextStyle(
-                          fontSize: 10,
-                          color: Colors.white54,
-                        ),
-                      ),
-                    ],
-                  ),
+                  child: Text(reference.name, overflow: TextOverflow.ellipsis),
                 ),
                 if (selected)
                   const Padding(
@@ -9293,48 +7408,15 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                 PopupMenuButton<String>(
                   tooltip: 'Reference Options',
                   enabled: !_isPlaying,
-                  onSelected: (value) async {
-                    // Let the popup route finish dismissing before opening
-                    // another route such as a rename/delete dialog.
-                    await Future<void>.delayed(
-                      const Duration(milliseconds: 150),
-                    );
-
-                    if (!mounted) {
-                      return;
-                    }
-
-                    if (value == 'bag') {
-                      unawaited(_addReferenceLayerToBag(reference));
-                    } else if (value == 'duplicate_instance') {
-                      unawaited(_duplicateReferenceAsInstance(reference));
-                    } else if (value == 'rename') {
+                  onSelected: (value) {
+                    if (value == 'rename') {
                       unawaited(_renameReferenceLayer(reference));
                     } else if (value == 'delete') {
                       unawaited(_deleteReferenceLayer(reference));
                     }
                   },
-                  itemBuilder: (context) => [
-                    if (reference.mediaType == 'image')
-                      const PopupMenuItem<String>(
-                        value: 'bag',
-                        child: ListTile(
-                          dense: true,
-                          contentPadding: EdgeInsets.zero,
-                          leading: Icon(Icons.backpack_outlined),
-                          title: Text('Add to Bag'),
-                        ),
-                      ),
-                    const PopupMenuItem<String>(
-                      value: 'duplicate_instance',
-                      child: ListTile(
-                        dense: true,
-                        contentPadding: EdgeInsets.zero,
-                        leading: Icon(Icons.copy_outlined),
-                        title: Text('Duplicate Instance'),
-                      ),
-                    ),
-                    const PopupMenuItem<String>(
+                  itemBuilder: (context) => const [
+                    PopupMenuItem<String>(
                       value: 'rename',
                       child: ListTile(
                         dense: true,
@@ -9390,702 +7472,6 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     );
   }
 
-  VariantSlot? _variantSlotForId(String slotId) {
-    for (final slot in _variantSlots) {
-      if (slot.id == slotId) {
-        return slot;
-      }
-    }
-
-    return null;
-  }
-
-  LayerGroup? _groupContainingVariantSlot(String slotId) {
-    final entry = 'variant:$slotId';
-
-    for (final group in _layerGroups) {
-      if (group.childOrder.contains(entry)) {
-        return group;
-      }
-    }
-
-    return null;
-  }
-
-  void _toggleVariantSlotExpanded(String slotId) {
-    final index = _variantSlots.indexWhere((slot) => slot.id == slotId);
-
-    if (index == -1) {
-      return;
-    }
-
-    setState(() {
-      final slot = _variantSlots[index];
-
-      _variantSlots[index] = slot.copyWith(expanded: !slot.expanded);
-    });
-
-    _scheduleAutosave();
-  }
-
-  Future<void> _createVariantSlot(String parentGroupId) async {
-    final groupIndex = _layerGroups.indexWhere(
-      (group) => group.id == parentGroupId,
-    );
-
-    if (groupIndex == -1 || !mounted) {
-      return;
-    }
-
-    var draftName = 'Variant Slot';
-
-    final name = await showDialog<String>(
-      context: context,
-      builder: (dialogContext) {
-        return AlertDialog(
-          title: const Text('Create Variant Slot'),
-          content: TextFormField(
-            initialValue: draftName,
-            autofocus: true,
-            textCapitalization: TextCapitalization.words,
-            textInputAction: TextInputAction.done,
-            decoration: const InputDecoration(
-              labelText: 'Slot name',
-              hintText: 'e.g. Window View',
-            ),
-            onChanged: (value) {
-              draftName = value;
-            },
-            onFieldSubmitted: (value) {
-              final trimmed = value.trim();
-
-              if (trimmed.isNotEmpty) {
-                Navigator.of(dialogContext).pop(trimmed);
-              }
-            },
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.of(dialogContext).pop(),
-              child: const Text('Cancel'),
-            ),
-            FilledButton(
-              onPressed: () {
-                final trimmed = draftName.trim();
-
-                if (trimmed.isNotEmpty) {
-                  Navigator.of(dialogContext).pop(trimmed);
-                }
-              },
-              child: const Text('Create'),
-            ),
-          ],
-        );
-      },
-    );
-
-    if (name == null || !mounted) {
-      return;
-    }
-
-    final stamp = DateTime.now().microsecondsSinceEpoch;
-    final slot = VariantSlot(id: 'variant_$stamp', name: name);
-
-    setState(() {
-      _variantSlots.add(slot);
-
-      final currentGroupIndex = _layerGroups.indexWhere(
-        (group) => group.id == parentGroupId,
-      );
-
-      if (currentGroupIndex == -1) {
-        return;
-      }
-
-      final group = _layerGroups[currentGroupIndex];
-      final order = List<String>.from(group.childOrder)
-        ..insert(0, 'variant:${slot.id}');
-
-      _layerGroups[currentGroupIndex] = group.copyWith(
-        childOrder: order,
-        expanded: true,
-      );
-
-      _activeLayerGroupId = parentGroupId;
-      _layerInsertionGroupId = parentGroupId;
-    });
-
-    _scheduleAutosave();
-    HapticFeedback.lightImpact();
-  }
-
-  void _beginVariantSlotRename(String slotId) {
-    final index = _variantSlots.indexWhere((slot) => slot.id == slotId);
-
-    if (index == -1) {
-      return;
-    }
-
-    setState(() {
-      _editingVariantSlotId = slotId;
-      _variantSlotRenameDraft = _variantSlots[index].name;
-    });
-
-    HapticFeedback.selectionClick();
-  }
-
-  void _commitVariantSlotRename(String slotId) {
-    final trimmed = _variantSlotRenameDraft.trim();
-
-    if (trimmed.isEmpty) {
-      return;
-    }
-
-    final index = _variantSlots.indexWhere((slot) => slot.id == slotId);
-
-    if (index == -1) {
-      return;
-    }
-
-    setState(() {
-      _variantSlots[index] = _variantSlots[index].copyWith(name: trimmed);
-      _editingVariantSlotId = null;
-      _variantSlotRenameDraft = '';
-    });
-
-    _scheduleAutosave();
-    HapticFeedback.lightImpact();
-  }
-
-  void _cancelVariantSlotRename() {
-    setState(() {
-      _editingVariantSlotId = null;
-      _variantSlotRenameDraft = '';
-    });
-  }
-
-  String _variantEntryDisplayName(String entry) {
-    if (entry.startsWith('layer:')) {
-      final id = entry.substring(6);
-      final index = _layers.indexWhere((layer) => layer.id == id);
-
-      if (index != -1) {
-        return _layers[index].name;
-      }
-    }
-
-    if (entry.startsWith('reference:')) {
-      final id = entry.substring(10);
-      final index = _referenceLayers.indexWhere(
-        (reference) => reference.id == id,
-      );
-
-      if (index != -1) {
-        return _referenceLayers[index].name;
-      }
-    }
-
-    if (entry.startsWith('group:')) {
-      final id = entry.substring(6);
-      final index = _layerGroups.indexWhere((group) => group.id == id);
-
-      if (index != -1) {
-        return _layerGroups[index].name;
-      }
-    }
-
-    return entry;
-  }
-
-  Future<void> _addVariantToSlot(String slotId) async {
-    final slotIndex = _variantSlots.indexWhere((slot) => slot.id == slotId);
-
-    if (slotIndex == -1) {
-      return;
-    }
-
-    final slotEntry = 'variant:$slotId';
-    final parentGroup = _groupContainingVariantSlot(slotId);
-
-    final sourceOrder = parentGroup != null
-        ? List<String>.from(parentGroup.childOrder)
-        : List<String>.from(_rootLayerOrder);
-
-    final candidates = sourceOrder
-        .where(
-          (entry) =>
-              entry != slotEntry &&
-              !entry.startsWith('variant:') &&
-              (entry.startsWith('layer:') ||
-                  entry.startsWith('reference:') ||
-                  entry.startsWith('group:')),
-        )
-        .toList();
-
-    if (candidates.isEmpty) {
-      if (!mounted) {
-        return;
-      }
-
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('No eligible sibling assets to add as variants.'),
-        ),
-      );
-      return;
-    }
-
-    final selectedEntry = await showModalBottomSheet<String>(
-      context: context,
-      builder: (sheetContext) {
-        return SafeArea(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              const ListTile(
-                leading: Icon(Icons.tune),
-                title: Text('Add Variant'),
-                subtitle: Text(
-                  'Choose a sibling asset to move into this Variant Slot.',
-                ),
-              ),
-              const Divider(height: 1),
-              Flexible(
-                child: ListView.builder(
-                  shrinkWrap: true,
-                  itemCount: candidates.length,
-                  itemBuilder: (context, index) {
-                    final entry = candidates[index];
-
-                    IconData icon = Icons.layers_outlined;
-
-                    if (entry.startsWith('reference:')) {
-                      icon = Icons.image_outlined;
-                    } else if (entry.startsWith('group:')) {
-                      icon = Icons.folder_outlined;
-                    }
-
-                    return ListTile(
-                      leading: Icon(icon),
-                      title: Text(_variantEntryDisplayName(entry)),
-                      onTap: () {
-                        Navigator.of(sheetContext).pop(entry);
-                      },
-                    );
-                  },
-                ),
-              ),
-            ],
-          ),
-        );
-      },
-    );
-
-    if (selectedEntry == null || !mounted) {
-      return;
-    }
-
-    final currentSlotIndex = _variantSlots.indexWhere(
-      (slot) => slot.id == slotId,
-    );
-
-    if (currentSlotIndex == -1) {
-      return;
-    }
-
-    setState(() {
-      final currentSlot = _variantSlots[currentSlotIndex];
-      final nextVariants = List<String>.from(currentSlot.childOrder);
-
-      if (!nextVariants.contains(selectedEntry)) {
-        nextVariants.add(selectedEntry);
-      }
-
-      if (parentGroup != null) {
-        final parentIndex = _layerGroups.indexWhere(
-          (group) => group.id == parentGroup.id,
-        );
-
-        if (parentIndex != -1) {
-          final currentParent = _layerGroups[parentIndex];
-          final nextOrder = List<String>.from(currentParent.childOrder)
-            ..remove(selectedEntry);
-
-          _layerGroups[parentIndex] = currentParent.copyWith(
-            childOrder: nextOrder,
-            expanded: true,
-          );
-        }
-      } else {
-        _rootLayerOrder.remove(selectedEntry);
-      }
-
-      _variantSlots[currentSlotIndex] = currentSlot.copyWith(
-        childOrder: nextVariants,
-        activeIndex: nextVariants.length == 1 ? 0 : currentSlot.activeIndex,
-        expanded: true,
-      );
-    });
-
-    _scheduleAutosave();
-    HapticFeedback.lightImpact();
-  }
-
-  void _cycleVariantSlot(String slotId, int delta) {
-    final index = _variantSlots.indexWhere((slot) => slot.id == slotId);
-
-    if (index == -1) {
-      return;
-    }
-
-    final slot = _variantSlots[index];
-
-    if (slot.childOrder.length < 2) {
-      return;
-    }
-
-    final length = slot.childOrder.length;
-    final nextIndex = (slot.activeIndex + delta) % length;
-    final safeNextIndex = nextIndex < 0 ? nextIndex + length : nextIndex;
-
-    final transformReferenceId = _transformReferenceLayerId;
-    final transformReferenceEntry = transformReferenceId == null
-        ? null
-        : 'reference:$transformReferenceId';
-
-    final transformBelongsToSlot =
-        transformReferenceEntry != null &&
-        slot.childOrder.contains(transformReferenceEntry);
-
-    setState(() {
-      _variantSlots[index] = slot.copyWith(activeIndex: safeNextIndex);
-
-      // Never leave Transform attached to a Variant child that has just
-      // become inactive. The newly active variant can be grabbed normally
-      // with canvas long-press or from its Layers row.
-      if (transformBelongsToSlot) {
-        _clearTransformSelection();
-        _isTransformActive = false;
-        _transformToolbarExpanded = false;
-        _transformPivot = null;
-      }
-    });
-
-    _scheduleAutosave();
-    HapticFeedback.selectionClick();
-  }
-
-  void _deleteVariantSlot(String slotId) {
-    final slotIndex = _variantSlots.indexWhere((slot) => slot.id == slotId);
-
-    if (slotIndex == -1) {
-      return;
-    }
-
-    final slot = _variantSlots[slotIndex];
-    final slotEntry = 'variant:$slotId';
-    final children = List<String>.from(slot.childOrder);
-
-    setState(() {
-      final rootIndex = _rootLayerOrder.indexOf(slotEntry);
-
-      if (rootIndex != -1) {
-        _rootLayerOrder
-          ..removeAt(rootIndex)
-          ..insertAll(rootIndex, children);
-      }
-
-      for (var index = 0; index < _layerGroups.length; index++) {
-        final group = _layerGroups[index];
-        final slotPosition = group.childOrder.indexOf(slotEntry);
-
-        if (slotPosition == -1) {
-          continue;
-        }
-
-        final order = List<String>.from(group.childOrder)
-          ..removeAt(slotPosition)
-          ..insertAll(slotPosition, children);
-
-        _layerGroups[index] = group.copyWith(childOrder: order);
-      }
-
-      _variantSlots.removeAt(slotIndex);
-
-      if (_editingVariantSlotId == slotId) {
-        _editingVariantSlotId = null;
-        _variantSlotRenameDraft = '';
-      }
-    });
-
-    _scheduleAutosave();
-    HapticFeedback.lightImpact();
-  }
-
-  Widget _buildVariantSlotCard(VariantSlot slot, {required int depth}) {
-    final activeEntry = slot.activeEntry;
-
-    String activeLabel = 'Empty';
-
-    if (activeEntry != null) {
-      if (activeEntry.startsWith('layer:')) {
-        final id = activeEntry.substring(6);
-        final index = _layers.indexWhere((layer) => layer.id == id);
-
-        if (index != -1) {
-          activeLabel = _layers[index].name;
-        }
-      } else if (activeEntry.startsWith('reference:')) {
-        final id = activeEntry.substring(10);
-        final index = _referenceLayers.indexWhere(
-          (reference) => reference.id == id,
-        );
-
-        if (index != -1) {
-          activeLabel = _referenceLayers[index].name;
-        }
-      } else if (activeEntry.startsWith('group:')) {
-        final id = activeEntry.substring(6);
-        final index = _layerGroups.indexWhere((group) => group.id == id);
-
-        if (index != -1) {
-          activeLabel = _layerGroups[index].name;
-        }
-      }
-    }
-
-    return Container(
-      margin: EdgeInsets.fromLTRB(6.0 + (depth * 10.0), 4, 6, 0),
-      decoration: BoxDecoration(
-        color: Colors.deepPurpleAccent.withValues(alpha: 0.07),
-        borderRadius: BorderRadius.circular(10),
-        border: Border.all(
-          color: Colors.deepPurpleAccent.withValues(alpha: 0.45),
-        ),
-      ),
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Row(
-            children: [
-              _buildHierarchyDragHandle('variant:${slot.id}'),
-              SizedBox(
-                width: 34,
-                height: 34,
-                child: IconButton(
-                  tooltip: slot.expanded
-                      ? 'Collapse Variant Slot'
-                      : 'Expand Variant Slot',
-                  padding: EdgeInsets.zero,
-                  visualDensity: VisualDensity.compact,
-                  onPressed: () => _toggleVariantSlotExpanded(slot.id),
-                  icon: Icon(
-                    slot.expanded
-                        ? Icons.keyboard_arrow_down
-                        : Icons.keyboard_arrow_right,
-                    size: 20,
-                  ),
-                ),
-              ),
-              const Icon(Icons.tune, size: 16),
-              const SizedBox(width: 4),
-              Expanded(
-                child: Tooltip(
-                  message: slot.name,
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        slot.name,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: const TextStyle(fontWeight: FontWeight.w600),
-                      ),
-                      Text(
-                        'Variant Slot • ${slot.childOrder.length} '
-                        '${slot.childOrder.length == 1 ? 'choice' : 'choices'}',
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: const TextStyle(
-                          fontSize: 10,
-                          color: Colors.white54,
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-              ),
-              SizedBox(
-                width: 34,
-                height: 34,
-                child: IconButton(
-                  tooltip: _editingVariantSlotId == slot.id
-                      ? 'Editing Variant Slot'
-                      : 'Rename Variant Slot',
-                  padding: EdgeInsets.zero,
-                  visualDensity: VisualDensity.compact,
-                  onPressed: _isPlaying || _editingVariantSlotId == slot.id
-                      ? null
-                      : () => _beginVariantSlotRename(slot.id),
-                  icon: Icon(
-                    _editingVariantSlotId == slot.id
-                        ? Icons.edit
-                        : Icons.edit_outlined,
-                    size: 17,
-                  ),
-                ),
-              ),
-              SizedBox(
-                width: 34,
-                height: 34,
-                child: PopupMenuButton<String>(
-                  tooltip: 'Variant Slot Options',
-                  padding: EdgeInsets.zero,
-                  iconSize: 18,
-                  enabled: !_isPlaying,
-                  onSelected: (value) {
-                    if (value == 'add') {
-                      WidgetsBinding.instance.addPostFrameCallback((_) {
-                        if (mounted) {
-                          _addVariantToSlot(slot.id);
-                        }
-                      });
-                    } else if (value == 'delete') {
-                      _deleteVariantSlot(slot.id);
-                    }
-                  },
-                  itemBuilder: (context) => const [
-                    PopupMenuItem<String>(
-                      value: 'add',
-                      child: ListTile(
-                        dense: true,
-                        contentPadding: EdgeInsets.zero,
-                        leading: Icon(Icons.add_circle_outline),
-                        title: Text('Add Variant'),
-                      ),
-                    ),
-                    PopupMenuItem<String>(
-                      value: 'delete',
-                      child: ListTile(
-                        dense: true,
-                        contentPadding: EdgeInsets.zero,
-                        leading: Icon(Icons.delete_outline),
-                        title: Text('Delete Variant Slot'),
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            ],
-          ),
-          if (_editingVariantSlotId == slot.id)
-            Padding(
-              padding: const EdgeInsets.fromLTRB(42, 4, 10, 8),
-              child: Row(
-                children: [
-                  Expanded(
-                    child: TextFormField(
-                      key: ValueKey('variant-rename-wide-${slot.id}'),
-                      initialValue: slot.name,
-                      autofocus: true,
-                      textCapitalization: TextCapitalization.words,
-                      textInputAction: TextInputAction.done,
-                      decoration: const InputDecoration(
-                        isDense: false,
-                        labelText: 'Variant slot name',
-                        hintText: 'Enter a name',
-                        border: OutlineInputBorder(),
-                        contentPadding: EdgeInsets.symmetric(
-                          horizontal: 12,
-                          vertical: 12,
-                        ),
-                      ),
-                      onChanged: (value) {
-                        _variantSlotRenameDraft = value;
-                      },
-                      onFieldSubmitted: (_) {
-                        _commitVariantSlotRename(slot.id);
-                      },
-                    ),
-                  ),
-                  const SizedBox(width: 6),
-                  IconButton(
-                    tooltip: 'Save Rename',
-                    visualDensity: VisualDensity.compact,
-                    onPressed: () => _commitVariantSlotRename(slot.id),
-                    icon: const Icon(Icons.check),
-                  ),
-                  IconButton(
-                    tooltip: 'Cancel Rename',
-                    visualDensity: VisualDensity.compact,
-                    onPressed: _cancelVariantSlotRename,
-                    icon: const Icon(Icons.close),
-                  ),
-                ],
-              ),
-            ),
-          if (slot.expanded)
-            Padding(
-              padding: const EdgeInsets.fromLTRB(42, 0, 10, 8),
-              child: slot.childOrder.isEmpty
-                  ? const Align(
-                      alignment: Alignment.centerLeft,
-                      child: Text(
-                        'No variants yet',
-                        style: TextStyle(fontSize: 11, color: Colors.white54),
-                      ),
-                    )
-                  : Row(
-                      children: [
-                        IconButton(
-                          tooltip: 'Previous Variant',
-                          visualDensity: VisualDensity.compact,
-                          onPressed: slot.childOrder.length > 1
-                              ? () => _cycleVariantSlot(slot.id, -1)
-                              : null,
-                          icon: const Icon(Icons.chevron_left, size: 20),
-                        ),
-                        Expanded(
-                          child: Text(
-                            'Active: $activeLabel',
-                            textAlign: TextAlign.center,
-                            overflow: TextOverflow.ellipsis,
-                            style: const TextStyle(
-                              fontSize: 11,
-                              color: Colors.white70,
-                              fontWeight: FontWeight.w600,
-                            ),
-                          ),
-                        ),
-                        IconButton(
-                          tooltip: 'Next Variant',
-                          visualDensity: VisualDensity.compact,
-                          onPressed: slot.childOrder.length > 1
-                              ? () => _cycleVariantSlot(slot.id, 1)
-                              : null,
-                          icon: const Icon(Icons.chevron_right, size: 20),
-                        ),
-                      ],
-                    ),
-            ),
-          if (slot.expanded && slot.childOrder.isNotEmpty)
-            ...slot.childOrder.map((entry) {
-              final child = _buildHierarchyEntry(entry, depth: depth + 1);
-
-              if (child == null) {
-                return const SizedBox.shrink();
-              }
-
-              final isActive = entry == slot.activeEntry;
-
-              return Opacity(opacity: isActive ? 1.0 : 0.55, child: child);
-            }),
-        ],
-      ),
-    );
-  }
-
   String? _hierarchyParentGroupId(String entry) {
     if (entry.startsWith('group:')) {
       final groupId = entry.substring(6);
@@ -10095,16 +7481,6 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     if (entry.startsWith('layer:')) {
       final layerId = entry.substring(6);
       return _groupContainingLayer(layerId)?.id;
-    }
-
-    if (entry.startsWith('reference:')) {
-      final referenceId = entry.substring(10);
-      return _groupContainingReference(referenceId)?.id;
-    }
-
-    if (entry.startsWith('variant:')) {
-      final slotId = entry.substring(8);
-      return _groupContainingVariantSlot(slotId)?.id;
     }
 
     return null;
@@ -10211,103 +7587,11 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     }
   }
 
-  void _stopHierarchyAutoScroll() {
-    _hierarchyAutoScrollVelocity = 0.0;
-    _hierarchyAutoScrollTimer?.cancel();
-    _hierarchyAutoScrollTimer = null;
-  }
-
-  void _updateHierarchyAutoScroll(Offset globalPosition) {
-    final context = _layersScrollViewportKey.currentContext;
-    final renderObject = context?.findRenderObject();
-
-    if (renderObject is! RenderBox || !_layersScrollController.hasClients) {
-      _stopHierarchyAutoScroll();
-      return;
-    }
-
-    final localPosition = renderObject.globalToLocal(globalPosition);
-    final viewportHeight = renderObject.size.height;
-
-    // Only react while the drag is actually beside the Layers viewport.
-    if (localPosition.dx < 0 ||
-        localPosition.dx > renderObject.size.width ||
-        localPosition.dy < 0 ||
-        localPosition.dy > viewportHeight) {
-      _stopHierarchyAutoScroll();
-      return;
-    }
-
-    const edgeExtent = 58.0;
-    const maximumPixelsPerTick = 18.0;
-
-    var velocity = 0.0;
-
-    if (localPosition.dy < edgeExtent) {
-      final strength = ((edgeExtent - localPosition.dy) / edgeExtent).clamp(
-        0.0,
-        1.0,
-      );
-      velocity = -maximumPixelsPerTick * strength;
-    } else if (localPosition.dy > viewportHeight - edgeExtent) {
-      final strength =
-          ((localPosition.dy - (viewportHeight - edgeExtent)) / edgeExtent)
-              .clamp(0.0, 1.0);
-      velocity = maximumPixelsPerTick * strength;
-    }
-
-    if (velocity.abs() < 0.25) {
-      _stopHierarchyAutoScroll();
-      return;
-    }
-
-    _hierarchyAutoScrollVelocity = velocity;
-
-    if (_hierarchyAutoScrollTimer != null) {
-      return;
-    }
-
-    _hierarchyAutoScrollTimer = Timer.periodic(
-      const Duration(milliseconds: 16),
-      (_) {
-        if (!_layersScrollController.hasClients ||
-            _hierarchyAutoScrollVelocity == 0.0) {
-          _stopHierarchyAutoScroll();
-          return;
-        }
-
-        final position = _layersScrollController.position;
-        final nextOffset = (position.pixels + _hierarchyAutoScrollVelocity)
-            .clamp(position.minScrollExtent, position.maxScrollExtent);
-
-        if ((nextOffset - position.pixels).abs() < 0.01) {
-          // We have reached the top or bottom. Keep the drag alive, but
-          // there is nothing further to scroll until the pointer moves.
-          _stopHierarchyAutoScroll();
-          return;
-        }
-
-        _layersScrollController.jumpTo(nextOffset);
-      },
-    );
-  }
-
   Widget _buildHierarchyDragHandle(String entry) {
     return Draggable<String>(
       data: entry,
       axis: Axis.vertical,
       maxSimultaneousDrags: _isPlaying ? 0 : 1,
-      onDragStarted: _stopHierarchyAutoScroll,
-      onDragUpdate: (details) {
-        _updateHierarchyAutoScroll(details.globalPosition);
-      },
-      onDragEnd: (_) {
-        _stopHierarchyAutoScroll();
-      },
-      onDraggableCanceled: (velocity, offset) {
-        _stopHierarchyAutoScroll();
-      },
-      onDragCompleted: _stopHierarchyAutoScroll,
       feedback: Material(
         color: Colors.transparent,
         child: Container(
@@ -10405,39 +7689,6 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
       );
     }
 
-    if (entry.startsWith('reference:')) {
-      final referenceId = entry.substring(10);
-      final referenceIndex = _referenceLayers.indexWhere(
-        (reference) => reference.id == referenceId,
-      );
-
-      if (referenceIndex == -1) {
-        return null;
-      }
-
-      return _buildHierarchyDropTarget(
-        entry: entry,
-        child: _buildReferenceLayerCard(
-          _referenceLayers[referenceIndex],
-          hierarchyDepth: depth,
-        ),
-      );
-    }
-
-    if (entry.startsWith('variant:')) {
-      final slotId = entry.substring(8);
-      final slot = _variantSlotForId(slotId);
-
-      if (slot == null) {
-        return null;
-      }
-
-      return _buildHierarchyDropTarget(
-        entry: entry,
-        child: _buildVariantSlotCard(slot, depth: depth),
-      );
-    }
-
     return null;
   }
 
@@ -10459,8 +7710,6 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
   }
 
   List<Widget> _buildLayerPanelEntries() {
-    _ensureReferenceHierarchyEntries();
-
     final widgets = <Widget>[];
 
     for (final entry in _rootLayerOrder) {
@@ -10468,6 +7717,19 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
 
       if (widget != null) {
         widgets.add(widget);
+      }
+    }
+
+    if (_referenceLayers.isNotEmpty) {
+      widgets.add(
+        const Padding(
+          padding: EdgeInsets.symmetric(vertical: 5),
+          child: Divider(height: 1),
+        ),
+      );
+
+      for (final reference in _referenceLayers) {
+        widgets.add(_buildReferenceLayerCard(reference));
       }
     }
 
@@ -10486,7 +7748,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     }
 
     return Container(
-      margin: EdgeInsets.fromLTRB(6.0 + (depth * 10.0), 4, 6, 0),
+      margin: EdgeInsets.fromLTRB(6.0 + (depth * 16.0), 4, 6, 0),
       decoration: BoxDecoration(
         color: selected
             ? Colors.deepPurpleAccent.withValues(alpha: 0.14)
@@ -10539,30 +7801,14 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                   child: Tooltip(
                     message: group.name,
                     preferBelow: false,
-                    child: Column(
-                      mainAxisSize: MainAxisSize.min,
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          group.name,
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: TextStyle(
-                            fontWeight: selected
-                                ? FontWeight.w600
-                                : FontWeight.normal,
-                          ),
-                        ),
-                        Text(
-                          'Group • ${group.childOrder.length} items',
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: const TextStyle(
-                            fontSize: 10,
-                            color: Colors.white54,
-                          ),
-                        ),
-                      ],
+                    child: Text(
+                      group.name,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        fontWeight: selected
+                            ? FontWeight.w600
+                            : FontWeight.normal,
+                      ),
                     ),
                   ),
                 ),
@@ -10579,12 +7825,6 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                       _exportLayerGroupPng(group.id);
                     } else if (value == 'move-group') {
                       _showMoveGroupDialog(group.id);
-                    } else if (value == 'variant-slot') {
-                      WidgetsBinding.instance.addPostFrameCallback((_) {
-                        if (mounted) {
-                          _createVariantSlot(group.id);
-                        }
-                      });
                     } else if (value == 'rename') {
                       _renameLayerGroup(group.id);
                     } else if (value == 'delete') {
@@ -10607,13 +7847,6 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                       ),
                     ),
                     PopupMenuDivider(),
-                    PopupMenuItem(
-                      value: 'variant-slot',
-                      child: ListTile(
-                        leading: Icon(Icons.tune),
-                        title: Text('Create Variant Slot'),
-                      ),
-                    ),
                     PopupMenuItem(
                       value: 'move-group',
                       child: ListTile(
@@ -10650,7 +7883,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     return Container(
       margin: EdgeInsets.fromLTRB(
         hierarchyDepth > 0
-            ? 6.0 + (hierarchyDepth * 10.0)
+            ? 6.0 + (hierarchyDepth * 16.0)
             : (indented ? 22.0 : 6.0),
         4,
         6,
@@ -10708,30 +7941,14 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                     child: Tooltip(
                       message: layer.name,
                       preferBelow: false,
-                      child: Column(
-                        mainAxisSize: MainAxisSize.min,
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(
-                            layer.name,
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                            style: TextStyle(
-                              fontWeight: selected
-                                  ? FontWeight.w600
-                                  : FontWeight.normal,
-                            ),
-                          ),
-                          const Text(
-                            'Drawing Layer',
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                            style: TextStyle(
-                              fontSize: 10,
-                              color: Colors.white54,
-                            ),
-                          ),
-                        ],
+                      child: Text(
+                        layer.name,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                          fontWeight: selected
+                              ? FontWeight.w600
+                              : FontWeight.normal,
+                        ),
                       ),
                     ),
                   ),
@@ -10858,388 +8075,6 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     );
   }
 
-  bool _isReferenceEffectivelyVisible(ReferenceLayer reference) {
-    if (!reference.visible) {
-      return false;
-    }
-
-    final group = _groupContainingReference(reference.id);
-
-    if (group == null) {
-      return true;
-    }
-
-    return _isGroupEffectivelyVisible(group.id);
-  }
-
-  Widget _buildDrawingLayerSceneWidget(DrawingLayer layer) {
-    final layerIndex = _layers.indexWhere((item) => item.id == layer.id);
-    final isActiveLayer = layerIndex == _activeLayerIndex;
-
-    final frameStrokes = <VectorStroke>[];
-
-    if (_selectedFrameIndex >= 0 && _selectedFrameIndex < layer.frames.length) {
-      frameStrokes.addAll(
-        layer.frames[_selectedFrameIndex].map(
-          (stroke) => _strokeWithOpacity(stroke, layer.opacity),
-        ),
-      );
-    }
-
-    if (isActiveLayer) {
-      frameStrokes.addAll(
-        _draftTextureStrokes.map(
-          (stroke) => _strokeWithOpacity(stroke, layer.opacity),
-        ),
-      );
-
-      frameStrokes.addAll(
-        _draftStampStrokes.map(
-          (stroke) => _strokeWithOpacity(stroke, layer.opacity),
-        ),
-      );
-    }
-
-    return IgnorePointer(
-      child: CustomPaint(
-        painter: AnimationCanvasPainter(
-          strokes: frameStrokes,
-          currentStroke: isActiveLayer && _draftStroke.isNotEmpty
-              ? _draftStroke
-              : null,
-          previousOnionSkinStrokes: const <VectorStroke>[],
-          nextOnionSkinStrokes: const <VectorStroke>[],
-          strokeColor: _brushColor.withValues(
-            alpha: (_brushOpacity * layer.opacity).clamp(0.0, 1.0),
-          ),
-          strokeWidth: _brushSize,
-          brushType: _brushType,
-          backgroundColor: _canvasBackgroundColor,
-          paintBackground: false,
-          previousOnionSkinColor: Colors.transparent,
-          nextOnionSkinColor: Colors.transparent,
-        ),
-        child: const SizedBox.expand(),
-      ),
-    );
-  }
-
-  List<Widget> _buildMixedHierarchySceneWidgets({String? isolatedGroupId}) {
-    final widgets = <Widget>[];
-
-    final visitedLayerIds = <String>{};
-    final visitedReferenceIds = <String>{};
-    final visitedGroupIds = <String>{};
-
-    void suppressEntry(String entry) {
-      if (entry.startsWith('layer:')) {
-        visitedLayerIds.add(entry.substring(6));
-        return;
-      }
-
-      if (entry.startsWith('reference:')) {
-        visitedReferenceIds.add(entry.substring(10));
-        return;
-      }
-
-      if (entry.startsWith('group:')) {
-        final groupId = entry.substring(6);
-
-        if (!visitedGroupIds.add(groupId)) {
-          return;
-        }
-
-        final groupIndex = _layerGroups.indexWhere(
-          (group) => group.id == groupId,
-        );
-
-        if (groupIndex == -1) {
-          return;
-        }
-
-        for (final childEntry in _layerGroups[groupIndex].childOrder) {
-          suppressEntry(childEntry);
-        }
-
-        return;
-      }
-
-      if (entry.startsWith('variant:')) {
-        final slotId = entry.substring(8);
-        final slot = _variantSlotForId(slotId);
-
-        if (slot == null) {
-          return;
-        }
-
-        for (final childEntry in slot.childOrder) {
-          suppressEntry(childEntry);
-        }
-      }
-    }
-
-    void addEntry(String entry) {
-      if (entry.startsWith('layer:')) {
-        final layerId = entry.substring(6);
-
-        if (!visitedLayerIds.add(layerId)) {
-          return;
-        }
-
-        final layerIndex = _layers.indexWhere((layer) => layer.id == layerId);
-
-        if (layerIndex == -1) {
-          return;
-        }
-
-        final layer = _layers[layerIndex];
-
-        if (!_isLayerEffectivelyVisible(layer)) {
-          return;
-        }
-
-        widgets.add(_buildDrawingLayerSceneWidget(layer));
-        return;
-      }
-
-      if (entry.startsWith('reference:')) {
-        final referenceId = entry.substring(10);
-
-        if (!visitedReferenceIds.add(referenceId)) {
-          return;
-        }
-
-        final referenceIndex = _referenceLayers.indexWhere(
-          (reference) => reference.id == referenceId,
-        );
-
-        if (referenceIndex == -1) {
-          return;
-        }
-
-        final reference = _referenceLayers[referenceIndex];
-
-        if (!_isReferenceEffectivelyVisible(reference) ||
-            reference.mediaPath.isEmpty) {
-          return;
-        }
-
-        if (reference.mediaType == 'image') {
-          widgets.add(_buildImageReferenceWidget(reference));
-          return;
-        }
-
-        if (reference.mediaType == 'video' &&
-            reference.id == _activeReferenceLayerId &&
-            _videoReady &&
-            _videoController != null) {
-          widgets.add(_buildActiveVideoReferenceWidget());
-        }
-
-        return;
-      }
-
-      if (entry.startsWith('variant:')) {
-        final slotId = entry.substring(8);
-        final slot = _variantSlotForId(slotId);
-
-        if (slot == null) {
-          return;
-        }
-
-        final activeEntry = slot.activeEntry;
-
-        for (final childEntry in slot.childOrder) {
-          if (childEntry != activeEntry) {
-            suppressEntry(childEntry);
-          }
-        }
-
-        if (activeEntry != null) {
-          addEntry(activeEntry);
-        }
-
-        return;
-      }
-
-      if (entry.startsWith('group:')) {
-        final groupId = entry.substring(6);
-
-        if (!visitedGroupIds.add(groupId)) {
-          return;
-        }
-
-        final groupIndex = _layerGroups.indexWhere(
-          (group) => group.id == groupId,
-        );
-
-        if (groupIndex == -1) {
-          return;
-        }
-
-        final group = _layerGroups[groupIndex];
-
-        if (!_isGroupEffectivelyVisible(group.id)) {
-          return;
-        }
-
-        // Layer panel order is top-to-bottom.
-        // Flutter Stack paints first-to-last, so walk children bottom-to-top.
-        for (final childEntry in group.childOrder.reversed) {
-          addEntry(childEntry);
-        }
-      }
-    }
-
-    // Normal Workspace rendering walks the entire root hierarchy.
-    //
-    // Composite PNG capture instead renders exactly one selected group branch.
-    if (isolatedGroupId != null) {
-      addEntry('group:$isolatedGroupId');
-    } else {
-      for (final entry in _rootLayerOrder.reversed) {
-        addEntry(entry);
-      }
-    }
-
-    // Isolated Composite rendering must never pull unrelated orphan/fallback
-    // scene nodes into the exported PNG.
-    if (isolatedGroupId != null) {
-      return widgets;
-    }
-
-    // Legacy safety net. Anything not yet represented in the hierarchy is
-    // rendered underneath the authoritative hierarchy rather than vanishing.
-    final fallbackWidgets = <Widget>[];
-
-    for (final reference in _referenceLayers) {
-      final entry = 'reference:${reference.id}';
-
-      if (visitedReferenceIds.contains(reference.id) ||
-          _variantSlotContainingEntry(entry) != null ||
-          !_isReferenceEffectivelyVisible(reference) ||
-          reference.mediaPath.isEmpty) {
-        continue;
-      }
-
-      if (reference.mediaType == 'image') {
-        fallbackWidgets.add(_buildImageReferenceWidget(reference));
-      } else if (reference.mediaType == 'video' &&
-          reference.id == _activeReferenceLayerId &&
-          _videoReady &&
-          _videoController != null) {
-        fallbackWidgets.add(_buildActiveVideoReferenceWidget());
-      }
-    }
-
-    for (final layer in _layers) {
-      if (visitedLayerIds.contains(layer.id) ||
-          !_isLayerEffectivelyVisible(layer)) {
-        continue;
-      }
-
-      fallbackWidgets.add(_buildDrawingLayerSceneWidget(layer));
-    }
-
-    return <Widget>[...fallbackWidgets, ...widgets];
-  }
-
-  Future<void> _primeReferenceImageAlphaMask(String imagePath) async {
-    if (imagePath.isEmpty ||
-        _referenceImageAlphaMasks.containsKey(imagePath) ||
-        !_referenceImageAlphaLoadsInFlight.add(imagePath)) {
-      return;
-    }
-
-    try {
-      final file = File(imagePath);
-
-      if (!await file.exists()) {
-        return;
-      }
-
-      final bytes = await file.readAsBytes();
-      final codec = await ui.instantiateImageCodec(bytes);
-      final frame = await codec.getNextFrame();
-
-      final byteData = await frame.image.toByteData(
-        format: ui.ImageByteFormat.rawRgba,
-      );
-
-      if (byteData != null && mounted) {
-        final mask = _WorkspaceImageAlphaMask(
-          width: frame.image.width,
-          height: frame.image.height,
-          rgba: Uint8List.fromList(
-            byteData.buffer.asUint8List(
-              byteData.offsetInBytes,
-              byteData.lengthInBytes,
-            ),
-          ),
-        );
-
-        setState(() {
-          _referenceImageAlphaMasks[imagePath] = mask;
-        });
-      }
-
-      frame.image.dispose();
-      codec.dispose();
-    } catch (_) {
-      // Keep references usable if decoding fails. The selection layer can
-      // fall back to rectangular bounds until a valid mask is available.
-    } finally {
-      _referenceImageAlphaLoadsInFlight.remove(imagePath);
-    }
-  }
-
-  bool _referenceImageHitTest(ReferenceLayer reference, Offset canvasPosition) {
-    if (reference.mediaType != 'image' || reference.mediaPath.isEmpty) {
-      return false;
-    }
-
-    final mask = _referenceImageAlphaMasks[reference.mediaPath];
-
-    if (mask == null) {
-      unawaited(_primeReferenceImageAlphaMask(reference.mediaPath));
-
-      // Preserve old rectangular behaviour until the mask has decoded.
-      return true;
-    }
-
-    final canvasSize = Size(_canvasWidth, _canvasHeight);
-    final canvasCenter = Offset(_canvasWidth / 2, _canvasHeight / 2);
-
-    // Reference transforms are applied around the canvas centre:
-    // translate -> rotate -> scale.
-    //
-    // Undo those transforms in reverse so the pointer can be tested against
-    // the original Image.file(BoxFit.contain) pixel coordinates.
-    var local = canvasPosition - Offset(reference.offsetX, reference.offsetY);
-    local -= canvasCenter;
-
-    final cosAngle = math.cos(-reference.rotation);
-    final sinAngle = math.sin(-reference.rotation);
-
-    local = Offset(
-      (local.dx * cosAngle) - (local.dy * sinAngle),
-      (local.dx * sinAngle) + (local.dy * cosAngle),
-    );
-
-    final safeScaleX = reference.scaleX.abs() < 0.000001
-        ? 0.000001
-        : reference.scaleX;
-    final safeScaleY = reference.scaleY.abs() < 0.000001
-        ? 0.000001
-        : reference.scaleY;
-
-    local = Offset(local.dx / safeScaleX, local.dy / safeScaleY);
-
-    local += canvasCenter;
-
-    return mask.hitTestContain(local, canvasSize);
-  }
-
   Widget _buildReferenceTransformWidget(
     ReferenceLayer reference,
     Widget child,
@@ -11284,11 +8119,6 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
   }
 
   Widget _buildImageReferenceWidget(ReferenceLayer reference) {
-    if (!_referenceImageAlphaMasks.containsKey(reference.mediaPath) &&
-        !_referenceImageAlphaLoadsInFlight.contains(reference.mediaPath)) {
-      unawaited(_primeReferenceImageAlphaMask(reference.mediaPath));
-    }
-
     return _buildReferenceTransformWidget(
       reference,
       Opacity(
@@ -11475,55 +8305,71 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                                         child: Stack(
                                           fit: StackFit.expand,
                                           children: [
-                                            if (!_isCompositePngCapture)
-                                              ColoredBox(
-                                                color: _canvasBackgroundColor,
-                                              ),
-                                            ..._buildMixedHierarchySceneWidgets(
-                                              isolatedGroupId:
-                                                  _isCompositePngCapture
-                                                  ? _compositePngCaptureGroupId
-                                                  : null,
+                                            ColoredBox(
+                                              color: _canvasBackgroundColor,
                                             ),
-
-                                            // Onion skins remain a workspace
-                                            // guide overlay above the scene.
-                                            if (_showOnionSkin &&
-                                                !_isCompositePngCapture)
-                                              IgnorePointer(
-                                                child: CustomPaint(
-                                                  painter: AnimationCanvasPainter(
-                                                    strokes:
-                                                        const <VectorStroke>[],
-                                                    currentStroke: null,
-                                                    previousOnionSkinStrokes:
-                                                        previousFrameStrokes,
-                                                    nextOnionSkinStrokes:
-                                                        nextFrameStrokes,
-                                                    strokeColor:
-                                                        Colors.transparent,
-                                                    strokeWidth: _brushSize,
-                                                    brushType: _brushType,
-                                                    backgroundColor:
-                                                        _canvasBackgroundColor,
-                                                    paintBackground: false,
-                                                    previousOnionSkinColor:
-                                                        Colors.redAccent
-                                                            .withValues(
-                                                              alpha: 0.40,
-                                                            ),
-                                                    nextOnionSkinColor: Colors
-                                                        .greenAccent
-                                                        .withValues(
-                                                          alpha: 0.40,
-                                                        ),
-                                                  ),
-                                                  child:
-                                                      const SizedBox.expand(),
+                                            if (_referenceMediaType ==
+                                                    'video' &&
+                                                _videoReady &&
+                                                _videoController != null &&
+                                                _activeReferenceLayer != null &&
+                                                _activeReferenceLayer!.visible)
+                                              _buildActiveVideoReferenceWidget(),
+                                            for (final reference
+                                                in _referenceLayers)
+                                              if (reference.visible &&
+                                                  reference.mediaType ==
+                                                      'image' &&
+                                                  reference
+                                                      .mediaPath
+                                                      .isNotEmpty)
+                                                _buildImageReferenceWidget(
+                                                  reference,
                                                 ),
+                                            CustomPaint(
+                                              painter: AnimationCanvasPainter(
+                                                strokes: <VectorStroke>[
+                                                  ..._frames[_selectedFrameIndex],
+                                                  ..._draftTextureStrokes,
+                                                  ..._draftStampStrokes,
+                                                ],
+                                                currentStroke:
+                                                    _draftStroke.isEmpty
+                                                    ? null
+                                                    : _draftStroke,
+                                                previousOnionSkinStrokes:
+                                                    _showOnionSkin
+                                                    ? previousFrameStrokes
+                                                    : const <VectorStroke>[],
+                                                nextOnionSkinStrokes:
+                                                    _showOnionSkin
+                                                    ? nextFrameStrokes
+                                                    : const <VectorStroke>[],
+                                                strokeColor: _brushColor
+                                                    .withValues(
+                                                      alpha: _brushOpacity,
+                                                    ),
+                                                strokeWidth: _brushSize,
+                                                brushType: _brushType,
+                                                backgroundColor:
+                                                    _canvasBackgroundColor,
+                                                paintBackground:
+                                                    _referenceMediaPath ==
+                                                        null ||
+                                                    (_referenceMediaType !=
+                                                            'image' &&
+                                                        _referenceMediaType !=
+                                                            'video'),
+                                                previousOnionSkinColor: Colors
+                                                    .redAccent
+                                                    .withValues(alpha: 0.40),
+                                                nextOnionSkinColor: Colors
+                                                    .greenAccent
+                                                    .withValues(alpha: 0.40),
                                               ),
-                                            if (_fillLassoPoints.length > 1 &&
-                                                !_isCompositePngCapture)
+                                              child: const SizedBox.expand(),
+                                            ),
+                                            if (_fillLassoPoints.length > 1)
                                               IgnorePointer(
                                                 child: CustomPaint(
                                                   painter: _FillLassoPainter(
@@ -11534,8 +8380,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                                                       const SizedBox.expand(),
                                                 ),
                                               ),
-                                            if (_draftShapeStrokes.isNotEmpty &&
-                                                !_isCompositePngCapture)
+                                            if (_draftShapeStrokes.isNotEmpty)
                                               IgnorePointer(
                                                 child: CustomPaint(
                                                   painter: AnimationCanvasPainter(
@@ -11561,8 +8406,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                                                       const SizedBox.expand(),
                                                 ),
                                               ),
-                                            if (!_isCompositePngCapture &&
-                                                _perspectiveShapeEditing &&
+                                            if (_perspectiveShapeEditing &&
                                                 _perspectiveShapeCorners
                                                         .length ==
                                                     4)
@@ -11577,8 +8421,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                                                       const SizedBox.expand(),
                                                 ),
                                               ),
-                                            if (_isTransformActive &&
-                                                !_isCompositePngCapture)
+                                            if (_isTransformActive)
                                               IgnorePointer(
                                                 child: CustomPaint(
                                                   painter: _TransformOverlayPainter(
@@ -11586,8 +8429,6 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                                                     selectionBounds:
                                                         _transformSelectionBounds(),
                                                     pivot: _transformPivot,
-                                                    viewScale:
-                                                        _transformViewScale,
                                                   ),
                                                   child:
                                                       const SizedBox.expand(),
@@ -13087,11 +9928,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                               if (_layersPanelExpanded) ...[
                                 if (!_isVideoScrubbing)
                                   SizedBox(
-                                    width: constraints.maxWidth >= 900
-                                        ? 430
-                                        : constraints.maxWidth >= 700
-                                        ? 380
-                                        : constraints.maxWidth - 32,
+                                    width: 300,
                                     child: Padding(
                                       padding: const EdgeInsets.fromLTRB(
                                         8,
@@ -13212,18 +10049,12 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                                   const Divider(height: 1),
 
                                 SizedBox(
-                                  width: constraints.maxWidth >= 900
-                                      ? 430
-                                      : constraints.maxWidth >= 700
-                                      ? 380
-                                      : constraints.maxWidth - 32,
+                                  width: 300,
                                   child: ConstrainedBox(
-                                    constraints: BoxConstraints(
-                                      maxHeight: constraints.maxHeight * 0.68,
+                                    constraints: const BoxConstraints(
+                                      maxHeight: 300,
                                     ),
                                     child: SingleChildScrollView(
-                                      key: _layersScrollViewportKey,
-                                      controller: _layersScrollController,
                                       child: Column(
                                         mainAxisSize: MainAxisSize.min,
                                         children: [
@@ -13931,9 +10762,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                                       _isPlaying ||
                                           (_selectedTransformStrokes.isEmpty &&
                                               _transformReferenceLayerId ==
-                                                  null &&
-                                              _transformGroupReferenceIds
-                                                  .isEmpty)
+                                                  null)
                                       ? null
                                       : _flipSelectedStrokesHorizontally,
                                   icon: const Icon(Icons.flip),
@@ -14674,23 +11503,17 @@ class _TransformOverlayPainter extends CustomPainter {
     required this.lassoPoints,
     required this.selectionBounds,
     required this.pivot,
-    required this.viewScale,
   });
 
   final List<VectorPoint> lassoPoints;
   final Rect? selectionBounds;
   final Offset? pivot;
-  final double viewScale;
-
-  double _screen(double pixels) {
-    return pixels / math.max(0.1, viewScale);
-  }
 
   @override
   void paint(Canvas canvas, Size size) {
     final lassoPaint = Paint()
       ..color = Colors.cyanAccent
-      ..strokeWidth = _screen(2)
+      ..strokeWidth = 2
       ..style = PaintingStyle.stroke;
 
     if (lassoPoints.length > 1) {
@@ -14705,99 +11528,90 @@ class _TransformOverlayPainter extends CustomPainter {
 
     final bounds = selectionBounds;
 
-    if (bounds == null) {
-      return;
-    }
+    if (bounds != null) {
+      final boxPaint = Paint()
+        ..color = Colors.cyanAccent
+        ..strokeWidth = 2
+        ..style = PaintingStyle.stroke;
 
-    final boxPaint = Paint()
-      ..color = Colors.cyanAccent
-      ..strokeWidth = _screen(2)
-      ..style = PaintingStyle.stroke;
+      canvas.drawRect(bounds.inflate(6), boxPaint);
 
-    final selectionPadding = _screen(6);
-    canvas.drawRect(bounds.inflate(selectionPadding), boxPaint);
+      final rotationHandle = bounds.topCenter + const Offset(0, -34);
+      final effectivePivot = pivot ?? bounds.center;
 
-    final rotationHandle = bounds.topCenter + Offset(0, -_screen(34));
+      final guidePaint = Paint()
+        ..color = Colors.cyanAccent.withValues(alpha: 0.45)
+        ..strokeWidth = 1.5
+        ..style = PaintingStyle.stroke;
 
-    final effectivePivot = pivot ?? bounds.center;
+      // Rotation handle remains above the selection.
+      canvas.drawLine(bounds.topCenter, rotationHandle, boxPaint);
 
-    final guidePaint = Paint()
-      ..color = Colors.cyanAccent.withValues(alpha: 0.45)
-      ..strokeWidth = _screen(1.5)
-      ..style = PaintingStyle.stroke;
+      // A faint guide shows the active rotation relationship.
+      canvas.drawLine(rotationHandle, effectivePivot, guidePaint);
 
-    canvas.drawLine(bounds.topCenter, rotationHandle, boxPaint);
-    canvas.drawLine(rotationHandle, effectivePivot, guidePaint);
+      final rotationHandlePaint = Paint()
+        ..color = Colors.cyanAccent
+        ..style = PaintingStyle.fill;
 
-    final rotationHandlePaint = Paint()
-      ..color = Colors.cyanAccent
-      ..style = PaintingStyle.fill;
+      canvas.drawCircle(rotationHandle, 7, rotationHandlePaint);
 
-    canvas.drawCircle(rotationHandle, _screen(7), rotationHandlePaint);
+      // Draggable pivot / anchor.
+      final pivotOuterPaint = Paint()
+        ..color = Colors.black
+        ..style = PaintingStyle.fill;
 
-    final pivotOuterPaint = Paint()
-      ..color = Colors.black
-      ..style = PaintingStyle.fill;
+      final pivotInnerPaint = Paint()
+        ..color = Colors.cyanAccent
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 2;
 
-    final pivotInnerPaint = Paint()
-      ..color = Colors.cyanAccent
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = _screen(2);
+      canvas.drawCircle(effectivePivot, 9, pivotOuterPaint);
+      canvas.drawCircle(effectivePivot, 8, pivotInnerPaint);
 
-    canvas.drawCircle(effectivePivot, _screen(9), pivotOuterPaint);
-
-    canvas.drawCircle(effectivePivot, _screen(8), pivotInnerPaint);
-
-    final pivotArm = _screen(11);
-
-    canvas.drawLine(
-      effectivePivot + Offset(-pivotArm, 0),
-      effectivePivot + Offset(pivotArm, 0),
-      pivotInnerPaint,
-    );
-
-    canvas.drawLine(
-      effectivePivot + Offset(0, -pivotArm),
-      effectivePivot + Offset(0, pivotArm),
-      pivotInnerPaint,
-    );
-
-    final handlePaint = Paint()
-      ..color = Colors.cyanAccent
-      ..style = PaintingStyle.fill;
-
-    final cornerRadius = _screen(6);
-
-    for (final point in <Offset>[
-      bounds.topLeft,
-      bounds.topRight,
-      bounds.bottomLeft,
-      bounds.bottomRight,
-    ]) {
-      canvas.drawCircle(point, cornerRadius, handlePaint);
-    }
-
-    final edgeSize = _screen(12);
-
-    for (final point in <Offset>[
-      bounds.centerLeft,
-      bounds.centerRight,
-      bounds.topCenter,
-      bounds.bottomCenter,
-    ]) {
-      canvas.drawRect(
-        Rect.fromCenter(center: point, width: edgeSize, height: edgeSize),
-        handlePaint,
+      canvas.drawLine(
+        effectivePivot + const Offset(-11, 0),
+        effectivePivot + const Offset(11, 0),
+        pivotInnerPaint,
       );
+
+      canvas.drawLine(
+        effectivePivot + const Offset(0, -11),
+        effectivePivot + const Offset(0, 11),
+        pivotInnerPaint,
+      );
+
+      final handlePaint = Paint()
+        ..color = Colors.cyanAccent
+        ..style = PaintingStyle.fill;
+
+      for (final point in [
+        bounds.topLeft,
+        bounds.topRight,
+        bounds.bottomLeft,
+        bounds.bottomRight,
+      ]) {
+        canvas.drawCircle(point, 6, handlePaint);
+      }
+
+      // Midpoint handles provide non-uniform squash/stretch.
+      for (final point in [
+        bounds.centerLeft,
+        bounds.centerRight,
+        bounds.topCenter,
+        bounds.bottomCenter,
+      ]) {
+        canvas.drawRect(
+          Rect.fromCenter(center: point, width: 12, height: 12),
+          handlePaint,
+        );
+      }
     }
   }
 
   @override
   bool shouldRepaint(covariant _TransformOverlayPainter oldDelegate) {
-    return oldDelegate.lassoPoints != lassoPoints ||
-        oldDelegate.selectionBounds != selectionBounds ||
-        oldDelegate.pivot != pivot ||
-        oldDelegate.viewScale != viewScale;
+    return true;
   }
 }
 

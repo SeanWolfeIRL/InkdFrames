@@ -17,7 +17,6 @@ import 'bag_screen.dart';
 import '../models/bag_item.dart';
 import '../models/composite_asset.dart';
 import '../models/placed_decoration.dart';
-import '../models/vector_point.dart';
 import '../models/vector_stroke.dart';
 import '../painters/animation_canvas_painter.dart';
 import '../painters/bag_item_preview_painter.dart';
@@ -149,49 +148,6 @@ class HomeScreen extends StatefulWidget {
   State<HomeScreen> createState() => _HomeScreenState();
 }
 
-class _RoomNodeOverride {
-  final double offsetX;
-  final double offsetY;
-  final double scale;
-  final bool mirrored;
-
-  // Instance-local choice for Composite variant nodes.
-  //
-  // null means: use the authored Bag Composite activeIndex.
-  final int? activeVariantIndex;
-
-  const _RoomNodeOverride({
-    this.offsetX = 0.0,
-    this.offsetY = 0.0,
-    this.scale = 1.0,
-    this.mirrored = false,
-    this.activeVariantIndex,
-  });
-
-  _RoomNodeOverride copyWith({
-    double? offsetX,
-    double? offsetY,
-    double? scale,
-    bool? mirrored,
-    int? activeVariantIndex,
-  }) {
-    return _RoomNodeOverride(
-      offsetX: offsetX ?? this.offsetX,
-      offsetY: offsetY ?? this.offsetY,
-      scale: scale ?? this.scale,
-      mirrored: mirrored ?? this.mirrored,
-      activeVariantIndex: activeVariantIndex ?? this.activeVariantIndex,
-    );
-  }
-
-  bool get isIdentity =>
-      offsetX.abs() < 0.000001 &&
-      offsetY.abs() < 0.000001 &&
-      (scale - 1.0).abs() < 0.000001 &&
-      !mirrored &&
-      activeVariantIndex == null;
-}
-
 class _HomeScreenState extends State<HomeScreen> {
   static const String _decorationsKey = 'inkdframes_home_decorations_v1';
 
@@ -220,24 +176,6 @@ class _HomeScreenState extends State<HomeScreen> {
   String? _selectedRoomNodeId;
   String? _selectedRoomNodeName;
 
-  // Rooms Awaken #9
-  //
-  // The current Composite hierarchy scope.
-  //
-  // Empty means the Composite root. Each entry is an authored group/node ID
-  // that has been entered. Only direct children of the current scope are
-  // selectable and transformable.
-  final List<String> _roomScopeNodeIds = <String>[];
-
-  // Instance-local Composite overrides.
-  //
-  // outer key = placed decoration ID
-  // inner key = authored Composite node ID
-  //
-  // The reusable Bag Composite remains immutable.
-  final Map<String, Map<String, _RoomNodeOverride>> _roomNodeOverrides =
-      <String, Map<String, _RoomNodeOverride>>{};
-
   bool get _isEditingRoomContents => _editingRoomDecorationId != null;
 
   BagItem? get _selectedDecorationBagItem {
@@ -261,7 +199,6 @@ class _HomeScreenState extends State<HomeScreen> {
       _selectedDecorationId = selected.id;
       _selectedRoomNodeId = null;
       _selectedRoomNodeName = null;
-      _roomScopeNodeIds.clear();
       _decorateMode = true;
     });
   }
@@ -273,7 +210,6 @@ class _HomeScreenState extends State<HomeScreen> {
       _editingRoomDecorationId = null;
       _selectedRoomNodeId = null;
       _selectedRoomNodeName = null;
-      _roomScopeNodeIds.clear();
 
       if (roomId != null &&
           _decorations.any((decoration) => decoration.id == roomId)) {
@@ -286,17 +222,6 @@ class _HomeScreenState extends State<HomeScreen> {
 
   final Map<int, Offset> _decorateTouchPointers = <int, Offset>{};
   Offset? _decoratePanCentroid;
-
-  // Rooms Awaken #6
-  //
-  // Two-finger scaling of a selected semantic node uses the raw touch
-  // pointers already tracked by Home. Keeping this separate from Flutter's
-  // scale recognizer prevents the existing one-finger room drag from
-  // competing with pinch gestures.
-  double? _roomNodePinchStartDistance;
-  double? _roomNodePinchStartScale;
-  String? _roomNodePinchDecorationId;
-  String? _roomNodePinchNodeId;
 
   final Map<String, _ImageAlphaMask> _imageAlphaMasks =
       <String, _ImageAlphaMask>{};
@@ -321,12 +246,6 @@ class _HomeScreenState extends State<HomeScreen> {
     _decorateTouchPointers[event.pointer] = event.position;
 
     if (_decorateTouchPointers.length >= 2) {
-      if (_isEditingRoomContents && _selectedRoomNodeId != null) {
-        _beginRoomNodePinch();
-        _decoratePanCentroid = null;
-        return;
-      }
-
       _decoratePanCentroid = _touchCentroid();
     }
   }
@@ -341,20 +260,6 @@ class _HomeScreenState extends State<HomeScreen> {
     _decorateTouchPointers[event.pointer] = event.position;
 
     if (_decorateTouchPointers.length < 2) {
-      _decoratePanCentroid = null;
-      return;
-    }
-
-    // While editing a semantic room node, two fingers belong exclusively
-    // to that node. The Home panorama must not slide underneath it.
-    if (_isEditingRoomContents && _selectedRoomNodeId != null) {
-      if (_roomNodePinchStartDistance == null ||
-          _roomNodePinchDecorationId != _editingRoomDecorationId ||
-          _roomNodePinchNodeId != _selectedRoomNodeId) {
-        _beginRoomNodePinch();
-      }
-
-      _updateRoomNodePinch();
       _decoratePanCentroid = null;
       return;
     }
@@ -385,97 +290,12 @@ class _HomeScreenState extends State<HomeScreen> {
       return;
     }
 
-    final wasPinching = _roomNodePinchStartDistance != null;
-
     _decorateTouchPointers.remove(event.pointer);
 
-    if (wasPinching && _decorateTouchPointers.length < 2) {
-      _finishRoomNodePinch();
-    }
-
     if (_decorateTouchPointers.length >= 2) {
-      if (_isEditingRoomContents && _selectedRoomNodeId != null) {
-        _beginRoomNodePinch();
-        _decoratePanCentroid = null;
-      } else {
-        _decoratePanCentroid = _touchCentroid();
-      }
+      _decoratePanCentroid = _touchCentroid();
     } else {
       _decoratePanCentroid = null;
-    }
-  }
-
-  double? _currentTouchDistance() {
-    if (_decorateTouchPointers.length < 2) {
-      return null;
-    }
-
-    final points = _decorateTouchPointers.values.take(2).toList();
-    return (points[0] - points[1]).distance;
-  }
-
-  void _beginRoomNodePinch() {
-    final decorationId = _editingRoomDecorationId;
-    final nodeId = _selectedRoomNodeId;
-    final distance = _currentTouchDistance();
-
-    if (decorationId == null ||
-        nodeId == null ||
-        distance == null ||
-        distance <= 0.000001) {
-      return;
-    }
-
-    final current = _roomNodeOverrideFor(decorationId, nodeId);
-
-    _roomNodePinchStartDistance = distance;
-    _roomNodePinchStartScale = current.scale;
-    _roomNodePinchDecorationId = decorationId;
-    _roomNodePinchNodeId = nodeId;
-  }
-
-  void _updateRoomNodePinch() {
-    final startDistance = _roomNodePinchStartDistance;
-    final startScale = _roomNodePinchStartScale;
-    final decorationId = _roomNodePinchDecorationId;
-    final nodeId = _roomNodePinchNodeId;
-    final distance = _currentTouchDistance();
-
-    if (startDistance == null ||
-        startScale == null ||
-        decorationId == null ||
-        nodeId == null ||
-        distance == null ||
-        startDistance <= 0.000001) {
-      return;
-    }
-
-    if (decorationId != _editingRoomDecorationId ||
-        nodeId != _selectedRoomNodeId) {
-      return;
-    }
-
-    final nextScale = (startScale * (distance / startDistance)).clamp(
-      0.1,
-      10.0,
-    );
-
-    _updateSelectedRoomNodeOverride(
-      (current) => current.copyWith(scale: nextScale),
-      persist: false,
-    );
-  }
-
-  void _finishRoomNodePinch() {
-    final hadPinch = _roomNodePinchStartDistance != null;
-
-    _roomNodePinchStartDistance = null;
-    _roomNodePinchStartScale = null;
-    _roomNodePinchDecorationId = null;
-    _roomNodePinchNodeId = null;
-
-    if (hadPinch) {
-      _saveDecorations();
     }
   }
 
@@ -526,34 +346,8 @@ class _HomeScreenState extends State<HomeScreen> {
 
     if (!mounted) return;
 
-    final loadedRoomOverrides = <String, Map<String, _RoomNodeOverride>>{};
-
-    for (final decoration in decorations) {
-      if (decoration.roomNodeOverrides.isEmpty) {
-        continue;
-      }
-
-      final nodeOverrides = <String, _RoomNodeOverride>{};
-
-      for (final entry in decoration.roomNodeOverrides.entries) {
-        final override = _roomNodeOverrideFromJson(entry.value);
-
-        if (!override.isIdentity) {
-          nodeOverrides[entry.key] = override;
-        }
-      }
-
-      if (nodeOverrides.isNotEmpty) {
-        loadedRoomOverrides[decoration.id] = nodeOverrides;
-      }
-    }
-
     setState(() {
       _decorations = decorations;
-      _roomNodeOverrides
-        ..clear()
-        ..addAll(loadedRoomOverrides);
-
       _bagItemsById = <String, BagItem>{
         for (final item in items) item.id: item,
       };
@@ -568,58 +362,24 @@ class _HomeScreenState extends State<HomeScreen> {
     await prefs.setString(
       _decorationsKey,
       jsonEncode(
-        _decorations
-            .map(
-              (decoration) => decoration
-                  .copyWith(
-                    roomNodeOverrides: _serializedRoomOverridesFor(
-                      decoration.id,
-                    ),
-                  )
-                  .toJson(),
-            )
-            .toList(),
+        _decorations.map((decoration) => decoration.toJson()).toList(),
       ),
     );
   }
 
-  void _collectCompositeImagePaths(CompositeNode node, Set<String> paths) {
-    if (node.type == 'reference') {
-      final mediaType = node.payload['mediaType']?.toString() ?? 'image';
-      final mediaPath = node.payload['mediaPath']?.toString() ?? '';
-
-      if (mediaType == 'image' && mediaPath.isNotEmpty) {
-        paths.add(mediaPath);
-      }
-    }
-
-    for (final child in node.children) {
-      _collectCompositeImagePaths(child, paths);
-    }
-  }
-
   Future<void> _primeImageAlphaMasks(Iterable<BagItem> items) async {
     final loaded = <String, _ImageAlphaMask>{};
-    final imagePaths = <String>{};
 
     for (final item in items) {
-      if (item.isImage) {
-        final imagePath = item.imagePath;
-
-        if (imagePath != null && imagePath.isNotEmpty) {
-          imagePaths.add(imagePath);
-        }
+      if (!item.isImage) {
+        continue;
       }
 
-      final composite = item.composite;
+      final imagePath = item.imagePath;
 
-      if (composite != null) {
-        _collectCompositeImagePaths(composite.root, imagePaths);
-      }
-    }
-
-    for (final imagePath in imagePaths) {
-      if (_imageAlphaMasks.containsKey(imagePath) ||
+      if (imagePath == null ||
+          imagePath.isEmpty ||
+          _imageAlphaMasks.containsKey(imagePath) ||
           loaded.containsKey(imagePath)) {
         continue;
       }
@@ -655,8 +415,8 @@ class _HomeScreenState extends State<HomeScreen> {
         frame.image.dispose();
         codec.dispose();
       } catch (_) {
-        // If an image cannot be decoded, leave it unmasked rather than
-        // breaking Home/Decorate rendering.
+        // If an image cannot be decoded, Decorate keeps the old
+        // rectangular hit behaviour rather than making it unreachable.
       }
     }
 
@@ -697,385 +457,15 @@ class _HomeScreenState extends State<HomeScreen> {
     return strokes;
   }
 
-  List<VectorPoint> _smoothVectorHitPoints(List<VectorPoint> source) {
-    if (source.length < 3) {
-      return source;
-    }
-
-    final smoothed = <VectorPoint>[source.first];
-
-    for (var i = 1; i < source.length - 1; i++) {
-      final previous = source[i - 1];
-      final current = source[i];
-      final next = source[i + 1];
-
-      smoothed.add(
-        VectorPoint(
-          dx: (previous.dx * 0.25) + (current.dx * 0.50) + (next.dx * 0.25),
-          dy: (previous.dy * 0.25) + (current.dy * 0.50) + (next.dy * 0.25),
-          pressure:
-              (previous.pressure * 0.25) +
-              (current.pressure * 0.50) +
-              (next.pressure * 0.25),
-        ),
-      );
-    }
-
-    smoothed.add(source.last);
-    return smoothed;
-  }
-
-  double _vectorPressureWidth(VectorPoint point, double maximumWidth) {
-    final pressure = point.pressure.clamp(0.0, 1.0);
-    final response = math.pow(pressure, 1.35).toDouble();
-
-    const minimumFactor = 0.015;
-
-    final factor = minimumFactor + (response * (1.0 - minimumFactor));
-
-    return maximumWidth * factor;
-  }
-
-  double _distanceToVectorSegment(Offset point, Offset start, Offset end) {
-    final dx = end.dx - start.dx;
-    final dy = end.dy - start.dy;
-
-    final lengthSquared = (dx * dx) + (dy * dy);
-
-    if (lengthSquared <= 0.000001) {
-      return (point - start).distance;
-    }
-
-    final projection =
-        (((point.dx - start.dx) * dx) + ((point.dy - start.dy) * dy)) /
-        lengthSquared;
-
-    final t = projection.clamp(0.0, 1.0);
-
-    final nearest = Offset(start.dx + (dx * t), start.dy + (dy * t));
-
-    return (point - nearest).distance;
-  }
-
-  bool _vectorStrokeHitTest(VectorStroke stroke, Offset point) {
-    if (stroke.points.isEmpty) {
-      return false;
-    }
-
-    // Finger-friendly tolerance in authored Composite coordinates.
-    //
-    // This is deliberately larger than the painted edge so thin linework
-    // remains practical to select on a phone/tablet.
-    const touchTolerance = 28.0;
-
-    // --------------------------------------------------------
-    // Filled artwork
-    // --------------------------------------------------------
-
-    if (stroke.filled) {
-      if (stroke.points.length == 1) {
-        final p = stroke.points.first;
-
-        return (point - Offset(p.dx, p.dy)).distance <=
-            (stroke.strokeWidth / 2) + touchTolerance;
-      }
-
-      if (stroke.points.length >= 3) {
-        final path = Path()
-          ..moveTo(stroke.points.first.dx, stroke.points.first.dy);
-
-        for (var i = 1; i < stroke.points.length; i++) {
-          final p = stroke.points[i];
-          path.lineTo(p.dx, p.dy);
-        }
-
-        path.close();
-
-        if (path.contains(point)) {
-          return true;
-        }
-
-        // Also make the edge itself finger-friendly.
-        for (var i = 0; i < stroke.points.length; i++) {
-          final a = stroke.points[i];
-          final b = stroke.points[(i + 1) % stroke.points.length];
-
-          if (_distanceToVectorSegment(
-                point,
-                Offset(a.dx, a.dy),
-                Offset(b.dx, b.dy),
-              ) <=
-              touchTolerance) {
-            return true;
-          }
-        }
-      }
-
-      return false;
-    }
-
-    // --------------------------------------------------------
-    // Normal / pressure-sensitive strokes
-    // --------------------------------------------------------
-
-    final points = _smoothVectorHitPoints(stroke.points);
-
-    if (points.length == 1) {
-      final p = points.first;
-
-      final width = stroke.brushType == StrokeBrushType.pressure
-          ? _vectorPressureWidth(p, stroke.strokeWidth)
-          : stroke.strokeWidth;
-
-      return (point - Offset(p.dx, p.dy)).distance <=
-          (width / 2) + touchTolerance;
-    }
-
-    for (var i = 0; i < points.length - 1; i++) {
-      final start = points[i];
-      final end = points[i + 1];
-
-      final startWidth = stroke.brushType == StrokeBrushType.pressure
-          ? _vectorPressureWidth(start, stroke.strokeWidth)
-          : stroke.strokeWidth;
-
-      final endWidth = stroke.brushType == StrokeBrushType.pressure
-          ? _vectorPressureWidth(end, stroke.strokeWidth)
-          : stroke.strokeWidth;
-
-      final hitRadius = (math.max(startWidth, endWidth) / 2) + touchTolerance;
-
-      if (_distanceToVectorSegment(
-            point,
-            Offset(start.dx, start.dy),
-            Offset(end.dx, end.dy),
-          ) <=
-          hitRadius) {
-        return true;
-      }
-    }
-
-    return false;
-  }
-
-  // --------------------------------------------------------
-  // ROOMS AWAKEN #9 - SCOPED HIERARCHY NAVIGATION
-  // --------------------------------------------------------
-
-  CompositeAsset? get _editingRoomComposite {
-    final decorationId = _editingRoomDecorationId;
-
-    if (decorationId == null) {
-      return null;
-    }
-
-    PlacedDecoration? decoration;
-
-    for (final candidate in _decorations) {
-      if (candidate.id == decorationId) {
-        decoration = candidate;
-        break;
-      }
-    }
-
-    if (decoration == null) {
-      return null;
-    }
-
-    return _bagItemsById[decoration.bagItemId]?.composite;
-  }
-
-  CompositeNode? _findCompositeNodeByIdScoped(CompositeNode node, String id) {
-    if (node.id == id) {
-      return node;
-    }
-
-    for (final child in node.children) {
-      final found = _findCompositeNodeByIdScoped(child, id);
-
-      if (found != null) {
-        return found;
-      }
-    }
-
-    return null;
-  }
-
-  CompositeNode? get _currentRoomScopeNode {
-    final composite = _editingRoomComposite;
-
-    if (composite == null) {
-      return null;
-    }
-
-    if (_roomScopeNodeIds.isEmpty) {
-      return composite.root;
-    }
-
-    final scopeId = _roomScopeNodeIds.last;
-
-    return _findCompositeNodeByIdScoped(composite.root, scopeId) ??
-        composite.root;
-  }
-
-  String get _currentRoomScopeName {
-    final scope = _currentRoomScopeNode;
-
-    if (scope == null || _roomScopeNodeIds.isEmpty) {
-      return 'Room';
-    }
-
-    final name = scope.name.trim();
-    return name.isEmpty ? 'Group' : name;
-  }
-
-  List<CompositeNode> get _currentRoomScopeChildren {
-    final scope = _currentRoomScopeNode;
-
-    if (scope == null) {
-      return const <CompositeNode>[];
-    }
-
-    return scope.children.where((child) => child.visible).toList();
-  }
-
-  CompositeNode? get _selectedRoomNodeInScope {
-    final selectedId = _selectedRoomNodeId;
-
-    if (selectedId == null) {
-      return null;
-    }
-
-    for (final child in _currentRoomScopeChildren) {
-      if (child.id == selectedId) {
-        return child;
-      }
-    }
-
-    return null;
-  }
-
-  bool get _canEnterSelectedRoomNode {
-    final selected = _selectedRoomNodeInScope;
-
-    if (selected == null) {
-      return false;
-    }
-
-    // Groups are true hierarchy containers.
-    //
-    // Variant Slots remain state-switchers rather than navigation scopes.
-    return selected.type == 'group' && selected.children.isNotEmpty;
-  }
-
-  bool get _canGoBackRoomScope => _roomScopeNodeIds.isNotEmpty;
-
-  void _enterSelectedRoomNode() {
-    final selected = _selectedRoomNodeInScope;
-
-    if (selected == null ||
-        selected.type != 'group' ||
-        selected.children.isEmpty) {
-      return;
-    }
-
-    setState(() {
-      _roomScopeNodeIds.add(selected.id);
-      _selectedRoomNodeId = null;
-      _selectedRoomNodeName = null;
-    });
-  }
-
-  void _backRoomScope() {
-    if (_roomScopeNodeIds.isEmpty) {
-      _exitRoomContents();
-      return;
-    }
-
-    setState(() {
-      _roomScopeNodeIds.removeLast();
-      _selectedRoomNodeId = null;
-      _selectedRoomNodeName = null;
-    });
-  }
-
-  void _cycleRoomScopeSelection(int direction) {
-    final children = _currentRoomScopeChildren;
-
-    if (children.isEmpty) {
-      return;
-    }
-
-    var currentIndex = children.indexWhere(
-      (child) => child.id == _selectedRoomNodeId,
-    );
-
-    if (currentIndex < 0) {
-      currentIndex = direction >= 0 ? -1 : 0;
-    }
-
-    final nextIndex = (currentIndex + direction) % children.length;
-
-    final selected = children[nextIndex];
-
-    setState(() {
-      _selectedRoomNodeId = selected.id;
-      _selectedRoomNodeName = selected.name.trim().isEmpty
-          ? selected.type
-          : selected.name;
-    });
-  }
-
-  CompositeNode? _findScopedCompositeHit({
-    required CompositeNode scope,
-    required Offset point,
-    required Size canvasSize,
-    required String decorationId,
-  }) {
-    // Only direct children of the active scope can become selected.
-    //
-    // The existing recursive hit tester is still used to determine whether
-    // the touch lands anywhere inside each direct child's visible content.
-    // If it does, selection resolves back to that direct child.
-    for (final child in scope.children) {
-      if (!child.visible) {
-        continue;
-      }
-
-      final hit = _findCompositeNodeHit(
-        child,
-        point,
-        canvasSize,
-        decorationId: decorationId,
-        semanticOwner: child,
-      );
-
-      if (hit != null) {
-        return child;
-      }
-    }
-
-    return null;
-  }
-
   CompositeNode? _findCompositeNodeHit(
     CompositeNode node,
     Offset point,
     Size canvasSize, {
-    required String decorationId,
     CompositeNode? semanticOwner,
   }) {
     if (!node.visible) {
       return null;
     }
-
-    final nodeOverride = _roomNodeOverrideFor(decorationId, node.id);
-
-    final nodePoint = _inverseRoomNodeOverridePoint(
-      point: point,
-      canvasSize: canvasSize,
-      override: nodeOverride,
-    );
 
     if (node.type == 'group') {
       final owner = node.name.trim().isNotEmpty ? node : semanticOwner;
@@ -1084,9 +474,8 @@ class _HomeScreenState extends State<HomeScreen> {
       for (final child in node.children) {
         final hit = _findCompositeNodeHit(
           child,
-          nodePoint,
+          point,
           canvasSize,
-          decorationId: decorationId,
           semanticOwner: owner,
         );
 
@@ -1103,13 +492,13 @@ class _HomeScreenState extends State<HomeScreen> {
         return null;
       }
 
-      final activeIndex = _activeRoomVariantIndex(decorationId, node);
+      final rawIndex = (node.payload['activeIndex'] as num?)?.toInt() ?? 0;
+      final activeIndex = rawIndex.clamp(0, node.children.length - 1);
 
       return _findCompositeNodeHit(
         node.children[activeIndex],
-        nodePoint,
+        point,
         canvasSize,
-        decorationId: decorationId,
         semanticOwner: semanticOwner,
       );
     }
@@ -1143,7 +532,7 @@ class _HomeScreenState extends State<HomeScreen> {
       final center = Offset(canvasSize.width / 2, canvasSize.height / 2);
 
       // Undo Transform.translate.
-      var local = nodePoint - Offset(offsetX, offsetY);
+      var local = point - Offset(offsetX, offsetY);
 
       // Move into centre-relative coordinates.
       local -= center;
@@ -1174,25 +563,8 @@ class _HomeScreenState extends State<HomeScreen> {
     }
 
     if (node.type == 'layer') {
-      final strokes = _compositeLayerStrokes(node);
-
-      // Walk frontmost stroke first so overlapping artwork behaves
-      // like the visible painting order.
-      for (final stroke in strokes.reversed) {
-        if (!_vectorStrokeHitTest(stroke, nodePoint)) {
-          continue;
-        }
-
-        // Prefer a specifically named layer such as Sofa, Plant, Lamp,
-        // etc. If the layer itself has no useful name, fall back to the
-        // nearest semantic parent group.
-        if (node.name.trim().isNotEmpty) {
-          return node;
-        }
-
-        return semanticOwner ?? node;
-      }
-
+      // Vector-layer geometric hit testing comes in a later refinement.
+      // Rooms Awaken #2 first proves alpha-aware raster child selection.
       return null;
     }
 
@@ -1275,402 +647,16 @@ class _HomeScreenState extends State<HomeScreen> {
       (innerPoint.dy - fittedTop) / fitScale,
     );
 
-    final scope = _currentRoomScopeNode ?? composite.root;
-
-    final hit = _findScopedCompositeHit(
-      scope: scope,
-      point: compositePoint,
-      canvasSize: Size(composite.canvasWidth, composite.canvasHeight),
-      decorationId: decoration.id,
+    final hit = _findCompositeNodeHit(
+      composite.root,
+      compositePoint,
+      Size(composite.canvasWidth, composite.canvasHeight),
     );
 
     setState(() {
       _selectedRoomNodeId = hit?.id;
-      _selectedRoomNodeName = hit == null
-          ? null
-          : (hit.name.trim().isEmpty ? hit.type : hit.name);
+      _selectedRoomNodeName = hit?.name;
     });
-  }
-
-  void _dragCompositeRoomChild({
-    required PlacedDecoration decoration,
-    required BagItem bagItem,
-    required Offset delta,
-    required Size decorationSize,
-  }) {
-    if (!_isEditingRoomContents ||
-        decoration.id != _editingRoomDecorationId ||
-        _selectedRoomNodeId == null ||
-        !bagItem.isComposite) {
-      return;
-    }
-
-    final composite = bagItem.composite;
-
-    if (composite == null ||
-        composite.canvasWidth <= 0 ||
-        composite.canvasHeight <= 0 ||
-        decorationSize.width <= 0 ||
-        decorationSize.height <= 0) {
-      return;
-    }
-
-    // Match the selected-room render padding used by
-    // _selectCompositeRoomChild.
-    const selectionPadding = 2.0;
-
-    final innerWidth = (decorationSize.width - (selectionPadding * 2)).clamp(
-      1.0,
-      double.infinity,
-    );
-
-    final innerHeight = (decorationSize.height - (selectionPadding * 2)).clamp(
-      1.0,
-      double.infinity,
-    );
-
-    // _buildCompositeDecoration renders with BoxFit.contain.
-    // Convert the gesture delta from displayed room pixels back into
-    // authored Composite coordinates before storing the node override.
-    final fitScaleX = innerWidth / composite.canvasWidth;
-    final fitScaleY = innerHeight / composite.canvasHeight;
-    final fitScale = fitScaleX < fitScaleY ? fitScaleX : fitScaleY;
-
-    if (fitScale <= 0) {
-      return;
-    }
-
-    var compositeDx = delta.dx / fitScale;
-    final compositeDy = delta.dy / fitScale;
-
-    // The entire placed room may itself be mirrored.
-    // Because node overrides live in authored Composite coordinates,
-    // horizontal dragging must be inverted when the outer room is mirrored.
-    if (decoration.mirrored) {
-      compositeDx = -compositeDx;
-    }
-
-    _nudgeSelectedRoomNode(compositeDx, compositeDy, persist: false);
-  }
-
-  Map<String, dynamic> _roomNodeOverrideToJson(_RoomNodeOverride override) {
-    return <String, dynamic>{
-      'offsetX': override.offsetX,
-      'offsetY': override.offsetY,
-      'scale': override.scale,
-      'mirrored': override.mirrored,
-      if (override.activeVariantIndex != null)
-        'activeVariantIndex': override.activeVariantIndex,
-    };
-  }
-
-  _RoomNodeOverride _roomNodeOverrideFromJson(Map<String, dynamic> json) {
-    return _RoomNodeOverride(
-      offsetX: (json['offsetX'] as num?)?.toDouble() ?? 0.0,
-      offsetY: (json['offsetY'] as num?)?.toDouble() ?? 0.0,
-      scale: (json['scale'] as num?)?.toDouble() ?? 1.0,
-      mirrored: json['mirrored'] == true,
-      activeVariantIndex: (json['activeVariantIndex'] as num?)?.toInt(),
-    );
-  }
-
-  Map<String, Map<String, dynamic>> _serializedRoomOverridesFor(
-    String decorationId,
-  ) {
-    final overrides = _roomNodeOverrides[decorationId];
-
-    if (overrides == null || overrides.isEmpty) {
-      return const <String, Map<String, dynamic>>{};
-    }
-
-    return <String, Map<String, dynamic>>{
-      for (final entry in overrides.entries)
-        entry.key: _roomNodeOverrideToJson(entry.value),
-    };
-  }
-
-  _RoomNodeOverride _roomNodeOverrideFor(String? decorationId, String nodeId) {
-    if (decorationId == null) {
-      return const _RoomNodeOverride();
-    }
-
-    return _roomNodeOverrides[decorationId]?[nodeId] ??
-        const _RoomNodeOverride();
-  }
-
-  CompositeNode? _findCompositeNodeById(CompositeNode node, String nodeId) {
-    if (node.id == nodeId) {
-      return node;
-    }
-
-    for (final child in node.children) {
-      final match = _findCompositeNodeById(child, nodeId);
-
-      if (match != null) {
-        return match;
-      }
-    }
-
-    return null;
-  }
-
-  List<CompositeNode> _variantNodesForSelectedRoomNode() {
-    final selectedNodeId = _selectedRoomNodeId;
-    final item = _selectedDecorationBagItem;
-    final composite = item?.composite;
-
-    if (!_isEditingRoomContents ||
-        selectedNodeId == null ||
-        composite == null) {
-      return const <CompositeNode>[];
-    }
-
-    final selectedNode = _findCompositeNodeById(composite.root, selectedNodeId);
-
-    if (selectedNode == null) {
-      return const <CompositeNode>[];
-    }
-
-    final variants = <CompositeNode>[];
-
-    void collect(CompositeNode node) {
-      if (!node.visible) {
-        return;
-      }
-
-      if (node.type == 'variant') {
-        if (node.children.isNotEmpty) {
-          variants.add(node);
-        }
-
-        // A Variant node represents one independent slot.
-        // Its children are alternatives belonging to that slot, so do not
-        // interpret descendants inside those alternatives as sibling slots.
-        return;
-      }
-
-      for (final child in node.children) {
-        collect(child);
-      }
-    }
-
-    collect(selectedNode);
-
-    return variants;
-  }
-
-  List<CompositeNode> get _selectedRoomVariantNodes =>
-      _variantNodesForSelectedRoomNode();
-
-  int _activeRoomVariantIndex(String? decorationId, CompositeNode variantNode) {
-    if (variantNode.children.isEmpty) {
-      return 0;
-    }
-
-    final authored = (variantNode.payload['activeIndex'] as num?)?.toInt() ?? 0;
-
-    final override = _roomNodeOverrideFor(decorationId, variantNode.id);
-
-    final requested = override.activeVariantIndex ?? authored;
-
-    return requested.clamp(0, variantNode.children.length - 1);
-  }
-
-  String _roomVariantSlotName(CompositeNode variantNode) {
-    final name = variantNode.name.trim();
-
-    if (name.isNotEmpty) {
-      return name;
-    }
-
-    return 'Variant';
-  }
-
-  String _roomVariantChoiceName(CompositeNode variantNode) {
-    final decorationId = _editingRoomDecorationId;
-
-    if (decorationId == null || variantNode.children.isEmpty) {
-      return 'None';
-    }
-
-    final activeIndex = _activeRoomVariantIndex(decorationId, variantNode);
-
-    final activeChild = variantNode.children[activeIndex];
-    final childName = activeChild.name.trim();
-
-    if (childName.isNotEmpty) {
-      return childName;
-    }
-
-    return '${activeIndex + 1}';
-  }
-
-  String _roomVariantLabel(CompositeNode variantNode) {
-    return '${_roomVariantSlotName(variantNode)}: '
-        '${_roomVariantChoiceName(variantNode)}';
-  }
-
-  void _stepRoomVariant(CompositeNode variantNode, int delta) {
-    final decorationId = _editingRoomDecorationId;
-
-    if (decorationId == null || variantNode.children.isEmpty) {
-      return;
-    }
-
-    final currentIndex = _activeRoomVariantIndex(decorationId, variantNode);
-
-    final count = variantNode.children.length;
-    final nextIndex = (currentIndex + delta) % count;
-    final safeNextIndex = nextIndex < 0 ? nextIndex + count : nextIndex;
-
-    setState(() {
-      final roomOverrides = _roomNodeOverrides.putIfAbsent(
-        decorationId,
-        () => <String, _RoomNodeOverride>{},
-      );
-
-      final current =
-          roomOverrides[variantNode.id] ?? const _RoomNodeOverride();
-
-      roomOverrides[variantNode.id] = current.copyWith(
-        activeVariantIndex: safeNextIndex,
-      );
-    });
-
-    _saveDecorations();
-  }
-
-  void _updateSelectedRoomNodeOverride(
-    _RoomNodeOverride Function(_RoomNodeOverride current) update, {
-    bool persist = true,
-  }) {
-    final decorationId = _editingRoomDecorationId;
-    final nodeId = _selectedRoomNodeId;
-
-    if (decorationId == null || nodeId == null) {
-      return;
-    }
-
-    setState(() {
-      final roomOverrides = _roomNodeOverrides.putIfAbsent(
-        decorationId,
-        () => <String, _RoomNodeOverride>{},
-      );
-
-      final current = roomOverrides[nodeId] ?? const _RoomNodeOverride();
-
-      final next = update(current);
-
-      if (next.isIdentity) {
-        roomOverrides.remove(nodeId);
-
-        if (roomOverrides.isEmpty) {
-          _roomNodeOverrides.remove(decorationId);
-        }
-      } else {
-        roomOverrides[nodeId] = next;
-      }
-    });
-
-    if (persist) {
-      _saveDecorations();
-    }
-  }
-
-  void _nudgeSelectedRoomNode(double dx, double dy, {bool persist = true}) {
-    _updateSelectedRoomNodeOverride(
-      (current) => current.copyWith(
-        offsetX: current.offsetX + dx,
-        offsetY: current.offsetY + dy,
-      ),
-      persist: persist,
-    );
-  }
-
-  void _scaleSelectedRoomNode(double factor) {
-    _updateSelectedRoomNodeOverride(
-      (current) =>
-          current.copyWith(scale: (current.scale * factor).clamp(0.1, 10.0)),
-    );
-  }
-
-  void _mirrorSelectedRoomNode() {
-    _updateSelectedRoomNodeOverride(
-      (current) => current.copyWith(mirrored: !current.mirrored),
-    );
-  }
-
-  void _resetSelectedRoomNodeOverride() {
-    final decorationId = _editingRoomDecorationId;
-    final nodeId = _selectedRoomNodeId;
-
-    if (decorationId == null || nodeId == null) {
-      return;
-    }
-
-    setState(() {
-      final roomOverrides = _roomNodeOverrides[decorationId];
-
-      roomOverrides?.remove(nodeId);
-
-      if (roomOverrides != null && roomOverrides.isEmpty) {
-        _roomNodeOverrides.remove(decorationId);
-      }
-    });
-
-    _saveDecorations();
-  }
-
-  Offset _inverseRoomNodeOverridePoint({
-    required Offset point,
-    required Size canvasSize,
-    required _RoomNodeOverride override,
-  }) {
-    if (override.isIdentity) {
-      return point;
-    }
-
-    var local = point - Offset(override.offsetX, override.offsetY);
-
-    final center = Offset(canvasSize.width / 2, canvasSize.height / 2);
-
-    local -= center;
-
-    final signedScaleX = override.mirrored ? -override.scale : override.scale;
-
-    if (signedScaleX.abs() < 0.000001 || override.scale.abs() < 0.000001) {
-      return point;
-    }
-
-    local = Offset(local.dx / signedScaleX, local.dy / override.scale);
-
-    return local + center;
-  }
-
-  Widget _applyRoomNodeOverride({
-    required CompositeNode node,
-    required Widget child,
-    required String? decorationId,
-  }) {
-    final override = _roomNodeOverrideFor(decorationId, node.id);
-
-    if (override.isIdentity) {
-      return child;
-    }
-
-    Widget result = Transform.scale(
-      scaleX: override.mirrored ? -override.scale : override.scale,
-      scaleY: override.scale,
-      alignment: Alignment.center,
-      child: child,
-    );
-
-    result = Transform.translate(
-      offset: Offset(override.offsetX, override.offsetY),
-      child: result,
-    );
-
-    return result;
   }
 
   List<VectorStroke> _compositeLayerStrokes(CompositeNode node) {
@@ -1717,29 +703,20 @@ class _HomeScreenState extends State<HomeScreen> {
   Widget _buildCompositeNode(
     CompositeNode node, {
     required CompositeAsset asset,
-    required String? decorationId,
   }) {
     if (!node.visible) {
       return const SizedBox.shrink();
     }
 
     if (node.type == 'group') {
-      return _applyRoomNodeOverride(
-        node: node,
-        decorationId: decorationId,
-        child: Stack(
-          fit: StackFit.expand,
-          children: [
-            // Composite children are stored front-to-back, matching the
-            // Workspace Layers panel. Stack paints first-to-last, so reverse.
-            for (final child in node.children.reversed)
-              _buildCompositeNode(
-                child,
-                asset: asset,
-                decorationId: decorationId,
-              ),
-          ],
-        ),
+      return Stack(
+        fit: StackFit.expand,
+        children: [
+          // Composite children are stored front-to-back, matching the
+          // Workspace Layers panel. Stack paints first-to-last, so reverse.
+          for (final child in node.children.reversed)
+            _buildCompositeNode(child, asset: asset),
+        ],
       );
     }
 
@@ -1748,17 +725,11 @@ class _HomeScreenState extends State<HomeScreen> {
         return const SizedBox.shrink();
       }
 
-      final activeIndex = _activeRoomVariantIndex(decorationId, node);
+      final rawIndex = (node.payload['activeIndex'] as num?)?.toInt() ?? 0;
 
-      return _applyRoomNodeOverride(
-        node: node,
-        decorationId: decorationId,
-        child: _buildCompositeNode(
-          node.children[activeIndex],
-          asset: asset,
-          decorationId: decorationId,
-        ),
-      );
+      final activeIndex = rawIndex.clamp(0, node.children.length - 1);
+
+      return _buildCompositeNode(node.children[activeIndex], asset: asset);
     }
 
     if (node.type == 'layer') {
@@ -1768,25 +739,21 @@ class _HomeScreenState extends State<HomeScreen> {
         return const SizedBox.shrink();
       }
 
-      return _applyRoomNodeOverride(
-        node: node,
-        decorationId: decorationId,
-        child: CustomPaint(
-          painter: AnimationCanvasPainter(
-            strokes: strokes,
-            currentStroke: null,
-            previousOnionSkinStrokes: const <VectorStroke>[],
-            nextOnionSkinStrokes: const <VectorStroke>[],
-            strokeColor: Colors.transparent,
-            strokeWidth: 1.0,
-            brushType: StrokeBrushType.solid,
-            backgroundColor: Colors.transparent,
-            paintBackground: false,
-            previousOnionSkinColor: Colors.transparent,
-            nextOnionSkinColor: Colors.transparent,
-          ),
-          child: const SizedBox.expand(),
+      return CustomPaint(
+        painter: AnimationCanvasPainter(
+          strokes: strokes,
+          currentStroke: null,
+          previousOnionSkinStrokes: const <VectorStroke>[],
+          nextOnionSkinStrokes: const <VectorStroke>[],
+          strokeColor: Colors.transparent,
+          strokeWidth: 1.0,
+          brushType: StrokeBrushType.solid,
+          backgroundColor: Colors.transparent,
+          paintBackground: false,
+          previousOnionSkinColor: Colors.transparent,
+          nextOnionSkinColor: Colors.transparent,
         ),
+        child: const SizedBox.expand(),
       );
     }
 
@@ -1814,27 +781,23 @@ class _HomeScreenState extends State<HomeScreen> {
 
       final scaleY = (node.payload['scaleY'] as num?)?.toDouble() ?? 1.0;
 
-      return _applyRoomNodeOverride(
-        node: node,
-        decorationId: decorationId,
-        child: Transform.translate(
-          offset: Offset(offsetX, offsetY),
-          child: Transform.rotate(
-            angle: rotation,
+      return Transform.translate(
+        offset: Offset(offsetX, offsetY),
+        child: Transform.rotate(
+          angle: rotation,
+          alignment: Alignment.center,
+          child: Transform.scale(
+            scaleX: scaleX,
+            scaleY: scaleY,
             alignment: Alignment.center,
-            child: Transform.scale(
-              scaleX: scaleX,
-              scaleY: scaleY,
-              alignment: Alignment.center,
-              child: Opacity(
-                opacity: opacity,
-                child: Image.file(
-                  File(mediaPath),
-                  fit: BoxFit.contain,
-                  errorBuilder: (context, error, stackTrace) {
-                    return const SizedBox.shrink();
-                  },
-                ),
+            child: Opacity(
+              opacity: opacity,
+              child: Image.file(
+                File(mediaPath),
+                fit: BoxFit.contain,
+                errorBuilder: (context, error, stackTrace) {
+                  return const SizedBox.shrink();
+                },
               ),
             ),
           ),
@@ -1845,10 +808,7 @@ class _HomeScreenState extends State<HomeScreen> {
     return const SizedBox.shrink();
   }
 
-  Widget _buildCompositeDecoration(
-    BagItem item, {
-    required PlacedDecoration decoration,
-  }) {
+  Widget _buildCompositeDecoration(BagItem item) {
     final composite = item.composite;
 
     if (composite == null ||
@@ -1865,11 +825,7 @@ class _HomeScreenState extends State<HomeScreen> {
       child: SizedBox(
         width: composite.canvasWidth,
         height: composite.canvasHeight,
-        child: _buildCompositeNode(
-          composite.root,
-          asset: composite,
-          decorationId: decoration.id,
-        ),
+        child: _buildCompositeNode(composite.root, asset: composite),
       ),
     );
   }
@@ -3076,50 +2032,25 @@ class _HomeScreenState extends State<HomeScreen> {
                                           _selectedDecorationId = decoration.id;
                                         });
                                       },
-                                onPanStart: !_decorateMode
-                                    ? null
-                                    : (details) {
-                                        if (_isEditingRoomContents &&
+                                onPanStart:
+                                    !_decorateMode ||
+                                        (_isEditingRoomContents &&
                                             decoration.id ==
-                                                _editingRoomDecorationId &&
-                                            bagItem.isComposite) {
-                                          _selectCompositeRoomChild(
-                                            decoration: decoration,
-                                            bagItem: bagItem,
-                                            localPosition:
-                                                details.localPosition,
-                                            decorationSize: Size(
-                                              decorationWidth,
-                                              decorationHeight,
-                                            ),
-                                          );
-                                          return;
-                                        }
-
+                                                _editingRoomDecorationId)
+                                    ? null
+                                    : (_) {
                                         setState(() {
                                           _selectedDecorationId = decoration.id;
                                         });
                                       },
-                                onPanUpdate: !_decorateMode
+                                onPanUpdate:
+                                    !_decorateMode ||
+                                        (_isEditingRoomContents &&
+                                            decoration.id ==
+                                                _editingRoomDecorationId)
                                     ? null
                                     : (details) {
                                         if (_decorateTouchPointers.length > 1) {
-                                          return;
-                                        }
-
-                                        if (_isEditingRoomContents &&
-                                            decoration.id ==
-                                                _editingRoomDecorationId &&
-                                            bagItem.isComposite) {
-                                          _dragCompositeRoomChild(
-                                            decoration: decoration,
-                                            bagItem: bagItem,
-                                            delta: details.delta,
-                                            decorationSize: Size(
-                                              decorationWidth,
-                                              decorationHeight,
-                                            ),
-                                          );
                                           return;
                                         }
 
@@ -3153,17 +2084,13 @@ class _HomeScreenState extends State<HomeScreen> {
                                           );
                                         });
                                       },
-                                onPanEnd: !_decorateMode
+                                onPanEnd:
+                                    !_decorateMode ||
+                                        (_isEditingRoomContents &&
+                                            decoration.id ==
+                                                _editingRoomDecorationId)
                                     ? null
                                     : (_) {
-                                        if (_isEditingRoomContents &&
-                                            decoration.id ==
-                                                _editingRoomDecorationId &&
-                                            bagItem.isComposite) {
-                                          _saveDecorations();
-                                          return;
-                                        }
-
                                         _saveDecorations();
                                       },
                                 child: DecoratedBox(
@@ -3213,7 +2140,6 @@ class _HomeScreenState extends State<HomeScreen> {
                                           if (bagItem.isComposite) {
                                             return _buildCompositeDecoration(
                                               bagItem,
-                                              decoration: decoration,
                                             );
                                           }
 
@@ -3528,39 +2454,11 @@ class _HomeScreenState extends State<HomeScreen> {
                                 ),
                               if (_decorateMode && _isEditingRoomContents)
                                 IconButton(
-                                  tooltip: _canGoBackRoomScope
-                                      ? 'Back to Parent'
-                                      : 'Exit Room',
-                                  onPressed: _backRoomScope,
-                                  icon: Icon(
-                                    _canGoBackRoomScope
-                                        ? Icons.arrow_back
-                                        : Icons.exit_to_app,
+                                  tooltip: 'Exit Room',
+                                  onPressed: _exitRoomContents,
+                                  icon: const Icon(
+                                    Icons.exit_to_app,
                                     color: Colors.amberAccent,
-                                  ),
-                                ),
-                              if (_decorateMode && _isEditingRoomContents)
-                                Padding(
-                                  padding: const EdgeInsets.symmetric(
-                                    horizontal: 6,
-                                  ),
-                                  child: Chip(
-                                    avatar: const Icon(
-                                      Icons.account_tree_outlined,
-                                      size: 18,
-                                      color: Colors.cyanAccent,
-                                    ),
-                                    label: Text(
-                                      _currentRoomScopeName,
-                                      overflow: TextOverflow.ellipsis,
-                                    ),
-                                    backgroundColor: Colors.black54,
-                                    side: const BorderSide(
-                                      color: Colors.cyanAccent,
-                                    ),
-                                    labelStyle: const TextStyle(
-                                      color: Colors.white,
-                                    ),
                                   ),
                                 ),
                               if (_isEditingRoomContents &&
@@ -3589,153 +2487,6 @@ class _HomeScreenState extends State<HomeScreen> {
                                     ),
                                   ),
                                 ),
-                              if (_isEditingRoomContents &&
-                                  _currentRoomScopeChildren.isNotEmpty) ...[
-                                IconButton(
-                                  tooltip: 'Previous Item',
-                                  onPressed: () => _cycleRoomScopeSelection(-1),
-                                  icon: const Icon(
-                                    Icons.skip_previous,
-                                    color: Colors.cyanAccent,
-                                  ),
-                                ),
-                                IconButton(
-                                  tooltip: 'Next Item',
-                                  onPressed: () => _cycleRoomScopeSelection(1),
-                                  icon: const Icon(
-                                    Icons.skip_next,
-                                    color: Colors.cyanAccent,
-                                  ),
-                                ),
-                              ],
-                              if (_isEditingRoomContents &&
-                                  _canEnterSelectedRoomNode)
-                                IconButton(
-                                  tooltip: 'Enter Group',
-                                  onPressed: _enterSelectedRoomNode,
-                                  icon: const Icon(
-                                    Icons.login,
-                                    color: Colors.amberAccent,
-                                  ),
-                                ),
-                              if (_isEditingRoomContents)
-                                for (final variantNode
-                                    in _selectedRoomVariantNodes) ...[
-                                  IconButton(
-                                    tooltip:
-                                        'Previous ${_roomVariantSlotName(variantNode)}',
-                                    onPressed: () =>
-                                        _stepRoomVariant(variantNode, -1),
-                                    icon: const Icon(
-                                      Icons.chevron_left,
-                                      color: Colors.amberAccent,
-                                    ),
-                                  ),
-                                  ConstrainedBox(
-                                    constraints: const BoxConstraints(
-                                      maxWidth: 220,
-                                    ),
-                                    child: Chip(
-                                      avatar: const Icon(
-                                        Icons.auto_awesome_mosaic_outlined,
-                                        size: 18,
-                                        color: Colors.amberAccent,
-                                      ),
-                                      label: Text(
-                                        _roomVariantLabel(variantNode),
-                                        overflow: TextOverflow.ellipsis,
-                                      ),
-                                      backgroundColor: Colors.black54,
-                                      side: const BorderSide(
-                                        color: Colors.amberAccent,
-                                      ),
-                                      labelStyle: const TextStyle(
-                                        color: Colors.white,
-                                      ),
-                                    ),
-                                  ),
-                                  IconButton(
-                                    tooltip:
-                                        'Next ${_roomVariantSlotName(variantNode)}',
-                                    onPressed: () =>
-                                        _stepRoomVariant(variantNode, 1),
-                                    icon: const Icon(
-                                      Icons.chevron_right,
-                                      color: Colors.amberAccent,
-                                    ),
-                                  ),
-                                ],
-                              if (_isEditingRoomContents &&
-                                  _selectedRoomNodeId != null) ...[
-                                IconButton(
-                                  tooltip: 'Move Left',
-                                  onPressed: () =>
-                                      _nudgeSelectedRoomNode(-24, 0),
-                                  icon: const Icon(
-                                    Icons.arrow_left,
-                                    color: Colors.white,
-                                  ),
-                                ),
-                                IconButton(
-                                  tooltip: 'Move Right',
-                                  onPressed: () =>
-                                      _nudgeSelectedRoomNode(24, 0),
-                                  icon: const Icon(
-                                    Icons.arrow_right,
-                                    color: Colors.white,
-                                  ),
-                                ),
-                                IconButton(
-                                  tooltip: 'Move Up',
-                                  onPressed: () =>
-                                      _nudgeSelectedRoomNode(0, -24),
-                                  icon: const Icon(
-                                    Icons.arrow_drop_up,
-                                    color: Colors.white,
-                                  ),
-                                ),
-                                IconButton(
-                                  tooltip: 'Move Down',
-                                  onPressed: () =>
-                                      _nudgeSelectedRoomNode(0, 24),
-                                  icon: const Icon(
-                                    Icons.arrow_drop_down,
-                                    color: Colors.white,
-                                  ),
-                                ),
-                                IconButton(
-                                  tooltip: 'Scale Down',
-                                  onPressed: () => _scaleSelectedRoomNode(0.9),
-                                  icon: const Icon(
-                                    Icons.zoom_out,
-                                    color: Colors.white,
-                                  ),
-                                ),
-                                IconButton(
-                                  tooltip: 'Scale Up',
-                                  onPressed: () => _scaleSelectedRoomNode(1.1),
-                                  icon: const Icon(
-                                    Icons.zoom_in,
-                                    color: Colors.white,
-                                  ),
-                                ),
-                                IconButton(
-                                  tooltip: 'Mirror',
-                                  onPressed: _mirrorSelectedRoomNode,
-                                  icon: const Icon(
-                                    Icons.flip,
-                                    color: Colors.white,
-                                  ),
-                                ),
-                                IconButton(
-                                  tooltip: 'Reset Item',
-                                  onPressed: _resetSelectedRoomNodeOverride,
-                                  icon: const Icon(
-                                    Icons.restart_alt,
-                                    color: Colors.amberAccent,
-                                  ),
-                                ),
-                              ],
                               if (_decorateMode &&
                                   !_isEditingRoomContents &&
                                   _selectedDecoration != null) ...[

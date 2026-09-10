@@ -1618,44 +1618,22 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
         );
       }
 
-      final boundarySize = renderObject.size;
-
-      if (boundarySize.width <= 0 || boundarySize.height <= 0) {
-        throw StateError('Composite capture surface has no size.');
-      }
-
-      // Capture at the project's authored canvas resolution rather than
-      // whatever physical size the FittedBox currently occupies on screen.
-      final targetPixelRatioX = _canvasWidth / boundarySize.width;
-      final targetPixelRatioY = _canvasHeight / boundarySize.height;
-
-      final capturePixelRatio = math.max(targetPixelRatioX, targetPixelRatioY);
-
-      final image = await renderObject.toImage(pixelRatio: capturePixelRatio);
+      final image = await renderObject.toImage(pixelRatio: 1.0);
 
       try {
-        final rawRgba = await image.toByteData(
-          format: ui.ImageByteFormat.rawRgba,
-        );
+        final byteData = await image.toByteData(format: ui.ImageByteFormat.png);
 
-        if (rawRgba == null) {
-          throw StateError('Could not read Composite RGBA pixels.');
+        if (byteData == null) {
+          throw StateError('Could not encode Composite PNG.');
         }
 
-        final rgbaBytes = Uint8List.fromList(
-          rawRgba.buffer.asUint8List(
-            rawRgba.offsetInBytes,
-            rawRgba.lengthInBytes,
-          ),
+        final pngBytes = byteData.buffer.asUint8List(
+          byteData.offsetInBytes,
+          byteData.lengthInBytes,
         );
 
         final outputPath = await const AnimationExportService()
-            .exportRawRgbaPngAsset(
-              assetName: group.name,
-              width: image.width,
-              height: image.height,
-              rgbaBytes: rgbaBytes,
-            );
+            .exportRenderedPngAsset(assetName: group.name, pngBytes: pngBytes);
 
         if (!mounted) {
           return;
@@ -9208,7 +9186,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     final selected = _activeReferenceLayerId == reference.id;
 
     return Container(
-      margin: EdgeInsets.fromLTRB(6.0 + (hierarchyDepth * 10.0), 4, 6, 0),
+      margin: EdgeInsets.fromLTRB(6.0 + (hierarchyDepth * 16.0), 4, 6, 0),
       decoration: BoxDecoration(
         color: selected
             ? Colors.amberAccent.withValues(alpha: 0.10)
@@ -9258,28 +9236,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                 ),
                 const SizedBox(width: 8),
                 Expanded(
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        reference.name,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                      ),
-                      Text(
-                        reference.mediaType == 'video'
-                            ? 'Reference Video'
-                            : 'Reference Image',
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: const TextStyle(
-                          fontSize: 10,
-                          color: Colors.white54,
-                        ),
-                      ),
-                    ],
-                  ),
+                  child: Text(reference.name, overflow: TextOverflow.ellipsis),
                 ),
                 if (selected)
                   const Padding(
@@ -9437,44 +9394,39 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
       return;
     }
 
-    var draftName = 'Variant Slot';
+    final controller = TextEditingController(text: 'Variant Slot');
 
     final name = await showDialog<String>(
       context: context,
       builder: (dialogContext) {
         return AlertDialog(
           title: const Text('Create Variant Slot'),
-          content: TextFormField(
-            initialValue: draftName,
+          content: TextField(
+            controller: controller,
             autofocus: true,
-            textCapitalization: TextCapitalization.words,
-            textInputAction: TextInputAction.done,
             decoration: const InputDecoration(
               labelText: 'Slot name',
               hintText: 'e.g. Window View',
             ),
-            onChanged: (value) {
-              draftName = value;
-            },
-            onFieldSubmitted: (value) {
+            onSubmitted: (value) {
               final trimmed = value.trim();
 
               if (trimmed.isNotEmpty) {
-                Navigator.of(dialogContext).pop(trimmed);
+                Navigator.pop(dialogContext, trimmed);
               }
             },
           ),
           actions: [
             TextButton(
-              onPressed: () => Navigator.of(dialogContext).pop(),
+              onPressed: () => Navigator.pop(dialogContext),
               child: const Text('Cancel'),
             ),
             FilledButton(
               onPressed: () {
-                final trimmed = draftName.trim();
+                final trimmed = controller.text.trim();
 
                 if (trimmed.isNotEmpty) {
-                  Navigator.of(dialogContext).pop(trimmed);
+                  Navigator.pop(dialogContext, trimmed);
                 }
               },
               child: const Text('Create'),
@@ -9483,6 +9435,8 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
         );
       },
     );
+
+    controller.dispose();
 
     if (name == null || !mounted) {
       return;
@@ -9855,7 +9809,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     }
 
     return Container(
-      margin: EdgeInsets.fromLTRB(6.0 + (depth * 10.0), 4, 6, 0),
+      margin: EdgeInsets.fromLTRB(6.0 + (depth * 16.0), 4, 6, 0),
       decoration: BoxDecoration(
         color: Colors.deepPurpleAccent.withValues(alpha: 0.07),
         borderRadius: BorderRadius.circular(10),
@@ -9869,113 +9823,84 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
           Row(
             children: [
               _buildHierarchyDragHandle('variant:${slot.id}'),
-              SizedBox(
-                width: 34,
-                height: 34,
-                child: IconButton(
-                  tooltip: slot.expanded
-                      ? 'Collapse Variant Slot'
-                      : 'Expand Variant Slot',
-                  padding: EdgeInsets.zero,
-                  visualDensity: VisualDensity.compact,
-                  onPressed: () => _toggleVariantSlotExpanded(slot.id),
-                  icon: Icon(
-                    slot.expanded
-                        ? Icons.keyboard_arrow_down
-                        : Icons.keyboard_arrow_right,
-                    size: 20,
-                  ),
+              IconButton(
+                tooltip: slot.expanded
+                    ? 'Collapse Variant Slot'
+                    : 'Expand Variant Slot',
+                visualDensity: VisualDensity.compact,
+                onPressed: () => _toggleVariantSlotExpanded(slot.id),
+                icon: Icon(
+                  slot.expanded
+                      ? Icons.keyboard_arrow_down
+                      : Icons.keyboard_arrow_right,
+                  size: 20,
                 ),
               ),
-              const Icon(Icons.tune, size: 16),
-              const SizedBox(width: 4),
+              const Icon(Icons.tune, size: 18),
+              const SizedBox(width: 6),
               Expanded(
                 child: Tooltip(
                   message: slot.name,
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        slot.name,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: const TextStyle(fontWeight: FontWeight.w600),
-                      ),
-                      Text(
-                        'Variant Slot • ${slot.childOrder.length} '
-                        '${slot.childOrder.length == 1 ? 'choice' : 'choices'}',
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: const TextStyle(
-                          fontSize: 10,
-                          color: Colors.white54,
-                        ),
-                      ),
-                    ],
+                  child: Text(
+                    slot.name,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(fontWeight: FontWeight.w600),
                   ),
                 ),
               ),
-              SizedBox(
-                width: 34,
-                height: 34,
-                child: IconButton(
-                  tooltip: _editingVariantSlotId == slot.id
-                      ? 'Editing Variant Slot'
-                      : 'Rename Variant Slot',
-                  padding: EdgeInsets.zero,
-                  visualDensity: VisualDensity.compact,
-                  onPressed: _isPlaying || _editingVariantSlotId == slot.id
-                      ? null
-                      : () => _beginVariantSlotRename(slot.id),
-                  icon: Icon(
-                    _editingVariantSlotId == slot.id
-                        ? Icons.edit
-                        : Icons.edit_outlined,
-                    size: 17,
-                  ),
+              Text(
+                '${slot.childOrder.length}',
+                style: const TextStyle(fontSize: 11, color: Colors.white54),
+              ),
+              IconButton(
+                tooltip: _editingVariantSlotId == slot.id
+                    ? 'Editing Variant Slot'
+                    : 'Rename Variant Slot',
+                visualDensity: VisualDensity.compact,
+                onPressed: _isPlaying || _editingVariantSlotId == slot.id
+                    ? null
+                    : () => _beginVariantSlotRename(slot.id),
+                icon: Icon(
+                  _editingVariantSlotId == slot.id
+                      ? Icons.edit
+                      : Icons.edit_outlined,
+                  size: 18,
                 ),
               ),
-              SizedBox(
-                width: 34,
-                height: 34,
-                child: PopupMenuButton<String>(
-                  tooltip: 'Variant Slot Options',
-                  padding: EdgeInsets.zero,
-                  iconSize: 18,
-                  enabled: !_isPlaying,
-                  onSelected: (value) {
-                    if (value == 'add') {
-                      WidgetsBinding.instance.addPostFrameCallback((_) {
-                        if (mounted) {
-                          _addVariantToSlot(slot.id);
-                        }
-                      });
-                    } else if (value == 'delete') {
-                      _deleteVariantSlot(slot.id);
-                    }
-                  },
-                  itemBuilder: (context) => const [
-                    PopupMenuItem<String>(
-                      value: 'add',
-                      child: ListTile(
-                        dense: true,
-                        contentPadding: EdgeInsets.zero,
-                        leading: Icon(Icons.add_circle_outline),
-                        title: Text('Add Variant'),
-                      ),
+              PopupMenuButton<String>(
+                tooltip: 'Variant Slot Options',
+                enabled: !_isPlaying,
+                onSelected: (value) {
+                  if (value == 'add') {
+                    WidgetsBinding.instance.addPostFrameCallback((_) {
+                      if (mounted) {
+                        _addVariantToSlot(slot.id);
+                      }
+                    });
+                  } else if (value == 'delete') {
+                    _deleteVariantSlot(slot.id);
+                  }
+                },
+                itemBuilder: (context) => const [
+                  PopupMenuItem<String>(
+                    value: 'add',
+                    child: ListTile(
+                      dense: true,
+                      contentPadding: EdgeInsets.zero,
+                      leading: Icon(Icons.add_circle_outline),
+                      title: Text('Add Variant'),
                     ),
-                    PopupMenuItem<String>(
-                      value: 'delete',
-                      child: ListTile(
-                        dense: true,
-                        contentPadding: EdgeInsets.zero,
-                        leading: Icon(Icons.delete_outline),
-                        title: Text('Delete Variant Slot'),
-                      ),
+                  ),
+                  PopupMenuItem<String>(
+                    value: 'delete',
+                    child: ListTile(
+                      dense: true,
+                      contentPadding: EdgeInsets.zero,
+                      leading: Icon(Icons.delete_outline),
+                      title: Text('Delete Variant Slot'),
                     ),
-                  ],
-                ),
+                  ),
+                ],
               ),
             ],
           ),
@@ -10486,7 +10411,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     }
 
     return Container(
-      margin: EdgeInsets.fromLTRB(6.0 + (depth * 10.0), 4, 6, 0),
+      margin: EdgeInsets.fromLTRB(6.0 + (depth * 16.0), 4, 6, 0),
       decoration: BoxDecoration(
         color: selected
             ? Colors.deepPurpleAccent.withValues(alpha: 0.14)
@@ -10539,30 +10464,14 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                   child: Tooltip(
                     message: group.name,
                     preferBelow: false,
-                    child: Column(
-                      mainAxisSize: MainAxisSize.min,
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          group.name,
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: TextStyle(
-                            fontWeight: selected
-                                ? FontWeight.w600
-                                : FontWeight.normal,
-                          ),
-                        ),
-                        Text(
-                          'Group • ${group.childOrder.length} items',
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: const TextStyle(
-                            fontSize: 10,
-                            color: Colors.white54,
-                          ),
-                        ),
-                      ],
+                    child: Text(
+                      group.name,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        fontWeight: selected
+                            ? FontWeight.w600
+                            : FontWeight.normal,
+                      ),
                     ),
                   ),
                 ),
@@ -10650,7 +10559,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     return Container(
       margin: EdgeInsets.fromLTRB(
         hierarchyDepth > 0
-            ? 6.0 + (hierarchyDepth * 10.0)
+            ? 6.0 + (hierarchyDepth * 16.0)
             : (indented ? 22.0 : 6.0),
         4,
         6,
@@ -10708,30 +10617,14 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                     child: Tooltip(
                       message: layer.name,
                       preferBelow: false,
-                      child: Column(
-                        mainAxisSize: MainAxisSize.min,
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(
-                            layer.name,
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                            style: TextStyle(
-                              fontWeight: selected
-                                  ? FontWeight.w600
-                                  : FontWeight.normal,
-                            ),
-                          ),
-                          const Text(
-                            'Drawing Layer',
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                            style: TextStyle(
-                              fontSize: 10,
-                              color: Colors.white54,
-                            ),
-                          ),
-                        ],
+                      child: Text(
+                        layer.name,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                          fontWeight: selected
+                              ? FontWeight.w600
+                              : FontWeight.normal,
+                        ),
                       ),
                     ),
                   ),
@@ -13087,11 +12980,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                               if (_layersPanelExpanded) ...[
                                 if (!_isVideoScrubbing)
                                   SizedBox(
-                                    width: constraints.maxWidth >= 900
-                                        ? 430
-                                        : constraints.maxWidth >= 700
-                                        ? 380
-                                        : constraints.maxWidth - 32,
+                                    width: 300,
                                     child: Padding(
                                       padding: const EdgeInsets.fromLTRB(
                                         8,
@@ -13212,14 +13101,10 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                                   const Divider(height: 1),
 
                                 SizedBox(
-                                  width: constraints.maxWidth >= 900
-                                      ? 430
-                                      : constraints.maxWidth >= 700
-                                      ? 380
-                                      : constraints.maxWidth - 32,
+                                  width: 300,
                                   child: ConstrainedBox(
-                                    constraints: BoxConstraints(
-                                      maxHeight: constraints.maxHeight * 0.68,
+                                    constraints: const BoxConstraints(
+                                      maxHeight: 300,
                                     ),
                                     child: SingleChildScrollView(
                                       key: _layersScrollViewportKey,

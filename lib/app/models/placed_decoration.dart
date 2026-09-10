@@ -8,6 +8,7 @@ class PlacedDecoration {
     required this.scale,
     required this.rotation,
     this.mirrored = false,
+    this.roomNodeOverrides = const <String, Map<String, dynamic>>{},
   });
 
   final String id;
@@ -22,6 +23,11 @@ class PlacedDecoration {
   final double rotation;
   final bool mirrored;
 
+  /// Instance-local overrides for authored Composite nodes.
+  ///
+  /// Keyed by Composite node ID. The reusable Bag source remains immutable.
+  final Map<String, Map<String, dynamic>> roomNodeOverrides;
+
   PlacedDecoration copyWith({
     String? id,
     String? bagItemId,
@@ -31,6 +37,7 @@ class PlacedDecoration {
     double? scale,
     double? rotation,
     bool? mirrored,
+    Map<String, Map<String, dynamic>>? roomNodeOverrides,
   }) {
     return PlacedDecoration(
       id: id ?? this.id,
@@ -41,10 +48,28 @@ class PlacedDecoration {
       scale: scale ?? this.scale,
       rotation: rotation ?? this.rotation,
       mirrored: mirrored ?? this.mirrored,
+      roomNodeOverrides: roomNodeOverrides ?? this.roomNodeOverrides,
     );
   }
 
   factory PlacedDecoration.fromJson(Map<String, dynamic> json) {
+    final roomNodeOverrides = <String, Map<String, dynamic>>{};
+
+    final rawOverrides = json['roomNodeOverrides'];
+
+    if (rawOverrides is Map) {
+      for (final entry in rawOverrides.entries) {
+        final rawNode = entry.value;
+
+        if (rawNode is Map) {
+          roomNodeOverrides[entry.key.toString()] = rawNode
+              .map<String, dynamic>(
+                (key, value) => MapEntry(key.toString(), value),
+              );
+        }
+      }
+    }
+
     return PlacedDecoration(
       id: json['id']?.toString() ?? '',
       bagItemId: json['bagItemId']?.toString() ?? '',
@@ -54,6 +79,7 @@ class PlacedDecoration {
       scale: (json['scale'] as num?)?.toDouble() ?? 1.0,
       rotation: (json['rotation'] as num?)?.toDouble() ?? 0.0,
       mirrored: json['mirrored'] == true,
+      roomNodeOverrides: roomNodeOverrides,
     );
   }
 
@@ -67,6 +93,7 @@ class PlacedDecoration {
       'scale': scale,
       'rotation': rotation,
       'mirrored': mirrored,
+      'roomNodeOverrides': roomNodeOverrides,
     };
   }
 }

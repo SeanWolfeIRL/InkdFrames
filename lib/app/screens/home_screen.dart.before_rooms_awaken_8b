@@ -220,15 +220,6 @@ class _HomeScreenState extends State<HomeScreen> {
   String? _selectedRoomNodeId;
   String? _selectedRoomNodeName;
 
-  // Rooms Awaken #9
-  //
-  // The current Composite hierarchy scope.
-  //
-  // Empty means the Composite root. Each entry is an authored group/node ID
-  // that has been entered. Only direct children of the current scope are
-  // selectable and transformable.
-  final List<String> _roomScopeNodeIds = <String>[];
-
   // Instance-local Composite overrides.
   //
   // outer key = placed decoration ID
@@ -261,7 +252,6 @@ class _HomeScreenState extends State<HomeScreen> {
       _selectedDecorationId = selected.id;
       _selectedRoomNodeId = null;
       _selectedRoomNodeName = null;
-      _roomScopeNodeIds.clear();
       _decorateMode = true;
     });
   }
@@ -273,7 +263,6 @@ class _HomeScreenState extends State<HomeScreen> {
       _editingRoomDecorationId = null;
       _selectedRoomNodeId = null;
       _selectedRoomNodeName = null;
-      _roomScopeNodeIds.clear();
 
       if (roomId != null &&
           _decorations.any((decoration) => decoration.id == roomId)) {
@@ -583,43 +572,19 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
-  void _collectCompositeImagePaths(CompositeNode node, Set<String> paths) {
-    if (node.type == 'reference') {
-      final mediaType = node.payload['mediaType']?.toString() ?? 'image';
-      final mediaPath = node.payload['mediaPath']?.toString() ?? '';
-
-      if (mediaType == 'image' && mediaPath.isNotEmpty) {
-        paths.add(mediaPath);
-      }
-    }
-
-    for (final child in node.children) {
-      _collectCompositeImagePaths(child, paths);
-    }
-  }
-
   Future<void> _primeImageAlphaMasks(Iterable<BagItem> items) async {
     final loaded = <String, _ImageAlphaMask>{};
-    final imagePaths = <String>{};
 
     for (final item in items) {
-      if (item.isImage) {
-        final imagePath = item.imagePath;
-
-        if (imagePath != null && imagePath.isNotEmpty) {
-          imagePaths.add(imagePath);
-        }
+      if (!item.isImage) {
+        continue;
       }
 
-      final composite = item.composite;
+      final imagePath = item.imagePath;
 
-      if (composite != null) {
-        _collectCompositeImagePaths(composite.root, imagePaths);
-      }
-    }
-
-    for (final imagePath in imagePaths) {
-      if (_imageAlphaMasks.containsKey(imagePath) ||
+      if (imagePath == null ||
+          imagePath.isEmpty ||
+          _imageAlphaMasks.containsKey(imagePath) ||
           loaded.containsKey(imagePath)) {
         continue;
       }
@@ -655,8 +620,8 @@ class _HomeScreenState extends State<HomeScreen> {
         frame.image.dispose();
         codec.dispose();
       } catch (_) {
-        // If an image cannot be decoded, leave it unmasked rather than
-        // breaking Home/Decorate rendering.
+        // If an image cannot be decoded, Decorate keeps the old
+        // rectangular hit behaviour rather than making it unreachable.
       }
     }
 
@@ -856,206 +821,6 @@ class _HomeScreenState extends State<HomeScreen> {
     }
 
     return false;
-  }
-
-  // --------------------------------------------------------
-  // ROOMS AWAKEN #9 - SCOPED HIERARCHY NAVIGATION
-  // --------------------------------------------------------
-
-  CompositeAsset? get _editingRoomComposite {
-    final decorationId = _editingRoomDecorationId;
-
-    if (decorationId == null) {
-      return null;
-    }
-
-    PlacedDecoration? decoration;
-
-    for (final candidate in _decorations) {
-      if (candidate.id == decorationId) {
-        decoration = candidate;
-        break;
-      }
-    }
-
-    if (decoration == null) {
-      return null;
-    }
-
-    return _bagItemsById[decoration.bagItemId]?.composite;
-  }
-
-  CompositeNode? _findCompositeNodeByIdScoped(CompositeNode node, String id) {
-    if (node.id == id) {
-      return node;
-    }
-
-    for (final child in node.children) {
-      final found = _findCompositeNodeByIdScoped(child, id);
-
-      if (found != null) {
-        return found;
-      }
-    }
-
-    return null;
-  }
-
-  CompositeNode? get _currentRoomScopeNode {
-    final composite = _editingRoomComposite;
-
-    if (composite == null) {
-      return null;
-    }
-
-    if (_roomScopeNodeIds.isEmpty) {
-      return composite.root;
-    }
-
-    final scopeId = _roomScopeNodeIds.last;
-
-    return _findCompositeNodeByIdScoped(composite.root, scopeId) ??
-        composite.root;
-  }
-
-  String get _currentRoomScopeName {
-    final scope = _currentRoomScopeNode;
-
-    if (scope == null || _roomScopeNodeIds.isEmpty) {
-      return 'Room';
-    }
-
-    final name = scope.name.trim();
-    return name.isEmpty ? 'Group' : name;
-  }
-
-  List<CompositeNode> get _currentRoomScopeChildren {
-    final scope = _currentRoomScopeNode;
-
-    if (scope == null) {
-      return const <CompositeNode>[];
-    }
-
-    return scope.children.where((child) => child.visible).toList();
-  }
-
-  CompositeNode? get _selectedRoomNodeInScope {
-    final selectedId = _selectedRoomNodeId;
-
-    if (selectedId == null) {
-      return null;
-    }
-
-    for (final child in _currentRoomScopeChildren) {
-      if (child.id == selectedId) {
-        return child;
-      }
-    }
-
-    return null;
-  }
-
-  bool get _canEnterSelectedRoomNode {
-    final selected = _selectedRoomNodeInScope;
-
-    if (selected == null) {
-      return false;
-    }
-
-    // Groups are true hierarchy containers.
-    //
-    // Variant Slots remain state-switchers rather than navigation scopes.
-    return selected.type == 'group' && selected.children.isNotEmpty;
-  }
-
-  bool get _canGoBackRoomScope => _roomScopeNodeIds.isNotEmpty;
-
-  void _enterSelectedRoomNode() {
-    final selected = _selectedRoomNodeInScope;
-
-    if (selected == null ||
-        selected.type != 'group' ||
-        selected.children.isEmpty) {
-      return;
-    }
-
-    setState(() {
-      _roomScopeNodeIds.add(selected.id);
-      _selectedRoomNodeId = null;
-      _selectedRoomNodeName = null;
-    });
-  }
-
-  void _backRoomScope() {
-    if (_roomScopeNodeIds.isEmpty) {
-      _exitRoomContents();
-      return;
-    }
-
-    setState(() {
-      _roomScopeNodeIds.removeLast();
-      _selectedRoomNodeId = null;
-      _selectedRoomNodeName = null;
-    });
-  }
-
-  void _cycleRoomScopeSelection(int direction) {
-    final children = _currentRoomScopeChildren;
-
-    if (children.isEmpty) {
-      return;
-    }
-
-    var currentIndex = children.indexWhere(
-      (child) => child.id == _selectedRoomNodeId,
-    );
-
-    if (currentIndex < 0) {
-      currentIndex = direction >= 0 ? -1 : 0;
-    }
-
-    final nextIndex = (currentIndex + direction) % children.length;
-
-    final selected = children[nextIndex];
-
-    setState(() {
-      _selectedRoomNodeId = selected.id;
-      _selectedRoomNodeName = selected.name.trim().isEmpty
-          ? selected.type
-          : selected.name;
-    });
-  }
-
-  CompositeNode? _findScopedCompositeHit({
-    required CompositeNode scope,
-    required Offset point,
-    required Size canvasSize,
-    required String decorationId,
-  }) {
-    // Only direct children of the active scope can become selected.
-    //
-    // The existing recursive hit tester is still used to determine whether
-    // the touch lands anywhere inside each direct child's visible content.
-    // If it does, selection resolves back to that direct child.
-    for (final child in scope.children) {
-      if (!child.visible) {
-        continue;
-      }
-
-      final hit = _findCompositeNodeHit(
-        child,
-        point,
-        canvasSize,
-        decorationId: decorationId,
-        semanticOwner: child,
-      );
-
-      if (hit != null) {
-        return child;
-      }
-    }
-
-    return null;
   }
 
   CompositeNode? _findCompositeNodeHit(
@@ -1275,20 +1040,16 @@ class _HomeScreenState extends State<HomeScreen> {
       (innerPoint.dy - fittedTop) / fitScale,
     );
 
-    final scope = _currentRoomScopeNode ?? composite.root;
-
-    final hit = _findScopedCompositeHit(
-      scope: scope,
-      point: compositePoint,
-      canvasSize: Size(composite.canvasWidth, composite.canvasHeight),
+    final hit = _findCompositeNodeHit(
+      composite.root,
+      compositePoint,
+      Size(composite.canvasWidth, composite.canvasHeight),
       decorationId: decoration.id,
     );
 
     setState(() {
       _selectedRoomNodeId = hit?.id;
-      _selectedRoomNodeName = hit == null
-          ? null
-          : (hit.name.trim().isEmpty ? hit.type : hit.name);
+      _selectedRoomNodeName = hit?.name;
     });
   }
 
@@ -1414,7 +1175,110 @@ class _HomeScreenState extends State<HomeScreen> {
     return null;
   }
 
-  List<CompositeNode> _variantNodesForSelectedRoomNode() {
+  CompositeNode? _firstVariantNode(CompositeNode node) {
+    if (node.type == 'variant' && node.children.isNotEmpty) {
+      return node;
+    }
+
+    for (final child in node.children) {
+      final match = _firstVariantNode(child);
+
+      if (match != null) {
+        return match;
+      }
+    }
+
+    return null;
+  }
+
+  CompositeNode? _findCompositeParent(CompositeNode node, String childId) {
+    for (final child in node.children) {
+      if (child.id == childId) {
+        return node;
+      }
+
+      final match = _findCompositeParent(child, childId);
+
+      if (match != null) {
+        return match;
+      }
+    }
+
+    return null;
+  }
+
+  CompositeNode? get _selectedRoomNode {
+    final selectedNodeId = _selectedRoomNodeId;
+    final item = _selectedDecorationBagItem;
+    final composite = item?.composite;
+
+    if (selectedNodeId == null || composite == null) {
+      return null;
+    }
+
+    return _findCompositeNodeById(composite.root, selectedNodeId);
+  }
+
+  bool get _canDrillIntoSelectedVariant {
+    final selectedNode = _selectedRoomNode;
+    final variantNode = _selectedRoomVariantNode;
+
+    return selectedNode != null &&
+        variantNode != null &&
+        selectedNode.id != variantNode.id;
+  }
+
+  bool get _canDrillOutOfSelectedRoomNode {
+    final selectedNodeId = _selectedRoomNodeId;
+    final item = _selectedDecorationBagItem;
+    final composite = item?.composite;
+
+    if (selectedNodeId == null || composite == null) {
+      return false;
+    }
+
+    return _findCompositeParent(composite.root, selectedNodeId) != null;
+  }
+
+  void _drillIntoSelectedVariant() {
+    final variantNode = _selectedRoomVariantNode;
+
+    if (variantNode == null) {
+      return;
+    }
+
+    setState(() {
+      _selectedRoomNodeId = variantNode.id;
+      _selectedRoomNodeName = variantNode.name.trim().isEmpty
+          ? 'Variant'
+          : variantNode.name;
+    });
+  }
+
+  void _drillOutOfSelectedRoomNode() {
+    final selectedNodeId = _selectedRoomNodeId;
+    final item = _selectedDecorationBagItem;
+    final composite = item?.composite;
+
+    if (selectedNodeId == null || composite == null) {
+      return;
+    }
+
+    final parent = _findCompositeParent(composite.root, selectedNodeId);
+
+    if (parent == null) {
+      return;
+    }
+
+    setState(() {
+      _selectedRoomNodeId = parent.id;
+      _selectedRoomNodeName = parent.name.trim().isEmpty
+          ? parent.type
+          : parent.name;
+    });
+  }
+
+  CompositeNode? get _selectedRoomVariantNode {
     final selectedNodeId = _selectedRoomNodeId;
     final item = _selectedDecorationBagItem;
     final composite = item?.composite;
@@ -1422,45 +1286,17 @@ class _HomeScreenState extends State<HomeScreen> {
     if (!_isEditingRoomContents ||
         selectedNodeId == null ||
         composite == null) {
-      return const <CompositeNode>[];
+      return null;
     }
 
     final selectedNode = _findCompositeNodeById(composite.root, selectedNodeId);
 
     if (selectedNode == null) {
-      return const <CompositeNode>[];
+      return null;
     }
 
-    final variants = <CompositeNode>[];
-
-    void collect(CompositeNode node) {
-      if (!node.visible) {
-        return;
-      }
-
-      if (node.type == 'variant') {
-        if (node.children.isNotEmpty) {
-          variants.add(node);
-        }
-
-        // A Variant node represents one independent slot.
-        // Its children are alternatives belonging to that slot, so do not
-        // interpret descendants inside those alternatives as sibling slots.
-        return;
-      }
-
-      for (final child in node.children) {
-        collect(child);
-      }
-    }
-
-    collect(selectedNode);
-
-    return variants;
+    return _firstVariantNode(selectedNode);
   }
-
-  List<CompositeNode> get _selectedRoomVariantNodes =>
-      _variantNodesForSelectedRoomNode();
 
   int _activeRoomVariantIndex(String? decorationId, CompositeNode variantNode) {
     if (variantNode.children.isEmpty) {
@@ -1476,44 +1312,45 @@ class _HomeScreenState extends State<HomeScreen> {
     return requested.clamp(0, variantNode.children.length - 1);
   }
 
-  String _roomVariantSlotName(CompositeNode variantNode) {
-    final name = variantNode.name.trim();
-
-    if (name.isNotEmpty) {
-      return name;
-    }
-
-    return 'Variant';
-  }
-
-  String _roomVariantChoiceName(CompositeNode variantNode) {
+  String? get _selectedRoomVariantLabel {
     final decorationId = _editingRoomDecorationId;
+    final variantNode = _selectedRoomVariantNode;
 
-    if (decorationId == null || variantNode.children.isEmpty) {
-      return 'None';
+    if (decorationId == null ||
+        variantNode == null ||
+        variantNode.children.isEmpty) {
+      return null;
     }
 
     final activeIndex = _activeRoomVariantIndex(decorationId, variantNode);
 
     final activeChild = variantNode.children[activeIndex];
+
+    final variantName = variantNode.name.trim();
     final childName = activeChild.name.trim();
+
+    if (variantName.isNotEmpty && childName.isNotEmpty) {
+      return '$variantName: $childName';
+    }
 
     if (childName.isNotEmpty) {
       return childName;
     }
 
-    return '${activeIndex + 1}';
+    if (variantName.isNotEmpty) {
+      return '$variantName ${activeIndex + 1}';
+    }
+
+    return 'Variant ${activeIndex + 1}';
   }
 
-  String _roomVariantLabel(CompositeNode variantNode) {
-    return '${_roomVariantSlotName(variantNode)}: '
-        '${_roomVariantChoiceName(variantNode)}';
-  }
-
-  void _stepRoomVariant(CompositeNode variantNode, int delta) {
+  void _stepSelectedRoomVariant(int delta) {
     final decorationId = _editingRoomDecorationId;
+    final variantNode = _selectedRoomVariantNode;
 
-    if (decorationId == null || variantNode.children.isEmpty) {
+    if (decorationId == null ||
+        variantNode == null ||
+        variantNode.children.isEmpty) {
       return;
     }
 
@@ -3528,39 +3365,11 @@ class _HomeScreenState extends State<HomeScreen> {
                                 ),
                               if (_decorateMode && _isEditingRoomContents)
                                 IconButton(
-                                  tooltip: _canGoBackRoomScope
-                                      ? 'Back to Parent'
-                                      : 'Exit Room',
-                                  onPressed: _backRoomScope,
-                                  icon: Icon(
-                                    _canGoBackRoomScope
-                                        ? Icons.arrow_back
-                                        : Icons.exit_to_app,
+                                  tooltip: 'Exit Room',
+                                  onPressed: _exitRoomContents,
+                                  icon: const Icon(
+                                    Icons.exit_to_app,
                                     color: Colors.amberAccent,
-                                  ),
-                                ),
-                              if (_decorateMode && _isEditingRoomContents)
-                                Padding(
-                                  padding: const EdgeInsets.symmetric(
-                                    horizontal: 6,
-                                  ),
-                                  child: Chip(
-                                    avatar: const Icon(
-                                      Icons.account_tree_outlined,
-                                      size: 18,
-                                      color: Colors.cyanAccent,
-                                    ),
-                                    label: Text(
-                                      _currentRoomScopeName,
-                                      overflow: TextOverflow.ellipsis,
-                                    ),
-                                    backgroundColor: Colors.black54,
-                                    side: const BorderSide(
-                                      color: Colors.cyanAccent,
-                                    ),
-                                    labelStyle: const TextStyle(
-                                      color: Colors.white,
-                                    ),
                                   ),
                                 ),
                               if (_isEditingRoomContents &&
@@ -3590,81 +3399,67 @@ class _HomeScreenState extends State<HomeScreen> {
                                   ),
                                 ),
                               if (_isEditingRoomContents &&
-                                  _currentRoomScopeChildren.isNotEmpty) ...[
+                                  _canDrillOutOfSelectedRoomNode)
                                 IconButton(
-                                  tooltip: 'Previous Item',
-                                  onPressed: () => _cycleRoomScopeSelection(-1),
+                                  tooltip: 'Back to Parent',
+                                  onPressed: _drillOutOfSelectedRoomNode,
                                   icon: const Icon(
-                                    Icons.skip_previous,
-                                    color: Colors.cyanAccent,
+                                    Icons.arrow_upward,
+                                    color: Colors.white,
                                   ),
                                 ),
-                                IconButton(
-                                  tooltip: 'Next Item',
-                                  onPressed: () => _cycleRoomScopeSelection(1),
-                                  icon: const Icon(
-                                    Icons.skip_next,
-                                    color: Colors.cyanAccent,
-                                  ),
-                                ),
-                              ],
                               if (_isEditingRoomContents &&
-                                  _canEnterSelectedRoomNode)
+                                  _canDrillIntoSelectedVariant)
                                 IconButton(
-                                  tooltip: 'Enter Group',
-                                  onPressed: _enterSelectedRoomNode,
+                                  tooltip: 'Select Variant',
+                                  onPressed: _drillIntoSelectedVariant,
                                   icon: const Icon(
-                                    Icons.login,
+                                    Icons.subdirectory_arrow_right,
                                     color: Colors.amberAccent,
                                   ),
                                 ),
-                              if (_isEditingRoomContents)
-                                for (final variantNode
-                                    in _selectedRoomVariantNodes) ...[
-                                  IconButton(
-                                    tooltip:
-                                        'Previous ${_roomVariantSlotName(variantNode)}',
-                                    onPressed: () =>
-                                        _stepRoomVariant(variantNode, -1),
-                                    icon: const Icon(
-                                      Icons.chevron_left,
+                              if (_isEditingRoomContents &&
+                                  _selectedRoomVariantNode != null) ...[
+                                IconButton(
+                                  tooltip: 'Previous Variant',
+                                  onPressed: () => _stepSelectedRoomVariant(-1),
+                                  icon: const Icon(
+                                    Icons.chevron_left,
+                                    color: Colors.amberAccent,
+                                  ),
+                                ),
+                                ConstrainedBox(
+                                  constraints: const BoxConstraints(
+                                    maxWidth: 220,
+                                  ),
+                                  child: Chip(
+                                    avatar: const Icon(
+                                      Icons.auto_awesome_mosaic_outlined,
+                                      size: 18,
                                       color: Colors.amberAccent,
                                     ),
-                                  ),
-                                  ConstrainedBox(
-                                    constraints: const BoxConstraints(
-                                      maxWidth: 220,
+                                    label: Text(
+                                      _selectedRoomVariantLabel ?? 'Variant',
+                                      overflow: TextOverflow.ellipsis,
                                     ),
-                                    child: Chip(
-                                      avatar: const Icon(
-                                        Icons.auto_awesome_mosaic_outlined,
-                                        size: 18,
-                                        color: Colors.amberAccent,
-                                      ),
-                                      label: Text(
-                                        _roomVariantLabel(variantNode),
-                                        overflow: TextOverflow.ellipsis,
-                                      ),
-                                      backgroundColor: Colors.black54,
-                                      side: const BorderSide(
-                                        color: Colors.amberAccent,
-                                      ),
-                                      labelStyle: const TextStyle(
-                                        color: Colors.white,
-                                      ),
-                                    ),
-                                  ),
-                                  IconButton(
-                                    tooltip:
-                                        'Next ${_roomVariantSlotName(variantNode)}',
-                                    onPressed: () =>
-                                        _stepRoomVariant(variantNode, 1),
-                                    icon: const Icon(
-                                      Icons.chevron_right,
+                                    backgroundColor: Colors.black54,
+                                    side: const BorderSide(
                                       color: Colors.amberAccent,
                                     ),
+                                    labelStyle: const TextStyle(
+                                      color: Colors.white,
+                                    ),
                                   ),
-                                ],
+                                ),
+                                IconButton(
+                                  tooltip: 'Next Variant',
+                                  onPressed: () => _stepSelectedRoomVariant(1),
+                                  icon: const Icon(
+                                    Icons.chevron_right,
+                                    color: Colors.amberAccent,
+                                  ),
+                                ),
+                              ],
                               if (_isEditingRoomContents &&
                                   _selectedRoomNodeId != null) ...[
                                 IconButton(
