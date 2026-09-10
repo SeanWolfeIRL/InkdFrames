@@ -1523,6 +1523,18 @@ class _HomeScreenState extends State<HomeScreen> {
     final nextIndex = (currentIndex + delta) % count;
     final safeNextIndex = nextIndex < 0 ? nextIndex + count : nextIndex;
 
+    _setRoomVariantChoice(variantNode, safeNextIndex);
+  }
+
+  void _setRoomVariantChoice(CompositeNode variantNode, int index) {
+    final decorationId = _editingRoomDecorationId;
+
+    if (decorationId == null || variantNode.children.isEmpty) {
+      return;
+    }
+
+    final safeIndex = index.clamp(0, variantNode.children.length - 1);
+
     setState(() {
       final roomOverrides = _roomNodeOverrides.putIfAbsent(
         decorationId,
@@ -1533,11 +1545,283 @@ class _HomeScreenState extends State<HomeScreen> {
           roomOverrides[variantNode.id] ?? const _RoomNodeOverride();
 
       roomOverrides[variantNode.id] = current.copyWith(
-        activeVariantIndex: safeNextIndex,
+        activeVariantIndex: safeIndex,
       );
     });
 
     _saveDecorations();
+  }
+
+  void _resetRoomVariantChoice(CompositeNode variantNode) {
+    final decorationId = _editingRoomDecorationId;
+
+    if (decorationId == null) {
+      return;
+    }
+
+    setState(() {
+      final roomOverrides = _roomNodeOverrides[decorationId];
+
+      if (roomOverrides == null) {
+        return;
+      }
+
+      final current = roomOverrides[variantNode.id];
+
+      if (current == null) {
+        return;
+      }
+
+      final reset = _RoomNodeOverride(
+        offsetX: current.offsetX,
+        offsetY: current.offsetY,
+        scale: current.scale,
+        mirrored: current.mirrored,
+      );
+
+      if (reset.isIdentity) {
+        roomOverrides.remove(variantNode.id);
+      } else {
+        roomOverrides[variantNode.id] = reset;
+      }
+
+      if (roomOverrides.isEmpty) {
+        _roomNodeOverrides.remove(decorationId);
+      }
+    });
+
+    _saveDecorations();
+  }
+
+  Future<void> _showRoomVariantPicker(CompositeNode variantNode) async {
+    final decorationId = _editingRoomDecorationId;
+
+    if (decorationId == null || variantNode.children.isEmpty) {
+      return;
+    }
+
+    await showModalBottomSheet<void>(
+      context: context,
+      backgroundColor: Colors.transparent,
+      isScrollControlled: true,
+      builder: (sheetContext) {
+        return StatefulBuilder(
+          builder: (context, setSheetState) {
+            final activeIndex = _activeRoomVariantIndex(
+              decorationId,
+              variantNode,
+            );
+
+            final authoredIndex =
+                ((variantNode.payload['activeIndex'] as num?)?.toInt() ?? 0)
+                    .clamp(0, variantNode.children.length - 1);
+
+            final hasInstanceOverride =
+                _roomNodeOverrides[decorationId]?[variantNode.id]
+                    ?.activeVariantIndex !=
+                null;
+
+            return SafeArea(
+              child: Container(
+                margin: const EdgeInsets.all(16),
+                padding: const EdgeInsets.fromLTRB(18, 16, 18, 18),
+                decoration: BoxDecoration(
+                  color: const Color(0xFF171717),
+                  borderRadius: BorderRadius.circular(24),
+                  border: Border.all(
+                    color: Colors.amberAccent.withValues(alpha: 0.7),
+                  ),
+                  boxShadow: const [
+                    BoxShadow(
+                      blurRadius: 24,
+                      spreadRadius: 2,
+                      color: Colors.black54,
+                    ),
+                  ],
+                ),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        const Icon(
+                          Icons.auto_awesome_mosaic_outlined,
+                          color: Colors.amberAccent,
+                        ),
+                        const SizedBox(width: 10),
+                        Expanded(
+                          child: Text(
+                            _roomVariantSlotName(variantNode),
+                            style: const TextStyle(
+                              color: Colors.white,
+                              fontSize: 20,
+                              fontWeight: FontWeight.w700,
+                            ),
+                          ),
+                        ),
+                        IconButton(
+                          tooltip: 'Close',
+                          onPressed: () => Navigator.of(sheetContext).pop(),
+                          icon: const Icon(Icons.close, color: Colors.white70),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 8),
+                    Flexible(
+                      child: SingleChildScrollView(
+                        child: Wrap(
+                          spacing: 12,
+                          runSpacing: 12,
+                          children: [
+                            for (
+                              var index = 0;
+                              index < variantNode.children.length;
+                              index++
+                            )
+                              Builder(
+                                builder: (context) {
+                                  final child = variantNode.children[index];
+                                  final label = child.name.trim().isNotEmpty
+                                      ? child.name.trim()
+                                      : 'Choice ${index + 1}';
+                                  final selected = index == activeIndex;
+                                  final authored = index == authoredIndex;
+
+                                  return InkWell(
+                                    borderRadius: BorderRadius.circular(18),
+                                    onTap: () {
+                                      _setRoomVariantChoice(variantNode, index);
+                                      setSheetState(() {});
+                                    },
+                                    child: AnimatedContainer(
+                                      duration: const Duration(
+                                        milliseconds: 150,
+                                      ),
+                                      width: 150,
+                                      constraints: const BoxConstraints(
+                                        minHeight: 118,
+                                      ),
+                                      padding: const EdgeInsets.all(12),
+                                      decoration: BoxDecoration(
+                                        color: selected
+                                            ? Colors.amberAccent.withValues(
+                                                alpha: 0.13,
+                                              )
+                                            : Colors.white.withValues(
+                                                alpha: 0.045,
+                                              ),
+                                        borderRadius: BorderRadius.circular(18),
+                                        border: Border.all(
+                                          color: selected
+                                              ? Colors.amberAccent
+                                              : Colors.white24,
+                                          width: selected ? 2 : 1,
+                                        ),
+                                      ),
+                                      child: Column(
+                                        mainAxisSize: MainAxisSize.min,
+                                        children: [
+                                          SizedBox(
+                                            height: 72,
+                                            width: double.infinity,
+                                            child: Stack(
+                                              fit: StackFit.expand,
+                                              children: [
+                                                _buildRoomVariantPreview(
+                                                  variantNode,
+                                                  index,
+                                                ),
+                                                if (selected)
+                                                  Positioned(
+                                                    right: 5,
+                                                    top: 5,
+                                                    child: Container(
+                                                      padding:
+                                                          const EdgeInsets.all(
+                                                            2,
+                                                          ),
+                                                      decoration:
+                                                          const BoxDecoration(
+                                                            color:
+                                                                Colors.black87,
+                                                            shape:
+                                                                BoxShape.circle,
+                                                          ),
+                                                      child: const Icon(
+                                                        Icons.check_circle,
+                                                        size: 22,
+                                                        color:
+                                                            Colors.amberAccent,
+                                                      ),
+                                                    ),
+                                                  ),
+                                              ],
+                                            ),
+                                          ),
+                                          const SizedBox(height: 10),
+                                          Text(
+                                            label,
+                                            maxLines: 2,
+                                            overflow: TextOverflow.ellipsis,
+                                            textAlign: TextAlign.center,
+                                            style: TextStyle(
+                                              color: selected
+                                                  ? Colors.amberAccent
+                                                  : Colors.white,
+                                              fontWeight: selected
+                                                  ? FontWeight.w700
+                                                  : FontWeight.w500,
+                                            ),
+                                          ),
+                                          if (authored) ...[
+                                            const SizedBox(height: 4),
+                                            const Text(
+                                              'Authored',
+                                              style: TextStyle(
+                                                color: Colors.white54,
+                                                fontSize: 11,
+                                              ),
+                                            ),
+                                          ],
+                                        ],
+                                      ),
+                                    ),
+                                  );
+                                },
+                              ),
+                          ],
+                        ),
+                      ),
+                    ),
+                    if (hasInstanceOverride) ...[
+                      const SizedBox(height: 14),
+                      Align(
+                        alignment: Alignment.centerRight,
+                        child: TextButton.icon(
+                          onPressed: () {
+                            _resetRoomVariantChoice(variantNode);
+                            setSheetState(() {});
+                          },
+                          icon: const Icon(
+                            Icons.restart_alt,
+                            color: Colors.amberAccent,
+                          ),
+                          label: const Text(
+                            'Reset to authored',
+                            style: TextStyle(color: Colors.amberAccent),
+                          ),
+                        ),
+                      ),
+                    ],
+                  ],
+                ),
+              ),
+            );
+          },
+        );
+      },
+    );
   }
 
   void _updateSelectedRoomNodeOverride(
@@ -1843,6 +2127,370 @@ class _HomeScreenState extends State<HomeScreen> {
     }
 
     return const SizedBox.shrink();
+  }
+
+  Rect? _unionRects(Rect? a, Rect? b) {
+    if (a == null) return b;
+    if (b == null) return a;
+
+    return Rect.fromLTRB(
+      a.left < b.left ? a.left : b.left,
+      a.top < b.top ? a.top : b.top,
+      a.right > b.right ? a.right : b.right,
+      a.bottom > b.bottom ? a.bottom : b.bottom,
+    );
+  }
+
+  Rect? _alphaMaskVisibleBounds(_ImageAlphaMask mask) {
+    if (mask.width <= 0 || mask.height <= 0 || mask.rgba.isEmpty) {
+      return null;
+    }
+
+    var minX = mask.width;
+    var minY = mask.height;
+    var maxX = -1;
+    var maxY = -1;
+
+    const threshold = 24;
+
+    for (var y = 0; y < mask.height; y++) {
+      for (var x = 0; x < mask.width; x++) {
+        final alphaIndex = ((y * mask.width) + x) * 4 + 3;
+
+        if (alphaIndex < 0 || alphaIndex >= mask.rgba.length) {
+          continue;
+        }
+
+        if (mask.rgba[alphaIndex] < threshold) {
+          continue;
+        }
+
+        if (x < minX) minX = x;
+        if (y < minY) minY = y;
+        if (x > maxX) maxX = x;
+        if (y > maxY) maxY = y;
+      }
+    }
+
+    if (maxX < minX || maxY < minY) {
+      return null;
+    }
+
+    return Rect.fromLTRB(
+      minX.toDouble(),
+      minY.toDouble(),
+      (maxX + 1).toDouble(),
+      (maxY + 1).toDouble(),
+    );
+  }
+
+  Offset _rotatePointAroundCenter(
+    Offset point,
+    Offset center,
+    double rotation,
+  ) {
+    final translated = point - center;
+
+    final cosR = math.cos(rotation);
+    final sinR = math.sin(rotation);
+
+    return Offset(
+          (translated.dx * cosR) - (translated.dy * sinR),
+          (translated.dx * sinR) + (translated.dy * cosR),
+        ) +
+        center;
+  }
+
+  Rect _transformPreviewRect({
+    required Rect rect,
+    required Size canvasSize,
+    double offsetX = 0.0,
+    double offsetY = 0.0,
+    double rotation = 0.0,
+    double scaleX = 1.0,
+    double scaleY = 1.0,
+  }) {
+    final center = Offset(canvasSize.width / 2, canvasSize.height / 2);
+
+    Offset transformPoint(Offset point) {
+      var transformed = Offset(
+        center.dx + ((point.dx - center.dx) * scaleX),
+        center.dy + ((point.dy - center.dy) * scaleY),
+      );
+
+      transformed = _rotatePointAroundCenter(transformed, center, rotation);
+
+      return transformed + Offset(offsetX, offsetY);
+    }
+
+    final points = <Offset>[
+      transformPoint(rect.topLeft),
+      transformPoint(rect.topRight),
+      transformPoint(rect.bottomLeft),
+      transformPoint(rect.bottomRight),
+    ];
+
+    var minX = points.first.dx;
+    var minY = points.first.dy;
+    var maxX = points.first.dx;
+    var maxY = points.first.dy;
+
+    for (final point in points.skip(1)) {
+      if (point.dx < minX) minX = point.dx;
+      if (point.dy < minY) minY = point.dy;
+      if (point.dx > maxX) maxX = point.dx;
+      if (point.dy > maxY) maxY = point.dy;
+    }
+
+    return Rect.fromLTRB(minX, minY, maxX, maxY);
+  }
+
+  Rect? _compositeNodePreviewBounds(CompositeNode node, CompositeAsset asset) {
+    if (!node.visible) {
+      return null;
+    }
+
+    final canvasSize = Size(asset.canvasWidth, asset.canvasHeight);
+
+    if (node.type == 'group') {
+      Rect? bounds;
+
+      for (final child in node.children) {
+        bounds = _unionRects(bounds, _compositeNodePreviewBounds(child, asset));
+      }
+
+      return bounds;
+    }
+
+    if (node.type == 'variant') {
+      if (node.children.isEmpty) {
+        return null;
+      }
+
+      final authored = (node.payload['activeIndex'] as num?)?.toInt() ?? 0;
+
+      final safeIndex = authored.clamp(0, node.children.length - 1);
+
+      return _compositeNodePreviewBounds(node.children[safeIndex], asset);
+    }
+
+    if (node.type == 'layer') {
+      final strokes = _compositeLayerStrokes(node);
+
+      if (strokes.isEmpty) {
+        return null;
+      }
+
+      Rect? bounds;
+
+      for (final stroke in strokes) {
+        if (stroke.points.isEmpty) {
+          continue;
+        }
+
+        var minX = stroke.points.first.dx;
+        var minY = stroke.points.first.dy;
+        var maxX = stroke.points.first.dx;
+        var maxY = stroke.points.first.dy;
+
+        for (final point in stroke.points.skip(1)) {
+          if (point.dx < minX) minX = point.dx;
+          if (point.dy < minY) minY = point.dy;
+          if (point.dx > maxX) maxX = point.dx;
+          if (point.dy > maxY) maxY = point.dy;
+        }
+
+        final padding = stroke.strokeWidth / 2;
+
+        final strokeBounds = Rect.fromLTRB(
+          minX - padding,
+          minY - padding,
+          maxX + padding,
+          maxY + padding,
+        );
+
+        bounds = _unionRects(bounds, strokeBounds);
+      }
+
+      return bounds;
+    }
+
+    if (node.type == 'reference') {
+      final mediaPath = node.payload['mediaPath']?.toString() ?? '';
+
+      final mediaType = node.payload['mediaType']?.toString() ?? 'image';
+
+      if (mediaType != 'image' || mediaPath.isEmpty) {
+        return null;
+      }
+
+      final mask = _imageAlphaMasks[mediaPath];
+
+      if (mask == null || mask.width <= 0 || mask.height <= 0) {
+        return null;
+      }
+
+      final alphaBounds = _alphaMaskVisibleBounds(mask);
+
+      if (alphaBounds == null) {
+        return null;
+      }
+
+      final imageScale =
+          asset.canvasWidth / mask.width < asset.canvasHeight / mask.height
+          ? asset.canvasWidth / mask.width
+          : asset.canvasHeight / mask.height;
+
+      final renderedWidth = mask.width * imageScale;
+      final renderedHeight = mask.height * imageScale;
+
+      final imageLeft = (asset.canvasWidth - renderedWidth) / 2;
+      final imageTop = (asset.canvasHeight - renderedHeight) / 2;
+
+      final baseRect = Rect.fromLTRB(
+        imageLeft + alphaBounds.left * imageScale,
+        imageTop + alphaBounds.top * imageScale,
+        imageLeft + alphaBounds.right * imageScale,
+        imageTop + alphaBounds.bottom * imageScale,
+      );
+
+      final offsetX = (node.payload['offsetX'] as num?)?.toDouble() ?? 0.0;
+      final offsetY = (node.payload['offsetY'] as num?)?.toDouble() ?? 0.0;
+      final rotation = (node.payload['rotation'] as num?)?.toDouble() ?? 0.0;
+      final scaleX = (node.payload['scaleX'] as num?)?.toDouble() ?? 1.0;
+      final scaleY = (node.payload['scaleY'] as num?)?.toDouble() ?? 1.0;
+
+      return _transformPreviewRect(
+        rect: baseRect,
+        canvasSize: canvasSize,
+        offsetX: offsetX,
+        offsetY: offsetY,
+        rotation: rotation,
+        scaleX: scaleX,
+        scaleY: scaleY,
+      );
+    }
+
+    return null;
+  }
+
+  Rect _expandedPreviewBounds(Rect bounds, Size canvasSize) {
+    final paddingX = bounds.width * 0.14;
+    final paddingY = bounds.height * 0.14;
+
+    final padded = Rect.fromLTRB(
+      bounds.left - paddingX,
+      bounds.top - paddingY,
+      bounds.right + paddingX,
+      bounds.bottom + paddingY,
+    );
+
+    return Rect.fromLTRB(
+      padded.left.clamp(0.0, canvasSize.width),
+      padded.top.clamp(0.0, canvasSize.height),
+      padded.right.clamp(0.0, canvasSize.width),
+      padded.bottom.clamp(0.0, canvasSize.height),
+    );
+  }
+
+  Widget _buildRoomVariantPreview(CompositeNode variantNode, int index) {
+    final item = _selectedDecorationBagItem;
+    final composite = item?.composite;
+
+    if (composite == null ||
+        composite.canvasWidth <= 0 ||
+        composite.canvasHeight <= 0 ||
+        index < 0 ||
+        index >= variantNode.children.length) {
+      return const Center(
+        child: Icon(
+          Icons.image_not_supported_outlined,
+          size: 30,
+          color: Colors.white38,
+        ),
+      );
+    }
+
+    final choice = variantNode.children[index];
+
+    final canvasSize = Size(composite.canvasWidth, composite.canvasHeight);
+
+    final rawBounds = _compositeNodePreviewBounds(choice, composite);
+
+    if (rawBounds == null || rawBounds.width <= 0 || rawBounds.height <= 0) {
+      return ClipRRect(
+        borderRadius: BorderRadius.circular(10),
+        child: ColoredBox(
+          color: Colors.black26,
+          child: FittedBox(
+            fit: BoxFit.contain,
+            child: SizedBox(
+              width: composite.canvasWidth,
+              height: composite.canvasHeight,
+              child: _buildCompositeNode(
+                choice,
+                asset: composite,
+                decorationId: null,
+              ),
+            ),
+          ),
+        ),
+      );
+    }
+
+    final bounds = _expandedPreviewBounds(rawBounds, canvasSize);
+
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(10),
+      child: ColoredBox(
+        color: Colors.black26,
+        child: LayoutBuilder(
+          builder: (context, constraints) {
+            if (constraints.maxWidth <= 0 || constraints.maxHeight <= 0) {
+              return const SizedBox.shrink();
+            }
+
+            final scaleX = constraints.maxWidth / bounds.width;
+            final scaleY = constraints.maxHeight / bounds.height;
+
+            final previewScale = scaleX < scaleY ? scaleX : scaleY;
+
+            final left =
+                ((constraints.maxWidth - bounds.width * previewScale) / 2) -
+                (bounds.left * previewScale);
+
+            final top =
+                ((constraints.maxHeight - bounds.height * previewScale) / 2) -
+                (bounds.top * previewScale);
+
+            return ClipRect(
+              child: Stack(
+                clipBehavior: Clip.hardEdge,
+                children: [
+                  Positioned(
+                    left: left,
+                    top: top,
+                    child: Transform.scale(
+                      scale: previewScale,
+                      alignment: Alignment.topLeft,
+                      child: SizedBox(
+                        width: composite.canvasWidth,
+                        height: composite.canvasHeight,
+                        child: _buildCompositeNode(
+                          choice,
+                          asset: composite,
+                          decorationId: null,
+                        ),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            );
+          },
+        ),
+      ),
+    );
   }
 
   Widget _buildCompositeDecoration(
@@ -3620,31 +4268,38 @@ class _HomeScreenState extends State<HomeScreen> {
                                 ),
                               if (_isEditingRoomContents)
                                 for (final variantNode
-                                    in _selectedRoomVariantNodes) ...[
-                                  IconButton(
-                                    tooltip:
-                                        'Previous ${_roomVariantSlotName(variantNode)}',
-                                    onPressed: () =>
-                                        _stepRoomVariant(variantNode, -1),
-                                    icon: const Icon(
-                                      Icons.chevron_left,
-                                      color: Colors.amberAccent,
-                                    ),
-                                  ),
+                                    in _selectedRoomVariantNodes)
                                   ConstrainedBox(
                                     constraints: const BoxConstraints(
-                                      maxWidth: 220,
+                                      maxWidth: 240,
                                     ),
-                                    child: Chip(
+                                    child: ActionChip(
                                       avatar: const Icon(
                                         Icons.auto_awesome_mosaic_outlined,
                                         size: 18,
                                         color: Colors.amberAccent,
                                       ),
-                                      label: Text(
-                                        _roomVariantLabel(variantNode),
-                                        overflow: TextOverflow.ellipsis,
+                                      label: Row(
+                                        mainAxisSize: MainAxisSize.min,
+                                        children: [
+                                          Flexible(
+                                            child: Text(
+                                              _roomVariantLabel(variantNode),
+                                              overflow: TextOverflow.ellipsis,
+                                            ),
+                                          ),
+                                          const SizedBox(width: 6),
+                                          const Icon(
+                                            Icons.expand_more,
+                                            size: 18,
+                                            color: Colors.amberAccent,
+                                          ),
+                                        ],
                                       ),
+                                      tooltip:
+                                          'Choose ${_roomVariantSlotName(variantNode)}',
+                                      onPressed: () =>
+                                          _showRoomVariantPicker(variantNode),
                                       backgroundColor: Colors.black54,
                                       side: const BorderSide(
                                         color: Colors.amberAccent,
@@ -3654,17 +4309,6 @@ class _HomeScreenState extends State<HomeScreen> {
                                       ),
                                     ),
                                   ),
-                                  IconButton(
-                                    tooltip:
-                                        'Next ${_roomVariantSlotName(variantNode)}',
-                                    onPressed: () =>
-                                        _stepRoomVariant(variantNode, 1),
-                                    icon: const Icon(
-                                      Icons.chevron_right,
-                                      color: Colors.amberAccent,
-                                    ),
-                                  ),
-                                ],
                               if (_isEditingRoomContents &&
                                   _selectedRoomNodeId != null) ...[
                                 IconButton(
