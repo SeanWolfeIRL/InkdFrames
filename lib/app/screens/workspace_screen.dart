@@ -1576,7 +1576,9 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
 
   Future<void> _openBag() async {
     final item = await Navigator.of(context).push<BagItem>(
-      MaterialPageRoute<BagItem>(builder: (_) => const BagScreen()),
+      MaterialPageRoute<BagItem>(
+        builder: (_) => const BagScreen(selectionMode: true),
+      ),
     );
 
     if (!mounted || item == null) {

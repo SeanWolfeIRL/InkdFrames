@@ -7,8 +7,10 @@ import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../models/bag_item.dart';
+import '../models/composite_asset.dart';
 import '../models/vector_stroke.dart';
 import '../painters/bag_item_preview_painter.dart';
+import '../painters/animation_canvas_painter.dart';
 import '../services/bag_service.dart';
 import '../services/bag_asset_transfer_service.dart';
 
@@ -494,6 +496,24 @@ class _BagScreenState extends State<BagScreen> {
     await _loadPocketAssignments();
     final items = await _bagService.loadItems();
 
+    // Pocket assignments are stored separately from Bag items. Older deleted
+    // assets can therefore leave behind assignment entries that no longer
+    // point to anything in the Bag. Remove those ghosts on load so Pocket
+    // counts and Pocket contents always describe the same collection.
+    final liveItemIds = items.map((item) => item.id).toSet();
+
+    final staleAssignmentIds = _pocketAssignments.keys
+        .where((itemId) => !liveItemIds.contains(itemId))
+        .toList();
+
+    if (staleAssignmentIds.isNotEmpty) {
+      for (final itemId in staleAssignmentIds) {
+        _pocketAssignments.remove(itemId);
+      }
+
+      await _savePocketAssignments();
+    }
+
     if (!mounted) return;
 
     setState(() {
@@ -750,19 +770,202 @@ class _BagScreenState extends State<BagScreen> {
     return strokes;
   }
 
-  Widget _bagItemThumbnail(BagItem item) {
-    if (item.isComposite) {
-      return const SizedBox(
-        width: 64,
-        height: 64,
-        child: Center(
-          child: Icon(
-            Icons.view_in_ar_outlined,
-            size: 36,
-            color: Color(0xFFF1D3A2),
+  List<VectorStroke> _compositeBagPreviewLayerStrokes(CompositeNode node) {
+    final rawFrames = node.payload['frames'];
+
+    if (rawFrames is! List || rawFrames.isEmpty) {
+      return <VectorStroke>[];
+    }
+
+    final rawFrame = rawFrames.first;
+
+    if (rawFrame is! List) {
+      return <VectorStroke>[];
+    }
+
+    final layerOpacity =
+        (node.payload['opacity'] as num?)?.toDouble().clamp(0.0, 1.0) ?? 1.0;
+
+    final strokes = <VectorStroke>[];
+
+    for (final rawStroke in rawFrame) {
+      if (rawStroke is! Map) {
+        continue;
+      }
+
+      final stroke = VectorStroke.fromJson(
+        Map<String, dynamic>.from(rawStroke),
+      );
+
+      strokes.add(
+        VectorStroke(
+          points: stroke.points.map((point) => point.copy()).toList(),
+          strokeWidth: stroke.strokeWidth,
+          color: stroke.color.withValues(alpha: stroke.color.a * layerOpacity),
+          filled: stroke.filled,
+          brushType: stroke.brushType,
+        ),
+      );
+    }
+
+    return strokes;
+  }
+
+  Widget _buildCompositeBagPreviewNode(
+    CompositeNode node, {
+    required CompositeAsset asset,
+  }) {
+    if (!node.visible) {
+      return const SizedBox.shrink();
+    }
+
+    if (node.type == 'group') {
+      return Stack(
+        fit: StackFit.expand,
+        children: [
+          for (final child in node.children.reversed)
+            _buildCompositeBagPreviewNode(child, asset: asset),
+        ],
+      );
+    }
+
+    if (node.type == 'variant') {
+      if (node.children.isEmpty) {
+        return const SizedBox.shrink();
+      }
+
+      final authoredIndex = (node.payload['activeIndex'] as num?)?.toInt() ?? 0;
+
+      final activeIndex = authoredIndex.clamp(0, node.children.length - 1);
+
+      return _buildCompositeBagPreviewNode(
+        node.children[activeIndex],
+        asset: asset,
+      );
+    }
+
+    if (node.type == 'layer') {
+      final strokes = _compositeBagPreviewLayerStrokes(node);
+
+      if (strokes.isEmpty) {
+        return const SizedBox.shrink();
+      }
+
+      return CustomPaint(
+        painter: AnimationCanvasPainter(
+          strokes: strokes,
+          currentStroke: null,
+          previousOnionSkinStrokes: const <VectorStroke>[],
+          nextOnionSkinStrokes: const <VectorStroke>[],
+          strokeColor: Colors.transparent,
+          strokeWidth: 1.0,
+          brushType: StrokeBrushType.solid,
+          backgroundColor: Colors.transparent,
+          paintBackground: false,
+          previousOnionSkinColor: Colors.transparent,
+          nextOnionSkinColor: Colors.transparent,
+        ),
+        child: const SizedBox.expand(),
+      );
+    }
+
+    if (node.type == 'reference') {
+      final mediaPath = node.payload['mediaPath']?.toString() ?? '';
+
+      final mediaType = node.payload['mediaType']?.toString() ?? 'image';
+
+      if (mediaType != 'image' || mediaPath.isEmpty) {
+        return const SizedBox.shrink();
+      }
+
+      final opacity =
+          (node.payload['opacity'] as num?)?.toDouble().clamp(0.0, 1.0) ?? 1.0;
+
+      final offsetX = (node.payload['offsetX'] as num?)?.toDouble() ?? 0.0;
+
+      final offsetY = (node.payload['offsetY'] as num?)?.toDouble() ?? 0.0;
+
+      final rotation = (node.payload['rotation'] as num?)?.toDouble() ?? 0.0;
+
+      final scaleX = (node.payload['scaleX'] as num?)?.toDouble() ?? 1.0;
+
+      final scaleY = (node.payload['scaleY'] as num?)?.toDouble() ?? 1.0;
+
+      return Transform.translate(
+        offset: Offset(offsetX, offsetY),
+        child: Transform.rotate(
+          angle: rotation,
+          alignment: Alignment.center,
+          child: Transform.scale(
+            scaleX: scaleX,
+            scaleY: scaleY,
+            alignment: Alignment.center,
+            child: Opacity(
+              opacity: opacity,
+              child: Image.file(
+                File(mediaPath),
+                fit: BoxFit.contain,
+                errorBuilder: (context, error, stackTrace) {
+                  return const SizedBox.shrink();
+                },
+              ),
+            ),
           ),
         ),
       );
+    }
+
+    return const SizedBox.shrink();
+  }
+
+  Widget _buildCompositeBagPreview(
+    BagItem item, {
+    double width = 64,
+    double height = 64,
+  }) {
+    final composite = item.composite;
+
+    if (composite == null ||
+        composite.canvasWidth <= 0 ||
+        composite.canvasHeight <= 0) {
+      return SizedBox(
+        width: width,
+        height: height,
+        child: const Center(
+          child: Icon(
+            Icons.image_not_supported_outlined,
+            color: Colors.white38,
+          ),
+        ),
+      );
+    }
+
+    return SizedBox(
+      width: width,
+      height: height,
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(8),
+        child: ColoredBox(
+          color: Colors.black26,
+          child: FittedBox(
+            fit: BoxFit.contain,
+            child: SizedBox(
+              width: composite.canvasWidth,
+              height: composite.canvasHeight,
+              child: _buildCompositeBagPreviewNode(
+                composite.root,
+                asset: composite,
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _bagItemThumbnail(BagItem item) {
+    if (item.isComposite) {
+      return _buildCompositeBagPreview(item);
     }
 
     if (item.isImage) {
@@ -820,13 +1023,50 @@ class _BagScreenState extends State<BagScreen> {
                 Expanded(child: Text(item.name)),
               ],
             ),
-            content: Text(
-              'Composite Group\n'
-              '${composite.canvasWidth.round()} × '
-              '${composite.canvasHeight.round()}\n'
-              '${composite.root.children.length} top-level node(s)\n\n'
-              'This asset preserves its editable hierarchy, references, '
-              'groups and Variant Slots.',
+            content: ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: 720),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Container(
+                    height: 360,
+                    width: double.infinity,
+                    decoration: BoxDecoration(
+                      color: Colors.black26,
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    clipBehavior: Clip.antiAlias,
+                    child: FittedBox(
+                      fit: BoxFit.contain,
+                      child: SizedBox(
+                        width: composite.canvasWidth,
+                        height: composite.canvasHeight,
+                        child: _buildCompositeBagPreviewNode(
+                          composite.root,
+                          asset: composite,
+                        ),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 16),
+                  Text(
+                    'Composite Group  •  '
+                    '${composite.canvasWidth.round()} × '
+                    '${composite.canvasHeight.round()}  •  '
+                    '${composite.root.children.length} top-level node(s)',
+                    style: Theme.of(
+                      dialogContext,
+                    ).textTheme.bodySmall?.copyWith(color: Colors.white60),
+                  ),
+                  const SizedBox(height: 8),
+                  const Text(
+                    'Editable hierarchy, references, groups and Variant Slots '
+                    'are preserved.',
+                    style: TextStyle(color: Colors.white54),
+                  ),
+                ],
+              ),
             ),
             actions: [
               FilledButton(
@@ -896,6 +1136,16 @@ class _BagScreenState extends State<BagScreen> {
         },
       ),
     );
+  }
+
+  List<BagItem> _itemsForPocket(String pocketId) {
+    return _items
+        .where((item) => _pocketAssignments[item.id] == pocketId)
+        .toList();
+  }
+
+  int _itemCountForPocket(String pocketId) {
+    return _itemsForPocket(pocketId).length;
   }
 
   Future<void> _openUnsorted() async {
@@ -985,9 +1235,15 @@ class _BagScreenState extends State<BagScreen> {
                                     Icons.chevron_right,
                                     color: Colors.white38,
                                   ),
-                                  onTap: () {
+                                  onTap: () async {
                                     Navigator.pop(sheetContext);
-                                    Navigator.pop(context, item);
+
+                                    if (widget.selectionMode) {
+                                      Navigator.pop(context, item);
+                                      return;
+                                    }
+
+                                    await _viewBagItem(item);
                                   },
                                 ),
                                 Padding(
@@ -1064,9 +1320,7 @@ class _BagScreenState extends State<BagScreen> {
       (candidate) => candidate.id == pocketId,
     );
 
-    final pocketItems = _items
-        .where((item) => _pocketAssignments[item.id] == pocket.id)
-        .toList();
+    final pocketItems = _itemsForPocket(pocket.id);
 
     await _showPocketItems(title: pocket.name, items: pocketItems);
   }
@@ -1162,7 +1416,7 @@ class _BagScreenState extends State<BagScreen> {
                                   ),
                                 ),
                                 trailing: Text(
-                                  '${_pocketAssignments.values.where((id) => id == pocket.id).length}',
+                                  '${_itemCountForPocket(pocket.id)}',
                                   style: const TextStyle(color: Colors.white54),
                                 ),
                                 onTap: () {
@@ -1210,7 +1464,7 @@ class _BagScreenState extends State<BagScreen> {
                                     ),
                                   ),
                                   subtitle: Text(
-                                    '${_pocketAssignments.values.where((id) => id == pocket.id).length} items',
+                                    '${_itemCountForPocket(pocket.id)} items',
                                     style: const TextStyle(
                                       color: Colors.white54,
                                     ),

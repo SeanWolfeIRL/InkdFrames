@@ -240,6 +240,14 @@ class _HomeScreenState extends State<HomeScreen> {
 
   bool get _isEditingRoomContents => _editingRoomDecorationId != null;
 
+  // Rooms Awaken #12
+  //
+  // Internal Composite editing is no longer part of the normal Room Manager
+  // contract. Keep the historical machinery dormant for the moment while the
+  // authored-room rules settle, rather than deleting intertwined persistence
+  // and gesture code in the same cleanup pass.
+  bool get _legacyRoomNodeEditingEnabled => false;
+
   BagItem? get _selectedDecorationBagItem {
     final selected = _selectedDecoration;
     if (selected == null) return null;
@@ -1199,6 +1207,7 @@ class _HomeScreenState extends State<HomeScreen> {
     return null;
   }
 
+  // ignore: unused_element
   void _selectCompositeRoomChild({
     required PlacedDecoration decoration,
     required BagItem bagItem,
@@ -1292,6 +1301,7 @@ class _HomeScreenState extends State<HomeScreen> {
     });
   }
 
+  // ignore: unused_element
   void _dragCompositeRoomChild({
     required PlacedDecoration decoration,
     required BagItem bagItem,
@@ -1398,6 +1408,7 @@ class _HomeScreenState extends State<HomeScreen> {
         const _RoomNodeOverride();
   }
 
+  // ignore: unused_element
   CompositeNode? _findCompositeNodeById(CompositeNode node, String nodeId) {
     if (node.id == nodeId) {
       return node;
@@ -1415,19 +1426,10 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   List<CompositeNode> _variantNodesForSelectedRoomNode() {
-    final selectedNodeId = _selectedRoomNodeId;
     final item = _selectedDecorationBagItem;
     final composite = item?.composite;
 
-    if (!_isEditingRoomContents ||
-        selectedNodeId == null ||
-        composite == null) {
-      return const <CompositeNode>[];
-    }
-
-    final selectedNode = _findCompositeNodeById(composite.root, selectedNodeId);
-
-    if (selectedNode == null) {
+    if (!_isEditingRoomContents || composite == null) {
       return const <CompositeNode>[];
     }
 
@@ -1443,9 +1445,9 @@ class _HomeScreenState extends State<HomeScreen> {
           variants.add(node);
         }
 
-        // A Variant node represents one independent slot.
-        // Its children are alternatives belonging to that slot, so do not
-        // interpret descendants inside those alternatives as sibling slots.
+        // A Variant node is a sealed configurable slot.
+        // Room Manager may switch its authored alternatives, but it does not
+        // expose or edit the Composite hierarchy itself.
         return;
       }
 
@@ -1454,7 +1456,7 @@ class _HomeScreenState extends State<HomeScreen> {
       }
     }
 
-    collect(selectedNode);
+    collect(composite.root);
 
     return variants;
   }
@@ -1510,6 +1512,7 @@ class _HomeScreenState extends State<HomeScreen> {
         '${_roomVariantChoiceName(variantNode)}';
   }
 
+  // ignore: unused_element
   void _stepRoomVariant(CompositeNode variantNode, int delta) {
     final decorationId = _editingRoomDecorationId;
 
@@ -2245,7 +2248,11 @@ class _HomeScreenState extends State<HomeScreen> {
     return Rect.fromLTRB(minX, minY, maxX, maxY);
   }
 
-  Rect? _compositeNodePreviewBounds(CompositeNode node, CompositeAsset asset) {
+  Rect? _compositeNodePreviewBounds(
+    CompositeNode node,
+    CompositeAsset asset, {
+    String? decorationId,
+  }) {
     if (!node.visible) {
       return null;
     }
@@ -2256,7 +2263,10 @@ class _HomeScreenState extends State<HomeScreen> {
       Rect? bounds;
 
       for (final child in node.children) {
-        bounds = _unionRects(bounds, _compositeNodePreviewBounds(child, asset));
+        bounds = _unionRects(
+          bounds,
+          _compositeNodePreviewBounds(child, asset, decorationId: decorationId),
+        );
       }
 
       return bounds;
@@ -2267,11 +2277,18 @@ class _HomeScreenState extends State<HomeScreen> {
         return null;
       }
 
-      final authored = (node.payload['activeIndex'] as num?)?.toInt() ?? 0;
+      final safeIndex = decorationId == null
+          ? ((node.payload['activeIndex'] as num?)?.toInt() ?? 0).clamp(
+              0,
+              node.children.length - 1,
+            )
+          : _activeRoomVariantIndex(decorationId, node);
 
-      final safeIndex = authored.clamp(0, node.children.length - 1);
-
-      return _compositeNodePreviewBounds(node.children[safeIndex], asset);
+      return _compositeNodePreviewBounds(
+        node.children[safeIndex],
+        asset,
+        decorationId: decorationId,
+      );
     }
 
     if (node.type == 'layer') {
@@ -2489,6 +2506,48 @@ class _HomeScreenState extends State<HomeScreen> {
             );
           },
         ),
+      ),
+    );
+  }
+
+  Widget _buildCroppedCompositeDecoration(
+    BagItem item, {
+    required PlacedDecoration decoration,
+    required Rect visibleBounds,
+    required double sceneScale,
+  }) {
+    final composite = item.composite;
+
+    if (composite == null ||
+        composite.canvasWidth <= 0 ||
+        composite.canvasHeight <= 0 ||
+        visibleBounds.width <= 0 ||
+        visibleBounds.height <= 0) {
+      return const SizedBox.shrink();
+    }
+
+    return ClipRect(
+      child: Stack(
+        clipBehavior: Clip.hardEdge,
+        children: [
+          Positioned(
+            left: -visibleBounds.left * sceneScale,
+            top: -visibleBounds.top * sceneScale,
+            child: Transform.scale(
+              scale: sceneScale,
+              alignment: Alignment.topLeft,
+              child: SizedBox(
+                width: composite.canvasWidth,
+                height: composite.canvasHeight,
+                child: _buildCompositeNode(
+                  composite.root,
+                  asset: composite,
+                  decorationId: decoration.id,
+                ),
+              ),
+            ),
+          ),
+        ],
       ),
     );
   }
@@ -3141,30 +3200,6 @@ class _HomeScreenState extends State<HomeScreen> {
     await _saveDecorations();
   }
 
-  Future<void> _scaleSelectedDecoration(double factor) async {
-    final selected = _selectedDecoration;
-    if (selected == null) return;
-
-    setState(() {
-      _replaceDecoration(
-        selected.copyWith(scale: (selected.scale * factor).clamp(0.15, 20.0)),
-      );
-    });
-
-    await _saveDecorations();
-  }
-
-  Future<void> _mirrorSelectedDecoration() async {
-    final selected = _selectedDecoration;
-    if (selected == null) return;
-
-    setState(() {
-      _replaceDecoration(selected.copyWith(mirrored: !selected.mirrored));
-    });
-
-    await _saveDecorations();
-  }
-
   Future<void> _duplicateSelectedDecorationAsInstance() async {
     final selected = _selectedDecoration;
 
@@ -3172,15 +3207,38 @@ class _HomeScreenState extends State<HomeScreen> {
       return;
     }
 
+    final duplicateId = 'decor_${DateTime.now().microsecondsSinceEpoch}';
+
     final duplicate = selected.copyWith(
-      id: 'decor_${DateTime.now().microsecondsSinceEpoch}',
+      id: duplicateId,
       name: '${selected.name} Instance',
       x: (selected.x + 0.025).clamp(0.0, 1.0),
       y: (selected.y + 0.025).clamp(0.0, 1.0),
     );
 
+    // Duplicate what the user currently sees.
+    //
+    // Variant choices and any other Composite instance overrides live in the
+    // Home state map under the placed decoration ID rather than in the shared
+    // Bag source. Give the duplicate its own map containing the original
+    // instance's current state.
+    //
+    // From this point onward the two instances are independent.
+    final sourceOverrides = _roomNodeOverrides[selected.id];
+
+    final duplicateOverrides = sourceOverrides == null
+        ? <String, _RoomNodeOverride>{}
+        : <String, _RoomNodeOverride>{
+            for (final entry in sourceOverrides.entries) entry.key: entry.value,
+          };
+
     setState(() {
       _decorations.add(duplicate);
+
+      if (duplicateOverrides.isNotEmpty) {
+        _roomNodeOverrides[duplicateId] = duplicateOverrides;
+      }
+
       _selectedDecorationId = duplicate.id;
       _decorateMode = true;
     });
@@ -3194,7 +3252,7 @@ class _HomeScreenState extends State<HomeScreen> {
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
         content: Text(
-          '${selected.name} duplicated as a lightweight instance 🔗',
+          '${selected.name} duplicated with its current variants 🔗',
         ),
       ),
     );
@@ -3621,6 +3679,11 @@ class _HomeScreenState extends State<HomeScreen> {
 
                           double decorationWidth;
                           double decorationHeight;
+                          double decorationLeft;
+                          double decorationTop;
+
+                          Rect? compositeVisibleBounds;
+                          double? compositeSceneScale;
 
                           if (bagItem.isComposite &&
                               bagItem.composite != null) {
@@ -3632,19 +3695,51 @@ class _HomeScreenState extends State<HomeScreen> {
                             final roomScaleY =
                                 roomHeight / composite.canvasHeight;
 
-                            final compositeSceneScale = roomScaleX < roomScaleY
+                            compositeSceneScale = roomScaleX < roomScaleY
                                 ? roomScaleX
                                 : roomScaleY;
 
+                            final calculatedBounds =
+                                _compositeNodePreviewBounds(
+                                  composite.root,
+                                  composite,
+                                  decorationId: decoration.id,
+                                );
+
+                            final usableBounds =
+                                calculatedBounds != null &&
+                                    calculatedBounds.width > 0 &&
+                                    calculatedBounds.height > 0
+                                ? calculatedBounds
+                                : Rect.fromLTWH(
+                                    0,
+                                    0,
+                                    composite.canvasWidth,
+                                    composite.canvasHeight,
+                                  );
+
+                            compositeVisibleBounds = usableBounds;
+
                             decorationWidth =
-                                composite.canvasWidth *
-                                compositeSceneScale *
-                                decoration.scale;
+                                usableBounds.width * compositeSceneScale;
 
                             decorationHeight =
-                                composite.canvasHeight *
-                                compositeSceneScale *
-                                decoration.scale;
+                                usableBounds.height * compositeSceneScale;
+
+                            // Preserve the old authored-canvas centre as the
+                            // instance anchor. Tightening the hit box therefore
+                            // does not teleport the visible artwork.
+                            decorationLeft =
+                                (decoration.x * roomWidth) +
+                                ((usableBounds.left -
+                                        (composite.canvasWidth / 2)) *
+                                    compositeSceneScale);
+
+                            decorationTop =
+                                (decoration.y * roomHeight) +
+                                ((usableBounds.top -
+                                        (composite.canvasHeight / 2)) *
+                                    compositeSceneScale);
                           } else if (bagItem.hasAuthoredSize) {
                             // Map the authored coordinate space into this
                             // room with one uniform scene scale so the asset
@@ -3660,14 +3755,18 @@ class _HomeScreenState extends State<HomeScreen> {
                                 : roomScaleY;
 
                             decorationWidth =
-                                bagItem.authoredWidth! *
-                                authoredSceneScale *
-                                decoration.scale;
+                                bagItem.authoredWidth! * authoredSceneScale;
 
                             decorationHeight =
-                                bagItem.authoredHeight! *
-                                authoredSceneScale *
-                                decoration.scale;
+                                bagItem.authoredHeight! * authoredSceneScale;
+
+                            decorationLeft =
+                                (decoration.x * roomWidth) -
+                                (decorationWidth / 2);
+
+                            decorationTop =
+                                (decoration.y * roomHeight) -
+                                (decorationHeight / 2);
                           } else {
                             // Backward compatibility for Bag assets created
                             // before authored-size metadata existed.
@@ -3676,6 +3775,14 @@ class _HomeScreenState extends State<HomeScreen> {
 
                             decorationHeight =
                                 roomHeight * 0.18 * decoration.scale;
+
+                            decorationLeft =
+                                (decoration.x * roomWidth) -
+                                (decorationWidth / 2);
+
+                            decorationTop =
+                                (decoration.y * roomHeight) -
+                                (decorationHeight / 2);
                           }
 
                           final selected =
@@ -3683,12 +3790,8 @@ class _HomeScreenState extends State<HomeScreen> {
                               _selectedDecorationId == decoration.id;
 
                           return Positioned(
-                            left:
-                                (decoration.x * roomWidth) -
-                                (decorationWidth / 2),
-                            top:
-                                (decoration.y * roomHeight) -
-                                (decorationHeight / 2),
+                            left: decorationLeft,
+                            top: decorationTop,
                             width: decorationWidth,
                             height: decorationHeight,
                             child: _AlphaHitTest(
@@ -3703,23 +3806,10 @@ class _HomeScreenState extends State<HomeScreen> {
                                 onTapUp: !_decorateMode
                                     ? null
                                     : (details) {
-                                        if (_isEditingRoomContents &&
-                                            decoration.id ==
-                                                _editingRoomDecorationId &&
-                                            bagItem.isComposite) {
-                                          _selectCompositeRoomChild(
-                                            decoration: decoration,
-                                            bagItem: bagItem,
-                                            localPosition:
-                                                details.localPosition,
-                                            decorationSize: Size(
-                                              decorationWidth,
-                                              decorationHeight,
-                                            ),
-                                          );
-                                          return;
-                                        }
-
+                                        // Rooms Awaken #12:
+                                        // Composites are sealed in Room Manager.
+                                        // A tap selects the complete placed
+                                        // asset rather than an authored child.
                                         setState(() {
                                           _selectedDecorationId = decoration.id;
                                         });
@@ -3727,23 +3817,8 @@ class _HomeScreenState extends State<HomeScreen> {
                                 onPanStart: !_decorateMode
                                     ? null
                                     : (details) {
-                                        if (_isEditingRoomContents &&
-                                            decoration.id ==
-                                                _editingRoomDecorationId &&
-                                            bagItem.isComposite) {
-                                          _selectCompositeRoomChild(
-                                            decoration: decoration,
-                                            bagItem: bagItem,
-                                            localPosition:
-                                                details.localPosition,
-                                            decorationSize: Size(
-                                              decorationWidth,
-                                              decorationHeight,
-                                            ),
-                                          );
-                                          return;
-                                        }
-
+                                        // Rooms Awaken #12:
+                                        // Dragging begins on the whole asset.
                                         setState(() {
                                           _selectedDecorationId = decoration.id;
                                         });
@@ -3755,22 +3830,11 @@ class _HomeScreenState extends State<HomeScreen> {
                                           return;
                                         }
 
-                                        if (_isEditingRoomContents &&
-                                            decoration.id ==
-                                                _editingRoomDecorationId &&
-                                            bagItem.isComposite) {
-                                          _dragCompositeRoomChild(
-                                            decoration: decoration,
-                                            bagItem: bagItem,
-                                            delta: details.delta,
-                                            decorationSize: Size(
-                                              decorationWidth,
-                                              decorationHeight,
-                                            ),
-                                          );
-                                          return;
-                                        }
-
+                                        // Rooms Awaken #12:
+                                        // Never transform children of an
+                                        // authored Composite in Room Manager.
+                                        // Continue into normal whole-decoration
+                                        // movement below.
                                         final currentIndex = _decorations
                                             .indexWhere(
                                               (candidate) =>
@@ -3858,10 +3922,15 @@ class _HomeScreenState extends State<HomeScreen> {
                                             );
                                           }
 
-                                          if (bagItem.isComposite) {
-                                            return _buildCompositeDecoration(
+                                          if (bagItem.isComposite &&
+                                              compositeVisibleBounds != null &&
+                                              compositeSceneScale != null) {
+                                            return _buildCroppedCompositeDecoration(
                                               bagItem,
                                               decoration: decoration,
+                                              visibleBounds:
+                                                  compositeVisibleBounds,
+                                              sceneScale: compositeSceneScale,
                                             );
                                           }
 
@@ -4211,7 +4280,8 @@ class _HomeScreenState extends State<HomeScreen> {
                                     ),
                                   ),
                                 ),
-                              if (_isEditingRoomContents &&
+                              if (_legacyRoomNodeEditingEnabled &&
+                                  _isEditingRoomContents &&
                                   _selectedRoomNodeId != null &&
                                   _selectedRoomNodeName != null)
                                 Padding(
@@ -4237,7 +4307,8 @@ class _HomeScreenState extends State<HomeScreen> {
                                     ),
                                   ),
                                 ),
-                              if (_isEditingRoomContents &&
+                              if (_legacyRoomNodeEditingEnabled &&
+                                  _isEditingRoomContents &&
                                   _currentRoomScopeChildren.isNotEmpty) ...[
                                 IconButton(
                                   tooltip: 'Previous Item',
@@ -4256,7 +4327,8 @@ class _HomeScreenState extends State<HomeScreen> {
                                   ),
                                 ),
                               ],
-                              if (_isEditingRoomContents &&
+                              if (_legacyRoomNodeEditingEnabled &&
+                                  _isEditingRoomContents &&
                                   _canEnterSelectedRoomNode)
                                 IconButton(
                                   tooltip: 'Enter Group',
@@ -4309,7 +4381,8 @@ class _HomeScreenState extends State<HomeScreen> {
                                       ),
                                     ),
                                   ),
-                              if (_isEditingRoomContents &&
+                              if (_legacyRoomNodeEditingEnabled &&
+                                  _isEditingRoomContents &&
                                   _selectedRoomNodeId != null) ...[
                                 IconButton(
                                   tooltip: 'Move Left',
@@ -4388,73 +4461,6 @@ class _HomeScreenState extends State<HomeScreen> {
                                   onPressed: _resetSelectedDecoration,
                                   icon: const Icon(
                                     Icons.restart_alt,
-                                    color: Colors.white,
-                                  ),
-                                ),
-                                IconButton(
-                                  tooltip: 'Fit Width',
-                                  onPressed: () {
-                                    _fitSelectedDecorationWidth(
-                                      roomWidth: roomWidth,
-                                      roomHeight: roomHeight,
-                                    );
-                                  },
-                                  icon: const Icon(
-                                    Icons.swap_horiz,
-                                    color: Colors.white,
-                                  ),
-                                ),
-                                IconButton(
-                                  tooltip: 'Fit Height',
-                                  onPressed: () {
-                                    _fitSelectedDecorationHeight(
-                                      roomWidth: roomWidth,
-                                      roomHeight: roomHeight,
-                                    );
-                                  },
-                                  icon: const Icon(
-                                    Icons.swap_vert,
-                                    color: Colors.white,
-                                  ),
-                                ),
-                                IconButton(
-                                  tooltip: 'Fit Room',
-                                  onPressed: () {
-                                    _fitSelectedDecorationRoom(
-                                      roomWidth: roomWidth,
-                                      roomHeight: roomHeight,
-                                    );
-                                  },
-                                  icon: const Icon(
-                                    Icons.fit_screen,
-                                    color: Colors.white,
-                                  ),
-                                ),
-                                IconButton(
-                                  tooltip: 'Scale down',
-                                  onPressed: () {
-                                    _scaleSelectedDecoration(0.9);
-                                  },
-                                  icon: const Icon(
-                                    Icons.remove_circle_outline,
-                                    color: Colors.white,
-                                  ),
-                                ),
-                                IconButton(
-                                  tooltip: 'Scale up',
-                                  onPressed: () {
-                                    _scaleSelectedDecoration(1.1);
-                                  },
-                                  icon: const Icon(
-                                    Icons.add_circle_outline,
-                                    color: Colors.white,
-                                  ),
-                                ),
-                                IconButton(
-                                  tooltip: 'Mirror horizontally',
-                                  onPressed: _mirrorSelectedDecoration,
-                                  icon: const Icon(
-                                    Icons.flip,
                                     color: Colors.white,
                                   ),
                                 ),
