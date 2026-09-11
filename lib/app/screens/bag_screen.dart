@@ -13,6 +13,7 @@ import '../painters/bag_item_preview_painter.dart';
 import '../painters/animation_canvas_painter.dart';
 import '../services/bag_service.dart';
 import '../services/bag_asset_transfer_service.dart';
+import 'workspace_screen.dart';
 
 class _BagPocket {
   const _BagPocket({
@@ -1235,7 +1236,7 @@ class _BagScreenState extends State<BagScreen> {
                                     Icons.chevron_right,
                                     color: Colors.white38,
                                   ),
-                                  onTap: () async {
+                                  onTap: () {
                                     Navigator.pop(sheetContext);
 
                                     if (widget.selectionMode) {
@@ -1243,7 +1244,25 @@ class _BagScreenState extends State<BagScreen> {
                                       return;
                                     }
 
-                                    await _viewBagItem(item);
+                                    if (item.isComposite) {
+                                      Navigator.of(context).push(
+                                        MaterialPageRoute<void>(
+                                          builder: (_) => WorkspaceScreen(
+                                            initialBagItem: item,
+                                            projectName: item.name,
+                                            initialCanvasWidth:
+                                                item.composite?.canvasWidth ??
+                                                1920,
+                                            initialCanvasHeight:
+                                                item.composite?.canvasHeight ??
+                                                1080,
+                                          ),
+                                        ),
+                                      );
+                                      return;
+                                    }
+
+                                    Navigator.pop(context, item);
                                   },
                                 ),
                                 Padding(

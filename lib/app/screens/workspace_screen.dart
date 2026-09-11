@@ -110,6 +110,7 @@ class WorkspaceScreen extends StatefulWidget {
     this.initialReferenceMediaType,
     this.initialFps = 8,
     this.initialGenerateVideoTimeline = false,
+    this.initialBagItem,
   });
 
   final String? projectId;
@@ -122,6 +123,7 @@ class WorkspaceScreen extends StatefulWidget {
 
   /// True only when creating a brand-new project directly from video.
   final bool initialGenerateVideoTimeline;
+  final BagItem? initialBagItem;
 
   static const routeName = '/workspace';
 
@@ -130,6 +132,26 @@ class WorkspaceScreen extends StatefulWidget {
 }
 
 class _WorkspaceScreenState extends State<WorkspaceScreen> {
+  bool _initialBagItemInserted = false;
+
+  Future<void> _insertInitialBagItemIfNeeded() async {
+    if (_initialBagItemInserted) {
+      return;
+    }
+
+    final item = widget.initialBagItem;
+
+    if (item == null) {
+      return;
+    }
+
+    _initialBagItemInserted = true;
+
+    if (item.isComposite) {
+      await _insertCompositeBagItem(item);
+    }
+  }
+
   final List<List<VectorStroke>> _frames = [<VectorStroke>[]];
   final List<DrawingLayer> _layers = [
     DrawingLayer(id: 'linework', name: 'Linework', frames: [<VectorStroke>[]]),
@@ -423,6 +445,14 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
         });
       }
     }
+
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) {
+        return;
+      }
+
+      _insertInitialBagItemIfNeeded();
+    });
   }
 
   Future<void> _openBrushPresets() async {
