@@ -7,6 +7,7 @@ class LayerGroup {
     List<String>? childOrder,
     this.visible = true,
     this.expanded = true,
+    this.brightness = 1.0,
   }) : childLayerIds = childLayerIds,
        childGroupIds = childGroupIds,
        childOrder =
@@ -22,6 +23,8 @@ class LayerGroup {
       name: json['name'] as String? ?? 'Group',
       visible: json['visible'] as bool? ?? true,
       expanded: json['expanded'] as bool? ?? true,
+      brightness:
+          (json['brightness'] as num?)?.toDouble().clamp(0.0, 1.0) ?? 1.0,
       childLayerIds: (json['childLayerIds'] as List? ?? const [])
           .map((id) => id.toString())
           .toList(),
@@ -40,6 +43,14 @@ class LayerGroup {
   final String name;
   final bool visible;
   final bool expanded;
+
+  /// Non-destructive visual brightness multiplier for this hierarchy branch.
+  ///
+  /// 1.0 = authored colours
+  /// 0.0 = completely dark
+  ///
+  /// Nested groups inherit and multiply their parent brightness.
+  final double brightness;
 
   /// Drawing layers directly owned by this group.
   final List<String> childLayerIds;
@@ -67,6 +78,7 @@ class LayerGroup {
     String? name,
     bool? visible,
     bool? expanded,
+    double? brightness,
     List<String>? childLayerIds,
     List<String>? childGroupIds,
     List<String>? childOrder,
@@ -76,6 +88,7 @@ class LayerGroup {
       name: name ?? this.name,
       visible: visible ?? this.visible,
       expanded: expanded ?? this.expanded,
+      brightness: brightness ?? this.brightness,
       childLayerIds: childLayerIds ?? this.childLayerIds,
       childGroupIds: childGroupIds ?? this.childGroupIds,
       childOrder: childOrder ?? this.childOrder,
@@ -88,6 +101,7 @@ class LayerGroup {
       'name': name,
       'visible': visible,
       'expanded': expanded,
+      'brightness': brightness,
       'childLayerIds': childLayerIds,
       'childGroupIds': childGroupIds,
       'childOrder': childOrder,

@@ -1,4 +1,5 @@
 import 'dart:io';
+import 'dart:ui' as ui;
 
 import 'dart:convert';
 
@@ -55,6 +56,7 @@ class _BagScreenState extends State<BagScreen> {
 
   List<BagItem> _items = <BagItem>[];
   bool _loading = true;
+  int _bagCompositeSerial = 0;
 
   Map<String, String> _pocketAssignments = {};
   List<_BagPocket> _customPockets = <_BagPocket>[];
@@ -743,6 +745,591 @@ class _BagScreenState extends State<BagScreen> {
     await _savePocketAssignments();
   }
 
+  String _freshBagCompositeId(String kind) {
+    return 'bag_${kind}_${DateTime.now().microsecondsSinceEpoch}_${_bagCompositeSerial++}';
+  }
+
+  BagItem _bagItemWithComposite(BagItem item, CompositeAsset composite) {
+    return BagItem(
+      id: item.id,
+      name: item.name,
+      sourceGroupName: item.sourceGroupName,
+      layers: item.layers,
+      createdAt: item.createdAt,
+      assetType: 'composite',
+      imagePath: item.imagePath,
+      authoredWidth: item.authoredWidth,
+      authoredHeight: item.authoredHeight,
+      authoredCanvasWidth: item.authoredCanvasWidth,
+      authoredCanvasHeight: item.authoredCanvasHeight,
+      composite: composite,
+    );
+  }
+
+  CompositeNode _cloneCompositeNodeWithFreshIds(CompositeNode node) {
+    return CompositeNode(
+      type: node.type,
+      id: _freshBagCompositeId(node.type),
+      name: node.name,
+      visible: node.visible,
+      children: node.children.map(_cloneCompositeNodeWithFreshIds).toList(),
+      payload: Map<String, dynamic>.from(node.payload),
+    );
+  }
+
+  CompositeNode _namedBagCompositeChild(BagItem item, CompositeNode node) {
+    return CompositeNode(
+      type: 'group',
+      id: _freshBagCompositeId('variant_choice'),
+      name: item.name,
+      visible: true,
+      children: <CompositeNode>[node],
+      payload: const <String, dynamic>{'expanded': true},
+    );
+  }
+
+  Future<CompositeNode?> _bagItemToCompositeNode(
+    BagItem item, {
+    required double canvasWidth,
+    required double canvasHeight,
+  }) async {
+    if (item.isComposite) {
+      return _cloneCompositeNodeWithFreshIds(item.composite!.root);
+    }
+
+    if (item.isImage) {
+      final imagePath = item.imagePath;
+
+      if (imagePath == null ||
+          imagePath.isEmpty ||
+          !File(imagePath).existsSync()) {
+        return null;
+      }
+
+      var scaleX = 1.0;
+      var scaleY = 1.0;
+
+      if (item.hasAuthoredSize && canvasWidth > 0 && canvasHeight > 0) {
+        try {
+          final bytes = await File(imagePath).readAsBytes();
+          final codec = await ui.instantiateImageCodec(bytes);
+          final frame = await codec.getNextFrame();
+
+          final imageWidth = frame.image.width.toDouble();
+          final imageHeight = frame.image.height.toDouble();
+
+          if (imageWidth > 0 && imageHeight > 0) {
+            final targetFitX = canvasWidth / imageWidth;
+            final targetFitY = canvasHeight / imageHeight;
+            final targetFit = targetFitX < targetFitY ? targetFitX : targetFitY;
+
+            final authoredSceneFitX = canvasWidth / item.authoredCanvasWidth!;
+            final authoredSceneFitY = canvasHeight / item.authoredCanvasHeight!;
+
+            final authoredSceneFit = authoredSceneFitX < authoredSceneFitY
+                ? authoredSceneFitX
+                : authoredSceneFitY;
+
+            final desiredWidth = item.authoredWidth! * authoredSceneFit;
+            final desiredHeight = item.authoredHeight! * authoredSceneFit;
+
+            final baseWidth = imageWidth * targetFit;
+            final baseHeight = imageHeight * targetFit;
+
+            if (baseWidth > 0) {
+              scaleX = desiredWidth / baseWidth;
+            }
+
+            if (baseHeight > 0) {
+              scaleY = desiredHeight / baseHeight;
+            }
+          }
+
+          frame.image.dispose();
+          codec.dispose();
+        } catch (_) {
+          scaleX = 1.0;
+          scaleY = 1.0;
+        }
+      }
+
+      return CompositeNode(
+        type: 'reference',
+        id: _freshBagCompositeId('reference'),
+        name: item.name,
+        visible: true,
+        payload: <String, dynamic>{
+          'mediaPath': imagePath,
+          'mediaType': 'image',
+          'opacity': 1.0,
+          'offsetX': 0.0,
+          'offsetY': 0.0,
+          'rotation': 0.0,
+          'scaleX': scaleX,
+          'scaleY': scaleY,
+          'pivotX': null,
+          'pivotY': null,
+          'frameTimesMs': <int>[],
+        },
+      );
+    }
+
+    if (item.layers.isNotEmpty) {
+      final children = <CompositeNode>[];
+
+      for (final layer in item.layers) {
+        children.add(
+          CompositeNode(
+            type: 'layer',
+            id: _freshBagCompositeId('layer'),
+            name: layer.name,
+            visible: layer.visible,
+            payload: <String, dynamic>{
+              'opacity': layer.opacity,
+              'frames': <dynamic>[
+                layer.strokes.map((stroke) => stroke.toJson()).toList(),
+              ],
+            },
+          ),
+        );
+      }
+
+      return CompositeNode(
+        type: 'group',
+        id: _freshBagCompositeId('group'),
+        name: item.name,
+        visible: true,
+        children: children,
+        payload: const <String, dynamic>{'expanded': true},
+      );
+    }
+
+    return null;
+  }
+
+  CompositeNode _replaceCompositeNode(
+    CompositeNode node,
+    String targetId,
+    CompositeNode Function(CompositeNode node) transform,
+  ) {
+    if (node.id == targetId) {
+      return transform(node);
+    }
+
+    var changed = false;
+
+    final nextChildren = <CompositeNode>[];
+
+    for (final child in node.children) {
+      final nextChild = _replaceCompositeNode(child, targetId, transform);
+
+      if (!identical(nextChild, child)) {
+        changed = true;
+      }
+
+      nextChildren.add(nextChild);
+    }
+
+    if (!changed) {
+      return node;
+    }
+
+    return CompositeNode(
+      type: node.type,
+      id: node.id,
+      name: node.name,
+      visible: node.visible,
+      children: nextChildren,
+      payload: Map<String, dynamic>.from(node.payload),
+    );
+  }
+
+  void _collectCompositeGroups(
+    CompositeNode node,
+    List<MapEntry<String, String>> groups, {
+    String path = '',
+  }) {
+    final currentPath = path.isEmpty ? node.name : '$path / ${node.name}';
+
+    if (node.type == 'group') {
+      groups.add(MapEntry<String, String>(node.id, currentPath));
+    }
+
+    for (final child in node.children) {
+      _collectCompositeGroups(child, groups, path: currentPath);
+    }
+  }
+
+  Future<BagItem?> _chooseBagItem({
+    required String title,
+    required List<BagItem> items,
+  }) async {
+    if (items.isEmpty) {
+      return null;
+    }
+
+    return showModalBottomSheet<BagItem>(
+      context: context,
+      backgroundColor: const Color(0xFF21160F),
+      showDragHandle: true,
+      isScrollControlled: true,
+      builder: (sheetContext) {
+        return SafeArea(
+          child: FractionallySizedBox(
+            heightFactor: 0.72,
+            child: Column(
+              children: [
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(20, 6, 20, 12),
+                  child: Text(
+                    title,
+                    style: const TextStyle(
+                      color: Color(0xFFF1D3A2),
+                      fontSize: 20,
+                      fontWeight: FontWeight.w800,
+                    ),
+                  ),
+                ),
+                const Divider(color: Colors.white12),
+                Expanded(
+                  child: ListView.separated(
+                    padding: const EdgeInsets.fromLTRB(16, 8, 16, 24),
+                    itemCount: items.length,
+                    separatorBuilder: (_, _) =>
+                        const Divider(color: Colors.white12),
+                    itemBuilder: (context, index) {
+                      final candidate = items[index];
+
+                      return ListTile(
+                        leading: _bagItemThumbnail(candidate),
+                        title: Text(
+                          candidate.name,
+                          style: const TextStyle(
+                            color: Color(0xFFF4E5CF),
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                        subtitle: Text(
+                          candidate.isComposite
+                              ? 'Composite'
+                              : candidate.isImage
+                              ? 'Image'
+                              : 'Drawing',
+                          style: const TextStyle(color: Colors.white54),
+                        ),
+                        onTap: () {
+                          Navigator.pop(sheetContext, candidate);
+                        },
+                      );
+                    },
+                  ),
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  Future<void> _addVariantToBagItem(BagItem item) async {
+    final candidates = _items
+        .where((candidate) => candidate.id != item.id)
+        .toList();
+
+    if (candidates.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Add another asset to your Bag first.')),
+      );
+      return;
+    }
+
+    final selected = await _chooseBagItem(
+      title: 'ADD VARIANT TO ${item.name.toUpperCase()}',
+      items: candidates,
+    );
+
+    if (selected == null || !mounted) {
+      return;
+    }
+
+    final existingComposite = item.composite;
+
+    final canvasWidth =
+        existingComposite?.canvasWidth ??
+        item.authoredCanvasWidth ??
+        selected.composite?.canvasWidth ??
+        selected.authoredCanvasWidth ??
+        1920.0;
+
+    final canvasHeight =
+        existingComposite?.canvasHeight ??
+        item.authoredCanvasHeight ??
+        selected.composite?.canvasHeight ??
+        selected.authoredCanvasHeight ??
+        1080.0;
+
+    final selectedRaw = await _bagItemToCompositeNode(
+      selected,
+      canvasWidth: canvasWidth,
+      canvasHeight: canvasHeight,
+    );
+
+    if (!mounted) {
+      return;
+    }
+
+    if (selectedRaw == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            '${selected.name} could not be converted to a variant.',
+          ),
+        ),
+      );
+      return;
+    }
+
+    final selectedChoice = _namedBagCompositeChild(selected, selectedRaw);
+
+    CompositeAsset nextComposite;
+
+    if (existingComposite != null &&
+        existingComposite.root.children.length == 1 &&
+        existingComposite.root.children.first.type == 'variant' &&
+        existingComposite.root.children.first.payload['bagVariantSlot'] ==
+            true) {
+      final slot = existingComposite.root.children.first;
+
+      final nextSlot = CompositeNode(
+        type: slot.type,
+        id: slot.id,
+        name: slot.name,
+        visible: slot.visible,
+        children: <CompositeNode>[...slot.children, selectedChoice],
+        payload: Map<String, dynamic>.from(slot.payload),
+      );
+
+      nextComposite = CompositeAsset(
+        version: existingComposite.version,
+        canvasWidth: existingComposite.canvasWidth,
+        canvasHeight: existingComposite.canvasHeight,
+        root: CompositeNode(
+          type: existingComposite.root.type,
+          id: existingComposite.root.id,
+          name: existingComposite.root.name,
+          visible: existingComposite.root.visible,
+          children: <CompositeNode>[nextSlot],
+          payload: Map<String, dynamic>.from(existingComposite.root.payload),
+        ),
+      );
+    } else {
+      final currentRaw = await _bagItemToCompositeNode(
+        item,
+        canvasWidth: canvasWidth,
+        canvasHeight: canvasHeight,
+      );
+
+      if (!mounted) {
+        return;
+      }
+
+      if (currentRaw == null) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('${item.name} could not become a Variant asset.'),
+          ),
+        );
+        return;
+      }
+
+      final currentChoice = _namedBagCompositeChild(item, currentRaw);
+
+      final slot = CompositeNode(
+        type: 'variant',
+        id: _freshBagCompositeId('variant'),
+        name: '${item.name} Variants',
+        children: <CompositeNode>[currentChoice, selectedChoice],
+        payload: const <String, dynamic>{
+          'activeIndex': 0,
+          'expanded': true,
+          'bagVariantSlot': true,
+        },
+      );
+
+      nextComposite = CompositeAsset(
+        version: 1,
+        canvasWidth: canvasWidth,
+        canvasHeight: canvasHeight,
+        root: CompositeNode(
+          type: 'group',
+          id: _freshBagCompositeId('root'),
+          name: item.name,
+          children: <CompositeNode>[slot],
+          payload: const <String, dynamic>{'expanded': true},
+        ),
+      );
+    }
+
+    final updated = _bagItemWithComposite(item, nextComposite);
+
+    await _bagService.addItem(updated);
+    await _loadItems();
+
+    if (!mounted) {
+      return;
+    }
+
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text('${selected.name} added as a variant of ${item.name} 🎭'),
+      ),
+    );
+  }
+
+  Future<void> _moveBagItemIntoCompositeGroup(BagItem item) async {
+    final compositeTargets = _items
+        .where((candidate) => candidate.id != item.id && candidate.isComposite)
+        .toList();
+
+    if (compositeTargets.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('There are no other Composite assets in the Bag yet.'),
+        ),
+      );
+      return;
+    }
+
+    final target = await _chooseBagItem(
+      title: 'MOVE ${item.name.toUpperCase()} INTO',
+      items: compositeTargets,
+    );
+
+    if (target == null || !mounted || target.composite == null) {
+      return;
+    }
+
+    final targetComposite = target.composite!;
+    final groups = <MapEntry<String, String>>[];
+
+    _collectCompositeGroups(targetComposite.root, groups);
+
+    if (groups.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('That Composite has no Groups to move into.'),
+        ),
+      );
+      return;
+    }
+
+    final groupId = await showModalBottomSheet<String>(
+      context: context,
+      backgroundColor: const Color(0xFF21160F),
+      showDragHandle: true,
+      builder: (sheetContext) {
+        return SafeArea(
+          child: ListView(
+            shrinkWrap: true,
+            padding: const EdgeInsets.fromLTRB(16, 8, 16, 24),
+            children: [
+              Padding(
+                padding: const EdgeInsets.fromLTRB(8, 4, 8, 12),
+                child: Text(
+                  'Choose a Group inside "${target.name}"',
+                  style: const TextStyle(
+                    color: Color(0xFFF1D3A2),
+                    fontSize: 18,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+              ),
+              for (final group in groups)
+                ListTile(
+                  leading: const Icon(
+                    Icons.account_tree_outlined,
+                    color: Color(0xFFF1D3A2),
+                  ),
+                  title: Text(
+                    group.value,
+                    style: const TextStyle(color: Color(0xFFF4E5CF)),
+                  ),
+                  onTap: () {
+                    Navigator.pop(sheetContext, group.key);
+                  },
+                ),
+            ],
+          ),
+        );
+      },
+    );
+
+    if (groupId == null || !mounted) {
+      return;
+    }
+
+    final rawNode = await _bagItemToCompositeNode(
+      item,
+      canvasWidth: targetComposite.canvasWidth,
+      canvasHeight: targetComposite.canvasHeight,
+    );
+
+    if (!mounted) {
+      return;
+    }
+
+    if (rawNode == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('${item.name} could not be moved into that Group.'),
+        ),
+      );
+      return;
+    }
+
+    final movedNode = _namedBagCompositeChild(item, rawNode);
+
+    final nextRoot = _replaceCompositeNode(targetComposite.root, groupId, (
+      group,
+    ) {
+      return CompositeNode(
+        type: group.type,
+        id: group.id,
+        name: group.name,
+        visible: group.visible,
+        children: <CompositeNode>[...group.children, movedNode],
+        payload: Map<String, dynamic>.from(group.payload),
+      );
+    });
+
+    final updatedTarget = _bagItemWithComposite(
+      target,
+      CompositeAsset(
+        version: targetComposite.version,
+        canvasWidth: targetComposite.canvasWidth,
+        canvasHeight: targetComposite.canvasHeight,
+        root: nextRoot,
+      ),
+    );
+
+    await _bagService.addItem(updatedTarget);
+    await _bagService.deleteItem(item.id);
+
+    _pocketAssignments.remove(item.id);
+    await _savePocketAssignments();
+
+    await _loadItems();
+
+    if (!mounted) {
+      return;
+    }
+
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text('${item.name} moved inside ${target.name} 📁')),
+    );
+  }
+
   List<VectorStroke> _bagItemPreviewStrokes(BagItem item) {
     final strokes = <VectorStroke>[];
 
@@ -1303,6 +1890,30 @@ class _BagScreenState extends State<BagScreen> {
                                         onPressed: () async {
                                           Navigator.pop(sheetContext);
                                           await _assignItemToPocket(item);
+                                        },
+                                      ),
+                                      IconButton(
+                                        tooltip: 'Add Variant',
+                                        icon: const Icon(
+                                          Icons.swap_horiz_rounded,
+                                          color: Color(0xFFF1D3A2),
+                                        ),
+                                        onPressed: () async {
+                                          Navigator.pop(sheetContext);
+                                          await _addVariantToBagItem(item);
+                                        },
+                                      ),
+                                      IconButton(
+                                        tooltip: 'Move into Composite Group',
+                                        icon: const Icon(
+                                          Icons.account_tree_outlined,
+                                          color: Color(0xFFF1D3A2),
+                                        ),
+                                        onPressed: () async {
+                                          Navigator.pop(sheetContext);
+                                          await _moveBagItemIntoCompositeGroup(
+                                            item,
+                                          );
                                         },
                                       ),
                                       IconButton(

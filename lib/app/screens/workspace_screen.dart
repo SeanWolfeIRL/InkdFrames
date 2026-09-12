@@ -134,6 +134,13 @@ class WorkspaceScreen extends StatefulWidget {
 class _WorkspaceScreenState extends State<WorkspaceScreen> {
   bool _initialBagItemInserted = false;
 
+  // When Workspace is opened directly from a Composite Bag item, remember
+  // the reconstructed root group. Explicit Save can then rebuild only that
+  // asset and write it back to the same Bag item.
+  //
+  // Autosave deliberately remains project-only.
+  String? _initialBagCompositeRootGroupId;
+
   Future<void> _insertInitialBagItemIfNeeded() async {
     if (_initialBagItemInserted) {
       return;
@@ -204,6 +211,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
   List<VectorPoint> _draftStroke = const <VectorPoint>[];
   Timer? _playbackTimer;
   Timer? _autosaveTimer;
+  Timer? _groupBrightnessFadeTimer;
   bool _isPlaying = false;
   bool _showOnionSkin = true;
   bool _isEraserActive = false;
@@ -393,6 +401,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
   void dispose() {
     _playbackTimer?.cancel();
     _autosaveTimer?.cancel();
+    _groupBrightnessFadeTimer?.cancel();
     _canvasAssetLongPressTimer?.cancel();
     _videoController?.pause();
     _videoController?.dispose();
@@ -1072,6 +1081,104 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     return _isGroupEffectivelyVisible(parent.id, visited: seen);
   }
 
+  double _effectiveGroupBrightness(String groupId, {Set<String>? visited}) {
+    final seen = visited ?? <String>{};
+
+    if (!seen.add(groupId)) {
+      return 1.0;
+    }
+
+    final groupIndex = _layerGroups.indexWhere((group) => group.id == groupId);
+
+    if (groupIndex == -1) {
+      return 1.0;
+    }
+
+    final group = _layerGroups[groupIndex];
+    final ownBrightness = group.brightness.clamp(0.0, 1.0);
+
+    final parent = _groupContainingGroup(groupId);
+
+    if (parent == null) {
+      return ownBrightness;
+    }
+
+    return (ownBrightness * _effectiveGroupBrightness(parent.id, visited: seen))
+        .clamp(0.0, 1.0);
+  }
+
+  double _effectiveBrightnessForLayer(DrawingLayer layer) {
+    final group = _groupContainingLayer(layer.id);
+
+    if (group == null) {
+      return 1.0;
+    }
+
+    return _effectiveGroupBrightness(group.id);
+  }
+
+  double _effectiveBrightnessForReference(ReferenceLayer reference) {
+    final group = _groupContainingReference(reference.id);
+
+    if (group == null) {
+      return 1.0;
+    }
+
+    return _effectiveGroupBrightness(group.id);
+  }
+
+  Widget _applySceneBrightness(Widget child, double brightness) {
+    final value = brightness.clamp(0.0, 1.0);
+
+    if ((value - 1.0).abs() < 0.0001) {
+      return child;
+    }
+
+    return ColorFiltered(
+      colorFilter: ColorFilter.matrix(<double>[
+        value,
+        0,
+        0,
+        0,
+        0,
+        0,
+        value,
+        0,
+        0,
+        0,
+        0,
+        0,
+        value,
+        0,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+      ]),
+      child: child,
+    );
+  }
+
+  void _setLayerGroupBrightness(String groupId, double brightness) {
+    final index = _layerGroups.indexWhere((group) => group.id == groupId);
+
+    if (index == -1) {
+      return;
+    }
+
+    setState(() {
+      _layerGroups[index] = _layerGroups[index].copyWith(
+        brightness: brightness.clamp(0.0, 1.0),
+      );
+
+      _rebuildCompositeFrames();
+    });
+
+    _scheduleAutosave();
+  }
+
   bool _isLayerEffectivelyVisible(DrawingLayer layer) {
     if (!layer.visible) {
       return false;
@@ -1261,6 +1368,11 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
             childOrder: childOrder,
             visible: node.visible,
             expanded: node.payload['expanded'] as bool? ?? true,
+            brightness: readDouble(
+              node.payload,
+              'brightness',
+              1.0,
+            ).clamp(0.0, 1.0),
           ),
         );
 
@@ -1287,6 +1399,10 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     }
 
     final rootGroupId = rootEntry.substring(6);
+
+    if (widget.initialBagItem?.isComposite == true) {
+      _initialBagCompositeRootGroupId = rootGroupId;
+    }
 
     setState(() {
       _layers.insertAll(0, rebuiltLayers);
@@ -1731,6 +1847,523 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     }
   }
 
+  CompositeNode? _captureWorkspaceHierarchyEntry(
+    String entry, {
+    required Set<String> visitingGroups,
+    required Set<String> visitingVariants,
+  }) {
+    if (entry.startsWith('layer:')) {
+      final layerId = entry.substring(6);
+
+      final layerIndex = _layers.indexWhere((layer) => layer.id == layerId);
+
+      if (layerIndex == -1) {
+        return null;
+      }
+
+      final layer = _layers[layerIndex];
+
+      return CompositeNode(
+        type: 'layer',
+        id: layer.id,
+        name: layer.name,
+        visible: layer.visible,
+        payload: <String, dynamic>{
+          'opacity': layer.opacity,
+          'frames': layer.frames
+              .map((frame) => frame.map((stroke) => stroke.toJson()).toList())
+              .toList(),
+        },
+      );
+    }
+
+    if (entry.startsWith('reference:')) {
+      final referenceId = entry.substring(10);
+
+      final referenceIndex = _referenceLayers.indexWhere(
+        (reference) => reference.id == referenceId,
+      );
+
+      if (referenceIndex == -1) {
+        return null;
+      }
+
+      final reference = _referenceLayers[referenceIndex];
+
+      return CompositeNode(
+        type: 'reference',
+        id: reference.id,
+        name: reference.name,
+        visible: reference.visible,
+        payload: <String, dynamic>{
+          'mediaPath': reference.mediaPath,
+          'mediaType': reference.mediaType,
+          'opacity': reference.opacity,
+          'offsetX': reference.offsetX,
+          'offsetY': reference.offsetY,
+          'rotation': reference.rotation,
+          'scaleX': reference.scaleX,
+          'scaleY': reference.scaleY,
+          'pivotX': reference.pivotX,
+          'pivotY': reference.pivotY,
+          'frameTimesMs': List<int>.from(reference.frameTimesMs),
+        },
+      );
+    }
+
+    if (entry.startsWith('group:')) {
+      final groupId = entry.substring(6);
+
+      if (!visitingGroups.add(groupId)) {
+        return null;
+      }
+
+      final groupIndex = _layerGroups.indexWhere(
+        (candidate) => candidate.id == groupId,
+      );
+
+      if (groupIndex == -1) {
+        visitingGroups.remove(groupId);
+        return null;
+      }
+
+      final group = _layerGroups[groupIndex];
+      final children = <CompositeNode>[];
+
+      for (final childEntry in group.childOrder) {
+        final child = _captureWorkspaceHierarchyEntry(
+          childEntry,
+          visitingGroups: visitingGroups,
+          visitingVariants: visitingVariants,
+        );
+
+        if (child != null) {
+          children.add(child);
+        }
+      }
+
+      // Legacy protection for old groups whose drawing layers were not
+      // represented in childOrder.
+      final capturedLayerIds = children
+          .where((child) => child.type == 'layer')
+          .map((child) => child.id)
+          .toSet();
+
+      for (final childLayerId in group.childLayerIds) {
+        if (capturedLayerIds.contains(childLayerId)) {
+          continue;
+        }
+
+        final child = _captureWorkspaceHierarchyEntry(
+          'layer:$childLayerId',
+          visitingGroups: visitingGroups,
+          visitingVariants: visitingVariants,
+        );
+
+        if (child != null) {
+          children.add(child);
+        }
+      }
+
+      visitingGroups.remove(groupId);
+
+      return CompositeNode(
+        type: 'group',
+        id: group.id,
+        name: group.name,
+        visible: group.visible,
+        children: children,
+        payload: <String, dynamic>{
+          'expanded': group.expanded,
+          'brightness': group.brightness,
+        },
+      );
+    }
+
+    if (entry.startsWith('variant:')) {
+      final slotId = entry.substring(8);
+
+      if (!visitingVariants.add(slotId)) {
+        return null;
+      }
+
+      final slotIndex = _variantSlots.indexWhere(
+        (candidate) => candidate.id == slotId,
+      );
+
+      if (slotIndex == -1) {
+        visitingVariants.remove(slotId);
+        return null;
+      }
+
+      final slot = _variantSlots[slotIndex];
+      final children = <CompositeNode>[];
+
+      // Preserve every alternative, not only the currently active Variant.
+      for (final variantEntry in slot.childOrder) {
+        final child = _captureWorkspaceHierarchyEntry(
+          variantEntry,
+          visitingGroups: visitingGroups,
+          visitingVariants: visitingVariants,
+        );
+
+        if (child != null) {
+          children.add(child);
+        }
+      }
+
+      visitingVariants.remove(slotId);
+
+      return CompositeNode(
+        type: 'variant',
+        id: slot.id,
+        name: slot.name,
+        children: children,
+        payload: <String, dynamic>{
+          'activeIndex': slot.activeIndex,
+          'expanded': slot.expanded,
+        },
+      );
+    }
+
+    return null;
+  }
+
+  CompositeAsset? _captureWorkspaceGroupAsComposite(String groupId) {
+    final node = _captureWorkspaceHierarchyEntry(
+      'group:$groupId',
+      visitingGroups: <String>{},
+      visitingVariants: <String>{},
+    );
+
+    if (node == null || node.type != 'group') {
+      return null;
+    }
+
+    return CompositeAsset(
+      version: 1,
+      canvasWidth: _canvasWidth,
+      canvasHeight: _canvasHeight,
+      root: node,
+    );
+  }
+
+  CompositeAsset? _captureWorkspaceVariantAsComposite(String slotId) {
+    final variantNode = _captureWorkspaceHierarchyEntry(
+      'variant:$slotId',
+      visitingGroups: <String>{},
+      visitingVariants: <String>{},
+    );
+
+    if (variantNode == null) {
+      return null;
+    }
+
+    return CompositeAsset(
+      version: 1,
+      canvasWidth: _canvasWidth,
+      canvasHeight: _canvasHeight,
+      root: CompositeNode(
+        type: 'group',
+        id: 'variant_bag_root_${DateTime.now().microsecondsSinceEpoch}',
+        name: variantNode.name,
+        visible: true,
+        children: <CompositeNode>[variantNode],
+        payload: const <String, dynamic>{'expanded': true},
+      ),
+    );
+  }
+
+  Future<void> _saveProjectAndOriginatingBagItem() async {
+    // Project persistence happens first.
+    //
+    // This is intentionally separate from autosave. _scheduleAutosave()
+    // still calls _saveProject() directly and therefore cannot silently
+    // mutate a reusable Bag source asset.
+    await _saveProject();
+
+    final sourceItem = widget.initialBagItem;
+    final rootGroupId = _initialBagCompositeRootGroupId;
+
+    if (sourceItem == null || !sourceItem.isComposite || rootGroupId == null) {
+      if (!mounted) {
+        return;
+      }
+
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('Project saved')));
+
+      return;
+    }
+
+    final groupIndex = _layerGroups.indexWhere(
+      (group) => group.id == rootGroupId,
+    );
+
+    if (groupIndex == -1) {
+      if (!mounted) {
+        return;
+      }
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+            'Project saved, but the original Bag root could not be found.',
+          ),
+        ),
+      );
+
+      return;
+    }
+
+    final composite = _captureWorkspaceGroupAsComposite(rootGroupId);
+
+    if (composite == null) {
+      if (!mounted) {
+        return;
+      }
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+            'Project saved, but the Bag asset could not be rebuilt.',
+          ),
+        ),
+      );
+
+      return;
+    }
+
+    final rootGroup = _layerGroups[groupIndex];
+
+    final updated = BagItem(
+      // Preserve the original Bag identity so BagService replaces the
+      // source item instead of creating a duplicate.
+      id: sourceItem.id,
+      name: rootGroup.name,
+      sourceGroupName: rootGroup.name,
+      assetType: 'composite',
+      layers: const <BagLayer>[],
+      composite: composite,
+      createdAt: sourceItem.createdAt,
+      imagePath: sourceItem.imagePath,
+      authoredWidth: sourceItem.authoredWidth,
+      authoredHeight: sourceItem.authoredHeight,
+      authoredCanvasWidth: _canvasWidth,
+      authoredCanvasHeight: _canvasHeight,
+    );
+
+    await BagService().addItem(updated);
+
+    if (!mounted) {
+      return;
+    }
+
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text('${updated.name} saved back to the Bag ✅🎒')),
+    );
+  }
+
+  Future<void> _addVariantSlotToBag(String slotId) async {
+    final slotIndex = _variantSlots.indexWhere((slot) => slot.id == slotId);
+
+    if (slotIndex == -1) {
+      return;
+    }
+
+    final slot = _variantSlots[slotIndex];
+
+    if (slot.childOrder.isEmpty) {
+      if (!mounted) {
+        return;
+      }
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('This Variant Slot has no variants to add.'),
+        ),
+      );
+
+      return;
+    }
+
+    final composite = _captureWorkspaceVariantAsComposite(slotId);
+
+    if (composite == null) {
+      if (!mounted) {
+        return;
+      }
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('This Variant Slot could not be packaged.'),
+        ),
+      );
+
+      return;
+    }
+
+    var itemName = slot.name;
+
+    final result = await showDialog<String>(
+      context: context,
+      builder: (dialogContext) {
+        return AlertDialog(
+          title: const Text('Add Variant Slot to Bag'),
+          content: TextFormField(
+            initialValue: itemName,
+            autofocus: true,
+            onChanged: (value) {
+              itemName = value;
+            },
+            decoration: const InputDecoration(labelText: 'Item name'),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () {
+                Navigator.pop(dialogContext);
+              },
+              child: const Text('Cancel'),
+            ),
+            FilledButton.icon(
+              onPressed: () {
+                final trimmed = itemName.trim();
+
+                if (trimmed.isNotEmpty) {
+                  Navigator.pop(dialogContext, trimmed);
+                }
+              },
+              icon: const Icon(Icons.backpack_outlined),
+              label: const Text('Add to Bag'),
+            ),
+          ],
+        );
+      },
+    );
+
+    if (result == null || !mounted) {
+      return;
+    }
+
+    const pockets = <String>[
+      'Sketches',
+      'Characters',
+      'Textures',
+      'Props',
+      'Brushes',
+      'Misc.',
+    ];
+
+    final selectedPocket = await showModalBottomSheet<String>(
+      context: context,
+      backgroundColor: const Color(0xFF21160F),
+      showDragHandle: true,
+      builder: (sheetContext) {
+        return SafeArea(
+          child: ListView(
+            shrinkWrap: true,
+            padding: const EdgeInsets.fromLTRB(16, 8, 16, 24),
+            children: [
+              Padding(
+                padding: const EdgeInsets.fromLTRB(8, 4, 8, 12),
+                child: Text(
+                  'Put "$result" in which Pocket?',
+                  style: const TextStyle(
+                    color: Color(0xFFF1D3A2),
+                    fontSize: 18,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+              ),
+              for (final pocket in pockets)
+                ListTile(
+                  leading: const Icon(
+                    Icons.account_tree_outlined,
+                    color: Color(0xFFF1D3A2),
+                  ),
+                  title: Text(
+                    pocket,
+                    style: const TextStyle(color: Color(0xFFF4E5CF)),
+                  ),
+                  onTap: () {
+                    Navigator.pop(sheetContext, pocket);
+                  },
+                ),
+            ],
+          ),
+        );
+      },
+    );
+
+    if (selectedPocket == null || !mounted) {
+      return;
+    }
+
+    final item = BagItem(
+      id: 'bag_${DateTime.now().microsecondsSinceEpoch}',
+      name: result,
+      sourceGroupName: slot.name,
+      assetType: 'composite',
+      layers: const <BagLayer>[],
+      composite: composite,
+      createdAt: DateTime.now(),
+      authoredCanvasWidth: _canvasWidth,
+      authoredCanvasHeight: _canvasHeight,
+    );
+
+    await BagService().addItem(item);
+
+    final prefs = await SharedPreferences.getInstance();
+
+    const pocketAssignmentsKey = 'inkdframes_bag_pocket_assignments_v1';
+
+    Map<String, String> pocketAssignments = <String, String>{};
+
+    final rawAssignments = prefs.getString(pocketAssignmentsKey);
+
+    if (rawAssignments != null && rawAssignments.isNotEmpty) {
+      try {
+        final decoded = jsonDecode(rawAssignments);
+
+        if (decoded is Map) {
+          pocketAssignments = decoded.map(
+            (key, value) => MapEntry(key.toString(), value.toString()),
+          );
+        }
+      } catch (_) {
+        pocketAssignments = <String, String>{};
+      }
+    }
+
+    const builtInPocketIds = <String, String>{
+      'Sketches': 'built_in_sketches',
+      'Characters': 'built_in_characters',
+      'Textures': 'built_in_textures',
+      'Props': 'built_in_props',
+      'Brushes': 'built_in_brushes',
+      'Misc.': 'built_in_misc',
+    };
+
+    pocketAssignments[item.id] =
+        builtInPocketIds[selectedPocket] ?? selectedPocket;
+
+    await prefs.setString(pocketAssignmentsKey, jsonEncode(pocketAssignments));
+
+    if (!mounted) {
+      return;
+    }
+
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          '${item.name} saved as a Variant Composite '
+          'in $selectedPocket 🎭🎒',
+        ),
+      ),
+    );
+  }
+
   Future<void> _addLayerGroupToBag(String groupId) async {
     final groupIndex = _layerGroups.indexWhere((group) => group.id == groupId);
 
@@ -1965,7 +2598,10 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
           name: childGroup.name,
           visible: childGroup.visible,
           children: children,
-          payload: <String, dynamic>{'expanded': childGroup.expanded},
+          payload: <String, dynamic>{
+            'expanded': childGroup.expanded,
+            'brightness': childGroup.brightness,
+          },
         );
       }
 
@@ -2069,7 +2705,10 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
           name: group.name,
           visible: group.visible,
           children: rootChildren,
-          payload: <String, dynamic>{'expanded': group.expanded},
+          payload: <String, dynamic>{
+            'expanded': group.expanded,
+            'brightness': group.brightness,
+          },
         ),
       );
     }
@@ -3398,6 +4037,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
               name: group.name,
               visible: group.visible,
               expanded: group.expanded,
+              brightness: group.brightness,
               childLayerIds: List<String>.from(group.childLayerIds),
               childGroupIds: List<String>.from(group.childGroupIds),
               childOrder: List<String>.from(group.childOrder),
@@ -9763,6 +10403,141 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     HapticFeedback.lightImpact();
   }
 
+  String _hierarchyEntryName(String entry) {
+    if (entry.startsWith('layer:')) {
+      final id = entry.substring(6);
+      final index = _layers.indexWhere((layer) => layer.id == id);
+      return index == -1 ? '' : _layers[index].name;
+    }
+
+    if (entry.startsWith('reference:')) {
+      final id = entry.substring(10);
+      final index = _referenceLayers.indexWhere(
+        (reference) => reference.id == id,
+      );
+      return index == -1 ? '' : _referenceLayers[index].name;
+    }
+
+    if (entry.startsWith('group:')) {
+      final id = entry.substring(6);
+      final index = _layerGroups.indexWhere((group) => group.id == id);
+      return index == -1 ? '' : _layerGroups[index].name;
+    }
+
+    if (entry.startsWith('variant:')) {
+      final id = entry.substring(8);
+      final index = _variantSlots.indexWhere((slot) => slot.id == id);
+      return index == -1 ? '' : _variantSlots[index].name;
+    }
+
+    return '';
+  }
+
+  void _animateDimmedGroupsToFullBrightness() {
+    _groupBrightnessFadeTimer?.cancel();
+
+    final startingBrightness = <String, double>{
+      for (final group in _layerGroups)
+        if (group.brightness < 0.999) group.id: group.brightness,
+    };
+
+    if (startingBrightness.isEmpty) {
+      return;
+    }
+
+    const duration = Duration(milliseconds: 900);
+    final stopwatch = Stopwatch()..start();
+
+    _groupBrightnessFadeTimer = Timer.periodic(
+      const Duration(milliseconds: 16),
+      (timer) {
+        if (!mounted) {
+          timer.cancel();
+          return;
+        }
+
+        final progress =
+            (stopwatch.elapsedMilliseconds / duration.inMilliseconds).clamp(
+              0.0,
+              1.0,
+            );
+
+        final eased = Curves.easeInOutCubic.transform(progress);
+
+        setState(() {
+          for (var index = 0; index < _layerGroups.length; index++) {
+            final group = _layerGroups[index];
+            final start = startingBrightness[group.id];
+
+            if (start == null) {
+              continue;
+            }
+
+            final brightness = start + ((1.0 - start) * eased);
+
+            _layerGroups[index] = group.copyWith(
+              brightness: brightness.clamp(0.0, 1.0),
+            );
+          }
+
+          _rebuildCompositeFrames();
+        });
+
+        if (progress >= 1.0) {
+          timer.cancel();
+          stopwatch.stop();
+
+          setState(() {
+            for (var index = 0; index < _layerGroups.length; index++) {
+              final group = _layerGroups[index];
+
+              if (startingBrightness.containsKey(group.id)) {
+                _layerGroups[index] = group.copyWith(brightness: 1.0);
+              }
+            }
+
+            _rebuildCompositeFrames();
+          });
+
+          _scheduleAutosave();
+        }
+      },
+    );
+  }
+
+  void _handleVariantBrightnessTransition(VariantSlot slot, int activeIndex) {
+    if (slot.childOrder.isEmpty ||
+        activeIndex < 0 ||
+        activeIndex >= slot.childOrder.length) {
+      return;
+    }
+
+    final slotName = slot.name.toLowerCase();
+    final activeName = _hierarchyEntryName(
+      slot.childOrder[activeIndex],
+    ).toLowerCase();
+
+    final lightingSlot =
+        slotName.contains('day') ||
+        slotName.contains('night') ||
+        slotName.contains('curtain') ||
+        slotName.contains('light');
+
+    final daylightChoice =
+        activeName.contains('day') ||
+        activeName.contains('open') ||
+        activeName.contains('bright');
+
+    if (lightingSlot && daylightChoice) {
+      _animateDimmedGroupsToFullBrightness();
+      return;
+    }
+
+    // Switching away from daylight stops an unfinished brightening pass.
+    // It deliberately does not darken anything automatically yet.
+    _groupBrightnessFadeTimer?.cancel();
+  }
+
   void _cycleVariantSlot(String slotId, int delta) {
     final index = _variantSlots.indexWhere((slot) => slot.id == slotId);
 
@@ -9803,52 +10578,237 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
       }
     });
 
+    _handleVariantBrightnessTransition(slot, safeNextIndex);
     _scheduleAutosave();
     HapticFeedback.selectionClick();
   }
 
   void _deleteVariantSlot(String slotId) {
-    final slotIndex = _variantSlots.indexWhere((slot) => slot.id == slotId);
+    final rootSlotIndex = _variantSlots.indexWhere((slot) => slot.id == slotId);
 
-    if (slotIndex == -1) {
+    if (rootSlotIndex == -1) {
       return;
     }
 
-    final slot = _variantSlots[slotIndex];
-    final slotEntry = 'variant:$slotId';
-    final children = List<String>.from(slot.childOrder);
+    final groupIdsToDelete = <String>{};
+    final layerIdsToDelete = <String>{};
+    final referenceIdsToDelete = <String>{};
+    final variantIdsToDelete = <String>{};
+
+    late void Function(String entry) collectEntry;
+
+    void collectGroup(String groupId) {
+      if (!groupIdsToDelete.add(groupId)) {
+        return;
+      }
+
+      final groupIndex = _layerGroups.indexWhere(
+        (group) => group.id == groupId,
+      );
+
+      if (groupIndex == -1) {
+        return;
+      }
+
+      final group = _layerGroups[groupIndex];
+
+      for (final childEntry in group.childOrder) {
+        collectEntry(childEntry);
+      }
+
+      // Legacy protection for groups whose drawing layers or nested groups
+      // may not yet be represented fully in childOrder.
+      for (final layerId in group.childLayerIds) {
+        layerIdsToDelete.add(layerId);
+      }
+
+      for (final childGroupId in group.childGroupIds) {
+        collectGroup(childGroupId);
+      }
+    }
+
+    void collectVariant(String childSlotId) {
+      if (!variantIdsToDelete.add(childSlotId)) {
+        return;
+      }
+
+      final slotIndex = _variantSlots.indexWhere(
+        (slot) => slot.id == childSlotId,
+      );
+
+      if (slotIndex == -1) {
+        return;
+      }
+
+      for (final childEntry in _variantSlots[slotIndex].childOrder) {
+        collectEntry(childEntry);
+      }
+    }
+
+    collectEntry = (String entry) {
+      if (entry.startsWith('layer:')) {
+        layerIdsToDelete.add(entry.substring(6));
+        return;
+      }
+
+      if (entry.startsWith('reference:')) {
+        referenceIdsToDelete.add(entry.substring(10));
+        return;
+      }
+
+      if (entry.startsWith('group:')) {
+        collectGroup(entry.substring(6));
+        return;
+      }
+
+      if (entry.startsWith('variant:')) {
+        collectVariant(entry.substring(8));
+      }
+    };
+
+    // The selected Variant Slot itself owns the deletion subtree.
+    collectVariant(slotId);
+
+    final deletingActiveReference =
+        _activeReferenceLayerId != null &&
+        referenceIdsToDelete.contains(_activeReferenceLayerId);
+
+    final deletingActiveGroup =
+        _activeLayerGroupId != null &&
+        groupIdsToDelete.contains(_activeLayerGroupId);
+
+    final deletingInsertionGroup =
+        _layerInsertionGroupId != null &&
+        groupIdsToDelete.contains(_layerInsertionGroupId);
+
+    final deletedEntries = <String>{
+      for (final id in groupIdsToDelete) 'group:$id',
+      for (final id in layerIdsToDelete) 'layer:$id',
+      for (final id in referenceIdsToDelete) 'reference:$id',
+      for (final id in variantIdsToDelete) 'variant:$id',
+    };
 
     setState(() {
-      final rootIndex = _rootLayerOrder.indexOf(slotEntry);
+      _layers.removeWhere((layer) => layerIdsToDelete.contains(layer.id));
 
-      if (rootIndex != -1) {
-        _rootLayerOrder
-          ..removeAt(rootIndex)
-          ..insertAll(rootIndex, children);
-      }
+      _referenceLayers.removeWhere(
+        (reference) => referenceIdsToDelete.contains(reference.id),
+      );
 
+      _layerGroups.removeWhere((group) => groupIdsToDelete.contains(group.id));
+
+      _variantSlots.removeWhere((slot) => variantIdsToDelete.contains(slot.id));
+
+      // Remove the complete deleted subtree from the root hierarchy.
+      _rootLayerOrder.removeWhere(deletedEntries.contains);
+
+      // Remove deleted entries from every surviving group.
       for (var index = 0; index < _layerGroups.length; index++) {
         final group = _layerGroups[index];
-        final slotPosition = group.childOrder.indexOf(slotEntry);
 
-        if (slotPosition == -1) {
-          continue;
-        }
+        final childLayerIds = List<String>.from(group.childLayerIds)
+          ..removeWhere(layerIdsToDelete.contains);
 
-        final order = List<String>.from(group.childOrder)
-          ..removeAt(slotPosition)
-          ..insertAll(slotPosition, children);
+        final childGroupIds = List<String>.from(group.childGroupIds)
+          ..removeWhere(groupIdsToDelete.contains);
 
-        _layerGroups[index] = group.copyWith(childOrder: order);
+        final childOrder = List<String>.from(group.childOrder)
+          ..removeWhere(deletedEntries.contains);
+
+        _layerGroups[index] = group.copyWith(
+          childLayerIds: childLayerIds,
+          childGroupIds: childGroupIds,
+          childOrder: childOrder,
+        );
       }
 
-      _variantSlots.removeAt(slotIndex);
+      // Remove deleted entries from every surviving Variant Slot as well.
+      for (var index = 0; index < _variantSlots.length; index++) {
+        final slot = _variantSlots[index];
 
-      if (_editingVariantSlotId == slotId) {
+        final childOrder = List<String>.from(slot.childOrder)
+          ..removeWhere(deletedEntries.contains);
+
+        var nextActiveIndex = slot.activeIndex;
+
+        if (childOrder.isEmpty) {
+          nextActiveIndex = 0;
+        } else {
+          nextActiveIndex = nextActiveIndex.clamp(0, childOrder.length - 1);
+        }
+
+        _variantSlots[index] = slot.copyWith(
+          childOrder: childOrder,
+          activeIndex: nextActiveIndex,
+        );
+      }
+
+      if (_editingVariantSlotId != null &&
+          variantIdsToDelete.contains(_editingVariantSlotId)) {
         _editingVariantSlotId = null;
         _variantSlotRenameDraft = '';
       }
+
+      if (deletingActiveGroup) {
+        _activeLayerGroupId = null;
+      }
+
+      if (deletingInsertionGroup) {
+        _layerInsertionGroupId = null;
+      }
+
+      if (deletingActiveReference) {
+        _activeReferenceLayerId = _referenceLayers.isEmpty
+            ? null
+            : _referenceLayers.first.id;
+
+        _loadLegacyReferenceStateFromActiveLayer();
+
+        _isVideoScrubbing = false;
+        _videoReady = false;
+      }
+
+      // Never allow Workspace to have zero drawing layers.
+      if (_layers.isEmpty) {
+        final fallbackId = 'linework_${DateTime.now().microsecondsSinceEpoch}';
+
+        _layers.add(
+          DrawingLayer(
+            id: fallbackId,
+            name: 'Linework',
+            frames: List.generate(
+              _frameDurations.length,
+              (_) => <VectorStroke>[],
+            ),
+          ),
+        );
+
+        _rootLayerOrder.add('layer:$fallbackId');
+      }
+
+      _activeLayerIndex = _activeLayerIndex.clamp(0, _layers.length - 1);
+
+      _mergeSelectedLayerIds.removeWhere(layerIdsToDelete.contains);
+
+      _clearTransformSelection();
+      _isTransformActive = false;
+      _transformToolbarExpanded = false;
+      _transformPivot = null;
+
+      _resetUndoRedo();
+      _rebuildCompositeFrames();
     });
+
+    // If the deleted subtree owned the currently bridged video/reference,
+    // dispose of the stale controller so it cannot survive invisibly.
+    if (deletingActiveReference) {
+      final oldController = _videoController;
+      _videoController = null;
+
+      if (oldController != null) {
+        unawaited(oldController.dispose());
+      }
+    }
 
     _scheduleAutosave();
     HapticFeedback.lightImpact();
@@ -9983,6 +10943,8 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                           _addVariantToSlot(slot.id);
                         }
                       });
+                    } else if (value == 'bag') {
+                      _addVariantSlotToBag(slot.id);
                     } else if (value == 'delete') {
                       _deleteVariantSlot(slot.id);
                     }
@@ -9997,6 +10959,16 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                         title: Text('Add Variant'),
                       ),
                     ),
+                    PopupMenuItem<String>(
+                      value: 'bag',
+                      child: ListTile(
+                        dense: true,
+                        contentPadding: EdgeInsets.zero,
+                        leading: Icon(Icons.backpack_outlined),
+                        title: Text('Add to Bag'),
+                      ),
+                    ),
+                    PopupMenuDivider(),
                     PopupMenuItem<String>(
                       value: 'delete',
                       child: ListTile(
@@ -10661,6 +11633,39 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
               ],
             ),
           ),
+          if (selected)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(46, 0, 12, 8),
+              child: Row(
+                children: [
+                  const SizedBox(
+                    width: 64,
+                    child: Text(
+                      'Brightness',
+                      style: TextStyle(fontSize: 10, color: Colors.white70),
+                    ),
+                  ),
+                  Expanded(
+                    child: Slider(
+                      value: group.brightness,
+                      min: 0.0,
+                      max: 1.0,
+                      divisions: 20,
+                      onChanged: (value) {
+                        _setLayerGroupBrightness(group.id, value);
+                      },
+                    ),
+                  ),
+                  SizedBox(
+                    width: 38,
+                    child: Text(
+                      '${(group.brightness * 100).round()}%',
+                      style: const TextStyle(fontSize: 10),
+                    ),
+                  ),
+                ],
+              ),
+            ),
           if (group.expanded)
             ..._buildOrderedChildEntries(group, depth: depth + 1),
         ],
@@ -10932,7 +11937,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
       );
     }
 
-    return IgnorePointer(
+    final scene = IgnorePointer(
       child: CustomPaint(
         painter: AnimationCanvasPainter(
           strokes: frameStrokes,
@@ -10954,6 +11959,8 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
         child: const SizedBox.expand(),
       ),
     );
+
+    return _applySceneBrightness(scene, _effectiveBrightnessForLayer(layer));
   }
 
   List<Widget> _buildMixedHierarchySceneWidgets({String? isolatedGroupId}) {
@@ -11321,7 +12328,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
       unawaited(_primeReferenceImageAlphaMask(reference.mediaPath));
     }
 
-    return _buildReferenceTransformWidget(
+    final transformed = _buildReferenceTransformWidget(
       reference,
       Opacity(
         opacity: reference.opacity,
@@ -11349,6 +12356,11 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
           },
         ),
       ),
+    );
+
+    return _applySceneBrightness(
+      transformed,
+      _effectiveBrightnessForReference(reference),
     );
   }
 
@@ -11428,8 +12440,10 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
         centerTitle: false,
         actions: [
           IconButton(
-            tooltip: 'Save Project',
-            onPressed: _saveProject,
+            tooltip: widget.initialBagItem?.isComposite == true
+                ? 'Save Project + Update Bag Asset'
+                : 'Save Project',
+            onPressed: _saveProjectAndOriginatingBagItem,
             icon: const Icon(Icons.save),
           ),
           IconButton(
