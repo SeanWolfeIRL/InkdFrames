@@ -212,6 +212,13 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
   Timer? _playbackTimer;
   Timer? _autosaveTimer;
   Timer? _groupBrightnessFadeTimer;
+
+  // Temporary environment-driven brightness values.
+  //
+  // These never replace LayerGroup.brightness, which remains the authored
+  // project value. Daylight can therefore brighten a group visually and
+  // night can always return it to its saved brightness.
+  final Map<String, double> _groupBrightnessOverrides = <String, double>{};
   bool _isPlaying = false;
   bool _showOnionSkin = true;
   bool _isEraserActive = false;
@@ -1095,7 +1102,11 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     }
 
     final group = _layerGroups[groupIndex];
-    final ownBrightness = group.brightness.clamp(0.0, 1.0);
+    final ownBrightness =
+        (_groupBrightnessOverrides[group.id] ?? group.brightness).clamp(
+          0.0,
+          1.0,
+        );
 
     final parent = _groupContainingGroup(groupId);
 
@@ -10403,6 +10414,94 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     HapticFeedback.lightImpact();
   }
 
+  void _removeActiveVariantFromSlot(String slotId) {
+    final slotIndex = _variantSlots.indexWhere((slot) => slot.id == slotId);
+
+    if (slotIndex == -1) {
+      return;
+    }
+
+    final slot = _variantSlots[slotIndex];
+    final entry = slot.activeEntry;
+
+    if (entry == null) {
+      return;
+    }
+
+    final slotEntry = 'variant:$slotId';
+    final parentGroup = _groupContainingVariantSlot(slotId);
+
+    setState(() {
+      final currentSlot = _variantSlots[slotIndex];
+      final nextOrder = List<String>.from(currentSlot.childOrder);
+      final removedIndex = nextOrder.indexOf(entry);
+
+      if (removedIndex == -1) {
+        return;
+      }
+
+      nextOrder.removeAt(removedIndex);
+
+      var nextActiveIndex = currentSlot.activeIndex;
+
+      if (nextOrder.isEmpty) {
+        nextActiveIndex = 0;
+      } else if (nextActiveIndex >= nextOrder.length) {
+        nextActiveIndex = nextOrder.length - 1;
+      }
+
+      _variantSlots[slotIndex] = currentSlot.copyWith(
+        childOrder: nextOrder,
+        activeIndex: nextActiveIndex,
+        expanded: true,
+      );
+
+      if (parentGroup != null) {
+        final parentIndex = _layerGroups.indexWhere(
+          (group) => group.id == parentGroup.id,
+        );
+
+        if (parentIndex != -1) {
+          final currentParent = _layerGroups[parentIndex];
+          final nextParentOrder = List<String>.from(currentParent.childOrder);
+
+          if (!nextParentOrder.contains(entry)) {
+            final slotPosition = nextParentOrder.indexOf(slotEntry);
+
+            if (slotPosition == -1) {
+              nextParentOrder.add(entry);
+            } else {
+              nextParentOrder.insert(slotPosition + 1, entry);
+            }
+          }
+
+          _layerGroups[parentIndex] = currentParent.copyWith(
+            childOrder: nextParentOrder,
+            expanded: true,
+          );
+        }
+      } else if (!_rootLayerOrder.contains(entry)) {
+        final slotPosition = _rootLayerOrder.indexOf(slotEntry);
+
+        if (slotPosition == -1) {
+          _rootLayerOrder.add(entry);
+        } else {
+          _rootLayerOrder.insert(slotPosition + 1, entry);
+        }
+      }
+
+      _clearTransformSelection();
+      _isTransformActive = false;
+      _transformToolbarExpanded = false;
+      _transformPivot = null;
+
+      _rebuildCompositeFrames();
+    });
+
+    _scheduleAutosave();
+    HapticFeedback.lightImpact();
+  }
+
   String _hierarchyEntryName(String entry) {
     if (entry.startsWith('layer:')) {
       final id = entry.substring(6);
@@ -10433,15 +10532,41 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     return '';
   }
 
-  void _animateDimmedGroupsToFullBrightness() {
+  void _animateEnvironmentBrightness({required bool daylight}) {
     _groupBrightnessFadeTimer?.cancel();
 
-    final startingBrightness = <String, double>{
-      for (final group in _layerGroups)
-        if (group.brightness < 0.999) group.id: group.brightness,
-    };
+    final starts = <String, double>{};
+    final targets = <String, double>{};
 
-    if (startingBrightness.isEmpty) {
+    for (final group in _layerGroups) {
+      final authored = group.brightness.clamp(0.0, 1.0);
+      final current = (_groupBrightnessOverrides[group.id] ?? authored).clamp(
+        0.0,
+        1.0,
+      );
+
+      if (daylight) {
+        if (authored >= 0.999 && current >= 0.999) {
+          continue;
+        }
+
+        starts[group.id] = current;
+        targets[group.id] = 1.0;
+      } else {
+        if ((current - authored).abs() < 0.001) {
+          _groupBrightnessOverrides.remove(group.id);
+          continue;
+        }
+
+        starts[group.id] = current;
+        targets[group.id] = authored;
+      }
+    }
+
+    if (starts.isEmpty) {
+      if (!daylight) {
+        _groupBrightnessOverrides.clear();
+      }
       return;
     }
 
@@ -10465,19 +10590,16 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
         final eased = Curves.easeInOutCubic.transform(progress);
 
         setState(() {
-          for (var index = 0; index < _layerGroups.length; index++) {
-            final group = _layerGroups[index];
-            final start = startingBrightness[group.id];
+          for (final entry in starts.entries) {
+            final target = targets[entry.key];
 
-            if (start == null) {
+            if (target == null) {
               continue;
             }
 
-            final brightness = start + ((1.0 - start) * eased);
+            final value = entry.value + ((target - entry.value) * eased);
 
-            _layerGroups[index] = group.copyWith(
-              brightness: brightness.clamp(0.0, 1.0),
-            );
+            _groupBrightnessOverrides[entry.key] = value.clamp(0.0, 1.0);
           }
 
           _rebuildCompositeFrames();
@@ -10488,21 +10610,121 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
           stopwatch.stop();
 
           setState(() {
-            for (var index = 0; index < _layerGroups.length; index++) {
-              final group = _layerGroups[index];
-
-              if (startingBrightness.containsKey(group.id)) {
-                _layerGroups[index] = group.copyWith(brightness: 1.0);
+            if (daylight) {
+              for (final groupId in starts.keys) {
+                _groupBrightnessOverrides[groupId] = 1.0;
+              }
+            } else {
+              for (final groupId in starts.keys) {
+                _groupBrightnessOverrides.remove(groupId);
               }
             }
 
             _rebuildCompositeFrames();
           });
-
-          _scheduleAutosave();
         }
       },
     );
+  }
+
+  bool? _daylightStateForVariantChoice(VariantSlot slot, int activeIndex) {
+    if (slot.childOrder.isEmpty ||
+        activeIndex < 0 ||
+        activeIndex >= slot.childOrder.length) {
+      return null;
+    }
+
+    final slotName = slot.name.toLowerCase();
+
+    // Curtains are responders to daylight, not the daylight source itself.
+    if (slotName.contains('curtain')) {
+      return null;
+    }
+
+    final looksLikeEnvironmentSlot =
+        slotName.contains('day') ||
+        slotName.contains('night') ||
+        slotName.contains('light');
+
+    if (!looksLikeEnvironmentSlot) {
+      return null;
+    }
+
+    final activeName = _hierarchyEntryName(
+      slot.childOrder[activeIndex],
+    ).toLowerCase();
+
+    if (activeName.contains('night') || activeName.contains('dark')) {
+      return false;
+    }
+
+    if (activeName.contains('day') || activeName.contains('bright')) {
+      return true;
+    }
+
+    return null;
+  }
+
+  int? _curtainChoiceIndexForDaylight(VariantSlot slot, bool daylight) {
+    if (!slot.name.toLowerCase().contains('curtain')) {
+      return null;
+    }
+
+    final preferredTokens = daylight
+        ? const <String>['day', 'open']
+        : const <String>['closed', 'night'];
+
+    for (final token in preferredTokens) {
+      for (var index = 0; index < slot.childOrder.length; index++) {
+        final choiceName = _hierarchyEntryName(
+          slot.childOrder[index],
+        ).toLowerCase();
+
+        if (choiceName.contains(token)) {
+          return index;
+        }
+      }
+    }
+
+    return null;
+  }
+
+  bool _syncCurtainVariantsToDaylight(VariantSlot sourceSlot, int activeIndex) {
+    final daylight = _daylightStateForVariantChoice(sourceSlot, activeIndex);
+
+    if (daylight == null) {
+      return false;
+    }
+
+    final transformReferenceId = _transformReferenceLayerId;
+    final transformReferenceEntry = transformReferenceId == null
+        ? null
+        : 'reference:$transformReferenceId';
+
+    var invalidatedTransform = false;
+
+    for (var index = 0; index < _variantSlots.length; index++) {
+      final curtainSlot = _variantSlots[index];
+
+      if (curtainSlot.id == sourceSlot.id) {
+        continue;
+      }
+
+      final targetIndex = _curtainChoiceIndexForDaylight(curtainSlot, daylight);
+
+      if (targetIndex == null || targetIndex == curtainSlot.activeIndex) {
+        continue;
+      }
+
+      if (transformReferenceEntry != null &&
+          curtainSlot.childOrder.contains(transformReferenceEntry)) {
+        invalidatedTransform = true;
+      }
+
+      _variantSlots[index] = curtainSlot.copyWith(activeIndex: targetIndex);
+    }
+
+    return invalidatedTransform;
   }
 
   void _handleVariantBrightnessTransition(VariantSlot slot, int activeIndex) {
@@ -10513,29 +10735,41 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     }
 
     final slotName = slot.name.toLowerCase();
-    final activeName = _hierarchyEntryName(
-      slot.childOrder[activeIndex],
-    ).toLowerCase();
+
+    // Curtain slots react to environment state separately. They must not
+    // themselves become lighting controllers.
+    if (slotName.contains('curtain')) {
+      return;
+    }
 
     final lightingSlot =
         slotName.contains('day') ||
         slotName.contains('night') ||
-        slotName.contains('curtain') ||
         slotName.contains('light');
+
+    if (!lightingSlot) {
+      return;
+    }
+
+    final activeName = _hierarchyEntryName(
+      slot.childOrder[activeIndex],
+    ).toLowerCase();
 
     final daylightChoice =
         activeName.contains('day') ||
         activeName.contains('open') ||
         activeName.contains('bright');
 
-    if (lightingSlot && daylightChoice) {
-      _animateDimmedGroupsToFullBrightness();
-      return;
-    }
+    final nightChoice =
+        activeName.contains('night') ||
+        activeName.contains('closed') ||
+        activeName.contains('dark');
 
-    // Switching away from daylight stops an unfinished brightening pass.
-    // It deliberately does not darken anything automatically yet.
-    _groupBrightnessFadeTimer?.cancel();
+    if (daylightChoice) {
+      _animateEnvironmentBrightness(daylight: true);
+    } else if (nightChoice) {
+      _animateEnvironmentBrightness(daylight: false);
+    }
   }
 
   void _cycleVariantSlot(String slotId, int delta) {
@@ -10567,10 +10801,15 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     setState(() {
       _variantSlots[index] = slot.copyWith(activeIndex: safeNextIndex);
 
+      final curtainTransformInvalidated = _syncCurtainVariantsToDaylight(
+        slot,
+        safeNextIndex,
+      );
+
       // Never leave Transform attached to a Variant child that has just
-      // become inactive. The newly active variant can be grabbed normally
-      // with canvas long-press or from its Layers row.
-      if (transformBelongsToSlot) {
+      // become inactive. This also covers automatic daylight-driven
+      // curtain switching.
+      if (transformBelongsToSlot || curtainTransformInvalidated) {
         _clearTransformSelection();
         _isTransformActive = false;
         _transformToolbarExpanded = false;
@@ -10945,6 +11184,8 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                       });
                     } else if (value == 'bag') {
                       _addVariantSlotToBag(slot.id);
+                    } else if (value == 'remove-active') {
+                      _removeActiveVariantFromSlot(slot.id);
                     } else if (value == 'delete') {
                       _deleteVariantSlot(slot.id);
                     }
@@ -10966,6 +11207,15 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                         contentPadding: EdgeInsets.zero,
                         leading: Icon(Icons.backpack_outlined),
                         title: Text('Add to Bag'),
+                      ),
+                    ),
+                    PopupMenuItem<String>(
+                      value: 'remove-active',
+                      child: ListTile(
+                        dense: true,
+                        contentPadding: EdgeInsets.zero,
+                        leading: Icon(Icons.call_made_outlined),
+                        title: Text('Remove Active Variant'),
                       ),
                     ),
                     PopupMenuDivider(),
