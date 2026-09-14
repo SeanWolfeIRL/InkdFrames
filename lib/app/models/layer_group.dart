@@ -8,6 +8,7 @@ class LayerGroup {
     this.visible = true,
     this.expanded = true,
     this.brightness = 1.0,
+    this.environmentRole,
   }) : childLayerIds = childLayerIds,
        childGroupIds = childGroupIds,
        childOrder =
@@ -25,6 +26,7 @@ class LayerGroup {
       expanded: json['expanded'] as bool? ?? true,
       brightness:
           (json['brightness'] as num?)?.toDouble().clamp(0.0, 1.0) ?? 1.0,
+      environmentRole: json['environmentRole'] as String?,
       childLayerIds: (json['childLayerIds'] as List? ?? const [])
           .map((id) => id.toString())
           .toList(),
@@ -51,6 +53,15 @@ class LayerGroup {
   ///
   /// Nested groups inherit and multiply their parent brightness.
   final double brightness;
+
+  /// Optional authored role used by room/environment systems.
+  ///
+  /// Known V1 roles:
+  ///   dust
+  ///   cobweb
+  ///
+  /// Null means this is an ordinary hierarchy group.
+  final String? environmentRole;
 
   /// Drawing layers directly owned by this group.
   final List<String> childLayerIds;
@@ -79,6 +90,8 @@ class LayerGroup {
     bool? visible,
     bool? expanded,
     double? brightness,
+    String? environmentRole,
+    bool clearEnvironmentRole = false,
     List<String>? childLayerIds,
     List<String>? childGroupIds,
     List<String>? childOrder,
@@ -89,6 +102,9 @@ class LayerGroup {
       visible: visible ?? this.visible,
       expanded: expanded ?? this.expanded,
       brightness: brightness ?? this.brightness,
+      environmentRole: clearEnvironmentRole
+          ? null
+          : environmentRole ?? this.environmentRole,
       childLayerIds: childLayerIds ?? this.childLayerIds,
       childGroupIds: childGroupIds ?? this.childGroupIds,
       childOrder: childOrder ?? this.childOrder,
@@ -102,6 +118,7 @@ class LayerGroup {
       'visible': visible,
       'expanded': expanded,
       'brightness': brightness,
+      'environmentRole': environmentRole,
       'childLayerIds': childLayerIds,
       'childGroupIds': childGroupIds,
       'childOrder': childOrder,

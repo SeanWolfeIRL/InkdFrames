@@ -1384,6 +1384,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
               'brightness',
               1.0,
             ).clamp(0.0, 1.0),
+            environmentRole: node.payload['environmentRole'] as String?,
           ),
         );
 
@@ -1987,6 +1988,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
         payload: <String, dynamic>{
           'expanded': group.expanded,
           'brightness': group.brightness,
+          'environmentRole': group.environmentRole,
         },
       );
     }
@@ -2393,6 +2395,12 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     // must preserve its hierarchy and therefore becomes Composite.
     // ------------------------------------------------------------
     bool groupRequiresComposite(LayerGroup currentGroup) {
+      // Environmental metadata must survive Bag round-trips, so tagged
+      // groups always use the structured Composite format.
+      if (currentGroup.environmentRole != null) {
+        return true;
+      }
+
       for (final entry in currentGroup.childOrder) {
         if (entry.startsWith('group:') ||
             entry.startsWith('reference:') ||
@@ -2612,6 +2620,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
           payload: <String, dynamic>{
             'expanded': childGroup.expanded,
             'brightness': childGroup.brightness,
+            'environmentRole': childGroup.environmentRole,
           },
         );
       }
@@ -2719,6 +2728,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
           payload: <String, dynamic>{
             'expanded': group.expanded,
             'brightness': group.brightness,
+            'environmentRole': group.environmentRole,
           },
         ),
       );
@@ -3403,6 +3413,26 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     });
 
     _scheduleAutosave();
+  }
+
+  void _setLayerGroupEnvironmentRole(String groupId, String? environmentRole) {
+    final index = _layerGroups.indexWhere((group) => group.id == groupId);
+
+    if (index == -1) {
+      return;
+    }
+
+    setState(() {
+      final group = _layerGroups[index];
+
+      _layerGroups[index] = group.copyWith(
+        environmentRole: environmentRole,
+        clearEnvironmentRole: environmentRole == null,
+      );
+    });
+
+    _scheduleAutosave();
+    HapticFeedback.lightImpact();
   }
 
   void _toggleLayerGroupExpanded(String groupId) {
@@ -11731,6 +11761,12 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
   Widget _buildLayerGroupCard(LayerGroup group, {int depth = 0}) {
     final selected = _activeLayerGroupId == group.id;
 
+    final roleLabel = switch (group.environmentRole) {
+      'dust' => 'Dust',
+      'cobweb' => 'Cobweb',
+      _ => 'Group',
+    };
+
     final childIndices = <int>[];
 
     for (var index = 0; index < _layers.length; index++) {
@@ -11808,7 +11844,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                           ),
                         ),
                         Text(
-                          'Group • ${group.childOrder.length} items',
+                          '$roleLabel • ${group.childOrder.length} items',
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
                           style: const TextStyle(
@@ -11839,6 +11875,12 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                           _createVariantSlot(group.id);
                         }
                       });
+                    } else if (value == 'environment-dust') {
+                      _setLayerGroupEnvironmentRole(group.id, 'dust');
+                    } else if (value == 'environment-cobweb') {
+                      _setLayerGroupEnvironmentRole(group.id, 'cobweb');
+                    } else if (value == 'environment-normal') {
+                      _setLayerGroupEnvironmentRole(group.id, null);
                     } else if (value == 'rename') {
                       _renameLayerGroup(group.id);
                     } else if (value == 'delete') {
@@ -11873,6 +11915,28 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                       child: ListTile(
                         leading: Icon(Icons.drive_file_move_outline),
                         title: Text('Move to Group'),
+                      ),
+                    ),
+                    PopupMenuDivider(),
+                    PopupMenuItem(
+                      value: 'environment-dust',
+                      child: ListTile(
+                        leading: Icon(Icons.cleaning_services_outlined),
+                        title: Text('Mark as Dust'),
+                      ),
+                    ),
+                    PopupMenuItem(
+                      value: 'environment-cobweb',
+                      child: ListTile(
+                        leading: Icon(Icons.blur_on_outlined),
+                        title: Text('Mark as Cobweb'),
+                      ),
+                    ),
+                    PopupMenuItem(
+                      value: 'environment-normal',
+                      child: ListTile(
+                        leading: Icon(Icons.layers_outlined),
+                        title: Text('Clear Environmental Role'),
                       ),
                     ),
                     PopupMenuDivider(),
