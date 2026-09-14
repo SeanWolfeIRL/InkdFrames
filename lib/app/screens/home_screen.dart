@@ -155,6 +155,12 @@ class _RoomNodeOverride {
   final double scale;
   final bool mirrored;
 
+  /// Points wiped from an authored environmental node.
+  ///
+  /// Stored in that Composite node's local canvas coordinates.
+  /// The reusable Bag asset is never modified.
+  final List<Offset> cleanPoints;
+
   // Instance-local choice for Composite variant nodes.
   //
   // null means: use the authored Bag Composite activeIndex.
@@ -165,6 +171,7 @@ class _RoomNodeOverride {
     this.offsetY = 0.0,
     this.scale = 1.0,
     this.mirrored = false,
+    this.cleanPoints = const <Offset>[],
     this.activeVariantIndex,
   });
 
@@ -173,6 +180,7 @@ class _RoomNodeOverride {
     double? offsetY,
     double? scale,
     bool? mirrored,
+    List<Offset>? cleanPoints,
     int? activeVariantIndex,
   }) {
     return _RoomNodeOverride(
@@ -180,15 +188,20 @@ class _RoomNodeOverride {
       offsetY: offsetY ?? this.offsetY,
       scale: scale ?? this.scale,
       mirrored: mirrored ?? this.mirrored,
+      cleanPoints: cleanPoints ?? this.cleanPoints,
       activeVariantIndex: activeVariantIndex ?? this.activeVariantIndex,
     );
   }
 
+  bool get hasTransformOverride =>
+      offsetX.abs() >= 0.000001 ||
+      offsetY.abs() >= 0.000001 ||
+      (scale - 1.0).abs() >= 0.000001 ||
+      mirrored;
+
   bool get isIdentity =>
-      offsetX.abs() < 0.000001 &&
-      offsetY.abs() < 0.000001 &&
-      (scale - 1.0).abs() < 0.000001 &&
-      !mirrored &&
+      !hasTransformOverride &&
+      cleanPoints.isEmpty &&
       activeVariantIndex == null;
 }
 
@@ -202,7 +215,15 @@ class _HomeScreenState extends State<HomeScreen> {
   Map<String, BagItem> _bagItemsById = <String, BagItem>{};
 
   bool _decorateMode = false;
+  bool _cleanMode = false;
+
   String? _selectedDecorationId;
+
+  String? _activeCleaningDecorationId;
+  String? _activeCleaningDustNodeId;
+
+  static const double _dustCleaningRadius = 44.0;
+  static const double _dustCleaningPointSpacing = 10.0;
 
   // --------------------------------------------------------
   // ROOM MANAGER
@@ -282,6 +303,10 @@ class _HomeScreenState extends State<HomeScreen> {
       _selectedRoomNodeId = null;
       _selectedRoomNodeName = null;
       _roomScopeNodeIds.clear();
+
+      _cleanMode = false;
+      _activeCleaningDecorationId = null;
+      _activeCleaningDustNodeId = null;
 
       if (roomId != null &&
           _decorations.any((decoration) => decoration.id == roomId)) {
@@ -1369,6 +1394,10 @@ class _HomeScreenState extends State<HomeScreen> {
       'offsetY': override.offsetY,
       'scale': override.scale,
       'mirrored': override.mirrored,
+      if (override.cleanPoints.isNotEmpty)
+        'cleanPoints': override.cleanPoints
+            .map((point) => <String, double>{'x': point.dx, 'y': point.dy})
+            .toList(),
       if (override.activeVariantIndex != null)
         'activeVariantIndex': override.activeVariantIndex,
     };
@@ -1380,6 +1409,15 @@ class _HomeScreenState extends State<HomeScreen> {
       offsetY: (json['offsetY'] as num?)?.toDouble() ?? 0.0,
       scale: (json['scale'] as num?)?.toDouble() ?? 1.0,
       mirrored: json['mirrored'] == true,
+      cleanPoints: (json['cleanPoints'] as List? ?? const <dynamic>[])
+          .whereType<Map>()
+          .map(
+            (rawPoint) => Offset(
+              (rawPoint['x'] as num?)?.toDouble() ?? 0.0,
+              (rawPoint['y'] as num?)?.toDouble() ?? 0.0,
+            ),
+          )
+          .toList(),
       activeVariantIndex: (json['activeVariantIndex'] as num?)?.toInt(),
     );
   }
@@ -1406,6 +1444,322 @@ class _HomeScreenState extends State<HomeScreen> {
 
     return _roomNodeOverrides[decorationId]?[nodeId] ??
         const _RoomNodeOverride();
+  }
+
+  bool _compositeNodeHasEnvironmentRole(CompositeNode node, String role) {
+    if (node.payload['environmentRole']?.toString() == role) {
+      return true;
+    }
+
+    for (final child in node.children) {
+      if (_compositeNodeHasEnvironmentRole(child, role)) {
+        return true;
+      }
+    }
+
+    return false;
+  }
+
+  bool get _editingRoomHasDust {
+    final composite = _editingRoomComposite;
+
+    if (composite == null) {
+      return false;
+    }
+
+    return _compositeNodeHasEnvironmentRole(composite.root, 'dust');
+  }
+
+  CompositeNode? _findDustGroupHit(
+    CompositeNode node,
+    Offset point,
+    Size canvasSize, {
+    required String decorationId,
+  }) {
+    if (!node.visible) {
+      return null;
+    }
+
+    final override = _roomNodeOverrideFor(decorationId, node.id);
+
+    final nodePoint = _inverseRoomNodeOverridePoint(
+      point: point,
+      canvasSize: canvasSize,
+      override: override,
+    );
+
+    if (node.type == 'variant') {
+      if (node.children.isEmpty) {
+        return null;
+      }
+
+      final activeIndex = _activeRoomVariantIndex(decorationId, node);
+
+      return _findDustGroupHit(
+        node.children[activeIndex],
+        nodePoint,
+        canvasSize,
+        decorationId: decorationId,
+      );
+    }
+
+    if (node.type == 'group') {
+      final isDust = node.payload['environmentRole']?.toString() == 'dust';
+
+      if (isDust) {
+        for (final child in node.children) {
+          final hit = _findCompositeNodeHit(
+            child,
+            nodePoint,
+            canvasSize,
+            decorationId: decorationId,
+            semanticOwner: node,
+          );
+
+          if (hit != null) {
+            return node;
+          }
+        }
+      }
+
+      for (final child in node.children) {
+        final hit = _findDustGroupHit(
+          child,
+          nodePoint,
+          canvasSize,
+          decorationId: decorationId,
+        );
+
+        if (hit != null) {
+          return hit;
+        }
+      }
+    }
+
+    return null;
+  }
+
+  Offset? _mapCompositePointToNodeLocal(
+    CompositeNode node,
+    String targetNodeId,
+    Offset point,
+    Size canvasSize, {
+    required String decorationId,
+  }) {
+    if (!node.visible) {
+      return null;
+    }
+
+    final override = _roomNodeOverrideFor(decorationId, node.id);
+
+    final nodePoint = _inverseRoomNodeOverridePoint(
+      point: point,
+      canvasSize: canvasSize,
+      override: override,
+    );
+
+    if (node.id == targetNodeId) {
+      return nodePoint;
+    }
+
+    if (node.type == 'variant') {
+      if (node.children.isEmpty) {
+        return null;
+      }
+
+      final activeIndex = _activeRoomVariantIndex(decorationId, node);
+
+      return _mapCompositePointToNodeLocal(
+        node.children[activeIndex],
+        targetNodeId,
+        nodePoint,
+        canvasSize,
+        decorationId: decorationId,
+      );
+    }
+
+    for (final child in node.children) {
+      final mapped = _mapCompositePointToNodeLocal(
+        child,
+        targetNodeId,
+        nodePoint,
+        canvasSize,
+        decorationId: decorationId,
+      );
+
+      if (mapped != null) {
+        return mapped;
+      }
+    }
+
+    return null;
+  }
+
+  Offset _decorationLocalToCompositePoint({
+    required Offset localPosition,
+    required Size decorationSize,
+    required Rect visibleBounds,
+    required double sceneScale,
+    required bool mirrored,
+  }) {
+    var localX = localPosition.dx;
+
+    if (mirrored) {
+      localX = decorationSize.width - localX;
+    }
+
+    return Offset(
+      visibleBounds.left + (localX / sceneScale),
+      visibleBounds.top + (localPosition.dy / sceneScale),
+    );
+  }
+
+  void _appendDustCleaningPoint({
+    required String decorationId,
+    required String dustNodeId,
+    required Offset localPoint,
+  }) {
+    final roomOverrides = _roomNodeOverrides.putIfAbsent(
+      decorationId,
+      () => <String, _RoomNodeOverride>{},
+    );
+
+    final current = roomOverrides[dustNodeId] ?? const _RoomNodeOverride();
+
+    final points = List<Offset>.from(current.cleanPoints);
+
+    if (points.isNotEmpty &&
+        (points.last - localPoint).distance < _dustCleaningPointSpacing) {
+      return;
+    }
+
+    points.add(localPoint);
+
+    // Keep V1 room saves bounded even after enthusiastic scrubbing.
+    if (points.length > 5000) {
+      points.removeRange(0, points.length - 5000);
+    }
+
+    roomOverrides[dustNodeId] = current.copyWith(cleanPoints: points);
+
+    setState(() {});
+  }
+
+  void _beginDustCleaning({
+    required PlacedDecoration decoration,
+    required BagItem bagItem,
+    required Offset localPosition,
+    required Size decorationSize,
+    required Rect visibleBounds,
+    required double sceneScale,
+  }) {
+    final composite = bagItem.composite;
+
+    if (!_cleanMode || composite == null || sceneScale <= 0) {
+      return;
+    }
+
+    final compositePoint = _decorationLocalToCompositePoint(
+      localPosition: localPosition,
+      decorationSize: decorationSize,
+      visibleBounds: visibleBounds,
+      sceneScale: sceneScale,
+      mirrored: decoration.mirrored,
+    );
+
+    final dustNode = _findDustGroupHit(
+      composite.root,
+      compositePoint,
+      Size(composite.canvasWidth, composite.canvasHeight),
+      decorationId: decoration.id,
+    );
+
+    if (dustNode == null) {
+      _activeCleaningDecorationId = null;
+      _activeCleaningDustNodeId = null;
+      return;
+    }
+
+    final localDustPoint = _mapCompositePointToNodeLocal(
+      composite.root,
+      dustNode.id,
+      compositePoint,
+      Size(composite.canvasWidth, composite.canvasHeight),
+      decorationId: decoration.id,
+    );
+
+    if (localDustPoint == null) {
+      return;
+    }
+
+    _activeCleaningDecorationId = decoration.id;
+    _activeCleaningDustNodeId = dustNode.id;
+
+    _appendDustCleaningPoint(
+      decorationId: decoration.id,
+      dustNodeId: dustNode.id,
+      localPoint: localDustPoint,
+    );
+  }
+
+  void _continueDustCleaning({
+    required PlacedDecoration decoration,
+    required BagItem bagItem,
+    required Offset localPosition,
+    required Size decorationSize,
+    required Rect visibleBounds,
+    required double sceneScale,
+  }) {
+    if (!_cleanMode ||
+        _activeCleaningDecorationId != decoration.id ||
+        _activeCleaningDustNodeId == null) {
+      return;
+    }
+
+    final composite = bagItem.composite;
+
+    if (composite == null || sceneScale <= 0) {
+      return;
+    }
+
+    final compositePoint = _decorationLocalToCompositePoint(
+      localPosition: localPosition,
+      decorationSize: decorationSize,
+      visibleBounds: visibleBounds,
+      sceneScale: sceneScale,
+      mirrored: decoration.mirrored,
+    );
+
+    final localDustPoint = _mapCompositePointToNodeLocal(
+      composite.root,
+      _activeCleaningDustNodeId!,
+      compositePoint,
+      Size(composite.canvasWidth, composite.canvasHeight),
+      decorationId: decoration.id,
+    );
+
+    if (localDustPoint == null) {
+      return;
+    }
+
+    _appendDustCleaningPoint(
+      decorationId: decoration.id,
+      dustNodeId: _activeCleaningDustNodeId!,
+      localPoint: localDustPoint,
+    );
+  }
+
+  void _finishDustCleaning() {
+    final hadActiveStroke =
+        _activeCleaningDecorationId != null &&
+        _activeCleaningDustNodeId != null;
+
+    _activeCleaningDecorationId = null;
+    _activeCleaningDustNodeId = null;
+
+    if (hadActiveStroke) {
+      _saveDecorations();
+    }
   }
 
   // ignore: unused_element
@@ -1913,7 +2267,7 @@ class _HomeScreenState extends State<HomeScreen> {
     required Size canvasSize,
     required _RoomNodeOverride override,
   }) {
-    if (override.isIdentity) {
+    if (!override.hasTransformOverride) {
       return point;
     }
 
@@ -1941,7 +2295,7 @@ class _HomeScreenState extends State<HomeScreen> {
   }) {
     final override = _roomNodeOverrideFor(decorationId, node.id);
 
-    if (override.isIdentity) {
+    if (!override.hasTransformOverride) {
       return child;
     }
 
@@ -2001,6 +2355,120 @@ class _HomeScreenState extends State<HomeScreen> {
     return strokes;
   }
 
+  bool? _compositeDaylightState(CompositeNode node, String? decorationId) {
+    if (!node.visible) {
+      return null;
+    }
+
+    if (node.type == 'variant' && node.children.isNotEmpty) {
+      final slotName = node.name.toLowerCase();
+
+      // Curtains react to daylight. They must never become the source
+      // controlling environmental brightness themselves.
+      final isCurtainSlot = slotName.contains('curtain');
+
+      final looksLikeEnvironmentSlot =
+          slotName.contains('day') ||
+          slotName.contains('night') ||
+          slotName.contains('light');
+
+      final activeIndex = _activeRoomVariantIndex(decorationId, node);
+      final activeChild = node.children[activeIndex];
+
+      if (!isCurtainSlot && looksLikeEnvironmentSlot) {
+        final activeName = activeChild.name.toLowerCase();
+
+        if (activeName.contains('night') || activeName.contains('dark')) {
+          return false;
+        }
+
+        if (activeName.contains('day') || activeName.contains('bright')) {
+          return true;
+        }
+      }
+
+      // Only the active Variant branch exists visually.
+      return _compositeDaylightState(activeChild, decorationId);
+    }
+
+    for (final child in node.children) {
+      final daylight = _compositeDaylightState(child, decorationId);
+
+      if (daylight != null) {
+        return daylight;
+      }
+    }
+
+    return null;
+  }
+
+  Widget _applyCompositeBrightness(Widget child, double brightness) {
+    final value = brightness.clamp(0.0, 1.0);
+
+    if ((value - 1.0).abs() < 0.0001) {
+      return child;
+    }
+
+    return ColorFiltered(
+      colorFilter: ColorFilter.matrix(<double>[
+        value,
+        0,
+        0,
+        0,
+        0,
+        0,
+        value,
+        0,
+        0,
+        0,
+        0,
+        0,
+        value,
+        0,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+      ]),
+      child: child,
+    );
+  }
+
+  Widget _applyCompositeGroupBrightness({
+    required CompositeNode node,
+    required CompositeAsset asset,
+    required String? decorationId,
+    required Widget child,
+  }) {
+    final authoredBrightness =
+        (node.payload['brightness'] as num?)?.toDouble().clamp(0.0, 1.0) ?? 1.0;
+
+    final daylight = _compositeDaylightState(asset.root, decorationId);
+
+    // Match Workspace:
+    //
+    // Daylight visually raises authored group brightness to full.
+    // Night/no daylight falls back to the authored value.
+    //
+    // The Composite payload itself is never modified.
+    final targetBrightness = daylight == true ? 1.0 : authoredBrightness;
+
+    return TweenAnimationBuilder<double>(
+      tween: Tween<double>(end: targetBrightness),
+      duration: const Duration(milliseconds: 900),
+      curve: Curves.easeInOutCubic,
+      child: child,
+      builder: (context, value, brightnessChild) {
+        return _applyCompositeBrightness(
+          brightnessChild ?? const SizedBox.shrink(),
+          value,
+        );
+      },
+    );
+  }
+
   Widget _buildCompositeNode(
     CompositeNode node, {
     required CompositeAsset asset,
@@ -2011,22 +2479,47 @@ class _HomeScreenState extends State<HomeScreen> {
     }
 
     if (node.type == 'group') {
+      Widget groupChild = Stack(
+        fit: StackFit.expand,
+        children: [
+          // Composite children are stored front-to-back, matching the
+          // Workspace Layers panel. Stack paints first-to-last, so reverse.
+          for (final child in node.children.reversed)
+            _buildCompositeNode(
+              child,
+              asset: asset,
+              decorationId: decorationId,
+            ),
+        ],
+      );
+
+      final isDust = node.payload['environmentRole']?.toString() == 'dust';
+
+      if (isDust && decorationId != null) {
+        final override = _roomNodeOverrideFor(decorationId, node.id);
+
+        if (override.cleanPoints.isNotEmpty) {
+          groupChild = ClipPath(
+            clipper: _DustCleaningClipper(
+              points: override.cleanPoints,
+              radius: _dustCleaningRadius,
+            ),
+            child: groupChild,
+          );
+        }
+      }
+
+      groupChild = _applyCompositeGroupBrightness(
+        node: node,
+        asset: asset,
+        decorationId: decorationId,
+        child: groupChild,
+      );
+
       return _applyRoomNodeOverride(
         node: node,
         decorationId: decorationId,
-        child: Stack(
-          fit: StackFit.expand,
-          children: [
-            // Composite children are stored front-to-back, matching the
-            // Workspace Layers panel. Stack paints first-to-last, so reverse.
-            for (final child in node.children.reversed)
-              _buildCompositeNode(
-                child,
-                asset: asset,
-                decorationId: decorationId,
-              ),
-          ],
-        ),
+        child: groupChild,
       );
     }
 
@@ -3803,7 +4296,7 @@ class _HomeScreenState extends State<HomeScreen> {
                               mirrored: decoration.mirrored,
                               child: GestureDetector(
                                 behavior: HitTestBehavior.opaque,
-                                onTapUp: !_decorateMode
+                                onTapUp: !_decorateMode || _cleanMode
                                     ? null
                                     : (details) {
                                         // Rooms Awaken #12:
@@ -3817,6 +4310,28 @@ class _HomeScreenState extends State<HomeScreen> {
                                 onPanStart: !_decorateMode
                                     ? null
                                     : (details) {
+                                        if (_cleanMode) {
+                                          if (bagItem.isComposite &&
+                                              compositeVisibleBounds != null &&
+                                              compositeSceneScale != null) {
+                                            _beginDustCleaning(
+                                              decoration: decoration,
+                                              bagItem: bagItem,
+                                              localPosition:
+                                                  details.localPosition,
+                                              decorationSize: Size(
+                                                decorationWidth,
+                                                decorationHeight,
+                                              ),
+                                              visibleBounds:
+                                                  compositeVisibleBounds,
+                                              sceneScale: compositeSceneScale,
+                                            );
+                                          }
+
+                                          return;
+                                        }
+
                                         // Rooms Awaken #12:
                                         // Dragging begins on the whole asset.
                                         setState(() {
@@ -3826,6 +4341,28 @@ class _HomeScreenState extends State<HomeScreen> {
                                 onPanUpdate: !_decorateMode
                                     ? null
                                     : (details) {
+                                        if (_cleanMode) {
+                                          if (bagItem.isComposite &&
+                                              compositeVisibleBounds != null &&
+                                              compositeSceneScale != null) {
+                                            _continueDustCleaning(
+                                              decoration: decoration,
+                                              bagItem: bagItem,
+                                              localPosition:
+                                                  details.localPosition,
+                                              decorationSize: Size(
+                                                decorationWidth,
+                                                decorationHeight,
+                                              ),
+                                              visibleBounds:
+                                                  compositeVisibleBounds,
+                                              sceneScale: compositeSceneScale,
+                                            );
+                                          }
+
+                                          return;
+                                        }
+
                                         if (_decorateTouchPointers.length > 1) {
                                           return;
                                         }
@@ -3868,6 +4405,11 @@ class _HomeScreenState extends State<HomeScreen> {
                                 onPanEnd: !_decorateMode
                                     ? null
                                     : (_) {
+                                        if (_cleanMode) {
+                                          _finishDustCleaning();
+                                          return;
+                                        }
+
                                         if (_isEditingRoomContents &&
                                             decoration.id ==
                                                 _editingRoomDecorationId &&
@@ -4204,6 +4746,9 @@ class _HomeScreenState extends State<HomeScreen> {
                                     if (!_decorateMode) {
                                       _selectedDecorationId = null;
                                       _editingRoomDecorationId = null;
+                                      _cleanMode = false;
+                                      _activeCleaningDecorationId = null;
+                                      _activeCleaningDustNodeId = null;
                                     }
                                   });
                                 },
@@ -4254,6 +4799,29 @@ class _HomeScreenState extends State<HomeScreen> {
                                         ? Icons.arrow_back
                                         : Icons.exit_to_app,
                                     color: Colors.amberAccent,
+                                  ),
+                                ),
+                              if (_decorateMode &&
+                                  _isEditingRoomContents &&
+                                  _editingRoomHasDust)
+                                IconButton(
+                                  tooltip: _cleanMode
+                                      ? 'Finish Cleaning'
+                                      : 'Clean Mode',
+                                  onPressed: () {
+                                    setState(() {
+                                      _cleanMode = !_cleanMode;
+                                      _activeCleaningDecorationId = null;
+                                      _activeCleaningDustNodeId = null;
+                                      _selectedRoomNodeId = null;
+                                      _selectedRoomNodeName = null;
+                                    });
+                                  },
+                                  icon: Icon(
+                                    Icons.cleaning_services_outlined,
+                                    color: _cleanMode
+                                        ? Colors.lightGreenAccent
+                                        : Colors.white,
                                   ),
                                 ),
                               if (_decorateMode && _isEditingRoomContents)
@@ -4498,6 +5066,40 @@ class _HomeScreenState extends State<HomeScreen> {
         },
       ),
     );
+  }
+}
+
+class _DustCleaningClipper extends CustomClipper<Path> {
+  const _DustCleaningClipper({required this.points, required this.radius});
+
+  final List<Offset> points;
+  final double radius;
+
+  @override
+  Path getClip(Size size) {
+    final path = Path()
+      ..fillType = PathFillType.evenOdd
+      ..addRect(Offset.zero & size);
+
+    for (final point in points) {
+      path.addOval(Rect.fromCircle(center: point, radius: radius));
+    }
+
+    return path;
+  }
+
+  @override
+  bool shouldReclip(covariant _DustCleaningClipper oldClipper) {
+    if (radius != oldClipper.radius ||
+        points.length != oldClipper.points.length) {
+      return true;
+    }
+
+    if (points.isEmpty) {
+      return false;
+    }
+
+    return points.last != oldClipper.points.last;
   }
 }
 
