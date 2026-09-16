@@ -222,6 +222,9 @@ class _HomeScreenState extends State<HomeScreen> {
   String? _activeCleaningDecorationId;
   String? _activeCleaningDustNodeId;
 
+  final Map<String, _DustCleaningSignal> _dustCleaningSignals =
+      <String, _DustCleaningSignal>{};
+
   static const double _dustCleaningRadius = 44.0;
   static const double _dustCleaningPointSpacing = 10.0;
 
@@ -1614,6 +1617,19 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
+  String _dustCleaningSignalKey(String decorationId, String dustNodeId) {
+    return '$decorationId::$dustNodeId';
+  }
+
+  _DustCleaningSignal _dustCleaningSignalFor(
+    String decorationId,
+    String dustNodeId,
+  ) {
+    final key = _dustCleaningSignalKey(decorationId, dustNodeId);
+
+    return _dustCleaningSignals.putIfAbsent(key, _DustCleaningSignal.new);
+  }
+
   void _appendDustCleaningPoint({
     required String decorationId,
     required String dustNodeId,
@@ -1642,7 +1658,9 @@ class _HomeScreenState extends State<HomeScreen> {
 
     roomOverrides[dustNodeId] = current.copyWith(cleanPoints: points);
 
-    setState(() {});
+    final signal = _dustCleaningSignalFor(decorationId, dustNodeId);
+
+    signal.pushPoint(localPoint);
   }
 
   void _beginDustCleaning({
@@ -1694,6 +1712,8 @@ class _HomeScreenState extends State<HomeScreen> {
 
     _activeCleaningDecorationId = decoration.id;
     _activeCleaningDustNodeId = dustNode.id;
+
+    _dustCleaningSignalFor(decoration.id, dustNode.id).beginStroke();
 
     _appendDustCleaningPoint(
       decorationId: decoration.id,
@@ -1750,16 +1770,27 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   void _finishDustCleaning() {
-    final hadActiveStroke =
-        _activeCleaningDecorationId != null &&
-        _activeCleaningDustNodeId != null;
+    final decorationId = _activeCleaningDecorationId;
+    final dustNodeId = _activeCleaningDustNodeId;
 
     _activeCleaningDecorationId = null;
     _activeCleaningDustNodeId = null;
 
-    if (hadActiveStroke) {
-      _saveDecorations();
+    if (decorationId == null || dustNodeId == null) {
+      return;
     }
+
+    final signal = _dustCleaningSignalFor(decorationId, dustNodeId);
+
+    // Commit the already-collected cleanPoints to the widget tree once at the
+    // end of the gesture. Live movement bypasses Home setState entirely.
+    setState(() {});
+
+    // The persistent mask now owns the completed cleaning, so the temporary
+    // live stroke can be discarded without changing the visible result.
+    signal.finishStroke();
+
+    _saveDecorations();
   }
 
   // ignore: unused_element
@@ -2499,11 +2530,10 @@ class _HomeScreenState extends State<HomeScreen> {
         final override = _roomNodeOverrideFor(decorationId, node.id);
 
         if (override.cleanPoints.isNotEmpty) {
-          groupChild = ClipPath(
-            clipper: _DustCleaningClipper(
-              points: override.cleanPoints,
-              radius: _dustCleaningRadius,
-            ),
+          groupChild = _DustCleaningMask(
+            points: override.cleanPoints,
+            radius: _dustCleaningRadius,
+            liveSignal: _dustCleaningSignalFor(decorationId, node.id),
             child: groupChild,
           );
         }
@@ -5069,37 +5099,187 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 }
 
-class _DustCleaningClipper extends CustomClipper<Path> {
-  const _DustCleaningClipper({required this.points, required this.radius});
+class _DustCleaningSignal extends ChangeNotifier {
+  final List<Offset> _liveStroke = <Offset>[];
+
+  List<Offset> get liveStroke => _liveStroke;
+
+  void beginStroke() {
+    _liveStroke.clear();
+    notifyListeners();
+  }
+
+  void pushPoint(Offset point) {
+    if (_liveStroke.isNotEmpty && _liveStroke.last == point) {
+      return;
+    }
+
+    _liveStroke.add(point);
+    notifyListeners();
+  }
+
+  void finishStroke() {
+    _liveStroke.clear();
+    notifyListeners();
+  }
+}
+
+class _DustCleaningMask extends SingleChildRenderObjectWidget {
+  const _DustCleaningMask({
+    required this.points,
+    required this.radius,
+    required this.liveSignal,
+    required super.child,
+  });
 
   final List<Offset> points;
   final double radius;
+  final _DustCleaningSignal liveSignal;
 
   @override
-  Path getClip(Size size) {
-    final path = Path()
-      ..fillType = PathFillType.evenOdd
-      ..addRect(Offset.zero & size);
-
-    for (final point in points) {
-      path.addOval(Rect.fromCircle(center: point, radius: radius));
-    }
-
-    return path;
+  RenderObject createRenderObject(BuildContext context) {
+    return _RenderDustCleaningMask(
+      points: points,
+      radius: radius,
+      liveSignal: liveSignal,
+    );
   }
 
   @override
-  bool shouldReclip(covariant _DustCleaningClipper oldClipper) {
-    if (radius != oldClipper.radius ||
-        points.length != oldClipper.points.length) {
-      return true;
+  void updateRenderObject(
+    BuildContext context,
+    covariant _RenderDustCleaningMask renderObject,
+  ) {
+    renderObject
+      ..points = points
+      ..radius = radius
+      ..liveSignal = liveSignal;
+  }
+}
+
+class _RenderDustCleaningMask extends RenderProxyBox {
+  _RenderDustCleaningMask({
+    required List<Offset> points,
+    required double radius,
+    required _DustCleaningSignal liveSignal,
+  }) : _points = points,
+       _radius = radius,
+       _liveSignal = liveSignal {
+    _liveSignal.addListener(_handleLiveCleaningChanged);
+  }
+
+  List<Offset> _points;
+  double _radius;
+  _DustCleaningSignal _liveSignal;
+
+  set points(List<Offset> value) {
+    if (identical(value, _points)) {
+      return;
     }
 
-    if (points.isEmpty) {
-      return false;
+    _points = value;
+    markNeedsPaint();
+  }
+
+  set radius(double value) {
+    if (value == _radius) {
+      return;
     }
 
-    return points.last != oldClipper.points.last;
+    _radius = value;
+    markNeedsPaint();
+  }
+
+  set liveSignal(_DustCleaningSignal value) {
+    if (identical(value, _liveSignal)) {
+      return;
+    }
+
+    _liveSignal.removeListener(_handleLiveCleaningChanged);
+    _liveSignal = value;
+    _liveSignal.addListener(_handleLiveCleaningChanged);
+    markNeedsPaint();
+  }
+
+  void _handleLiveCleaningChanged() {
+    markNeedsPaint();
+  }
+
+  @override
+  void detach() {
+    _liveSignal.removeListener(_handleLiveCleaningChanged);
+    super.detach();
+  }
+
+  @override
+  void attach(PipelineOwner owner) {
+    super.attach(owner);
+    _liveSignal.removeListener(_handleLiveCleaningChanged);
+    _liveSignal.addListener(_handleLiveCleaningChanged);
+  }
+
+  @override
+  void paint(PaintingContext context, Offset offset) {
+    final dustChild = child;
+
+    if (dustChild == null) {
+      return;
+    }
+
+    if ((_points.isEmpty && _liveSignal.liveStroke.isEmpty) || size.isEmpty) {
+      context.paintChild(dustChild, offset);
+      return;
+    }
+
+    final canvas = context.canvas;
+    final bounds = offset & size;
+
+    canvas.saveLayer(bounds, Paint());
+
+    context.paintChild(dustChild, offset);
+
+    final erasePaint = Paint()
+      ..blendMode = BlendMode.dstOut
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = _radius * 2
+      ..strokeCap = StrokeCap.round
+      ..strokeJoin = StrokeJoin.round
+      ..isAntiAlias = true;
+
+    // Persisted V1 points remain backward-compatible. These are rendered as
+    // round stamps because older saves do not contain stroke boundaries.
+    final stampPaint = Paint()
+      ..blendMode = BlendMode.dstOut
+      ..style = PaintingStyle.fill
+      ..isAntiAlias = true;
+
+    for (final point in _points) {
+      canvas.drawCircle(offset + point, _radius, stampPaint);
+    }
+
+    // The current gesture is different: it has a known beginning and end, so
+    // draw it as one continuous round-capped path directly under the pointer.
+    final liveStroke = _liveSignal.liveStroke;
+
+    if (liveStroke.length == 1) {
+      canvas.drawCircle(offset + liveStroke.first, _radius, stampPaint);
+    } else if (liveStroke.length > 1) {
+      final path = Path()
+        ..moveTo(
+          offset.dx + liveStroke.first.dx,
+          offset.dy + liveStroke.first.dy,
+        );
+
+      for (var i = 1; i < liveStroke.length; i++) {
+        final point = liveStroke[i];
+
+        path.lineTo(offset.dx + point.dx, offset.dy + point.dy);
+      }
+
+      canvas.drawPath(path, erasePaint);
+    }
+
+    canvas.restore();
   }
 }
 

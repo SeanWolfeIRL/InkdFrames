@@ -2609,6 +2609,30 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
           }
         }
 
+        // Older projects can also contain valid childGroupIds that were never
+        // mirrored into childOrder. Without this fallback those groups vanish
+        // when a parent Composite is saved to the Bag.
+        final capturedGroupIds = children
+            .where((child) => child.type == 'group')
+            .map((child) => child.id)
+            .toSet();
+
+        for (final nestedGroupId in childGroup.childGroupIds) {
+          if (capturedGroupIds.contains(nestedGroupId)) {
+            continue;
+          }
+
+          final child = captureHierarchyEntry(
+            'group:$nestedGroupId',
+            visitingGroups: visitingGroups,
+            visitingVariants: visitingVariants,
+          );
+
+          if (child != null) {
+            children.add(child);
+          }
+        }
+
         visitingGroups.remove(childGroupId);
 
         return CompositeNode(
@@ -2706,6 +2730,29 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
 
         final child = captureHierarchyEntry(
           'layer:$childLayerId',
+          visitingGroups: visitingGroups,
+          visitingVariants: visitingVariants,
+        );
+
+        if (child != null) {
+          rootChildren.add(child);
+        }
+      }
+
+      // Recover valid direct child groups from older hierarchy data where the
+      // relationship exists in childGroupIds but is absent from childOrder.
+      final capturedRootGroupIds = rootChildren
+          .where((child) => child.type == 'group')
+          .map((child) => child.id)
+          .toSet();
+
+      for (final childGroupId in group.childGroupIds) {
+        if (capturedRootGroupIds.contains(childGroupId)) {
+          continue;
+        }
+
+        final child = captureHierarchyEntry(
+          'group:$childGroupId',
           visitingGroups: visitingGroups,
           visitingVariants: visitingVariants,
         );
