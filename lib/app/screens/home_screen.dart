@@ -7,6 +7,7 @@ import 'dart:ui' as ui;
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter/rendering.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -161,6 +162,14 @@ class _RoomNodeOverride {
   /// The reusable Bag asset is never modified.
   final List<Offset> cleanPoints;
 
+  // Instance-local environmental interaction state.
+  //
+  // These never mutate the reusable Bag Composite. They belong only to this
+  // placed room instance.
+  final double opacity;
+  final bool hidden;
+  final int interactionCount;
+
   // Instance-local choice for Composite variant nodes.
   //
   // null means: use the authored Bag Composite activeIndex.
@@ -172,6 +181,9 @@ class _RoomNodeOverride {
     this.scale = 1.0,
     this.mirrored = false,
     this.cleanPoints = const <Offset>[],
+    this.opacity = 1.0,
+    this.hidden = false,
+    this.interactionCount = 0,
     this.activeVariantIndex,
   });
 
@@ -181,6 +193,9 @@ class _RoomNodeOverride {
     double? scale,
     bool? mirrored,
     List<Offset>? cleanPoints,
+    double? opacity,
+    bool? hidden,
+    int? interactionCount,
     int? activeVariantIndex,
   }) {
     return _RoomNodeOverride(
@@ -189,6 +204,9 @@ class _RoomNodeOverride {
       scale: scale ?? this.scale,
       mirrored: mirrored ?? this.mirrored,
       cleanPoints: cleanPoints ?? this.cleanPoints,
+      opacity: opacity ?? this.opacity,
+      hidden: hidden ?? this.hidden,
+      interactionCount: interactionCount ?? this.interactionCount,
       activeVariantIndex: activeVariantIndex ?? this.activeVariantIndex,
     );
   }
@@ -202,6 +220,9 @@ class _RoomNodeOverride {
   bool get isIdentity =>
       !hasTransformOverride &&
       cleanPoints.isEmpty &&
+      (opacity - 1.0).abs() < 0.000001 &&
+      !hidden &&
+      interactionCount == 0 &&
       activeVariantIndex == null;
 }
 
@@ -224,6 +245,11 @@ class _HomeScreenState extends State<HomeScreen> {
 
   final Map<String, _DustCleaningSignal> _dustCleaningSignals =
       <String, _DustCleaningSignal>{};
+
+  // Cobweb movement is deliberately transient. Only interactionCount,
+  // opacity and hidden state are persisted in the room override.
+  final Map<String, _CobwebShakeSignal> _cobwebShakeSignals =
+      <String, _CobwebShakeSignal>{};
 
   static const double _dustCleaningRadius = 44.0;
   static const double _dustCleaningPointSpacing = 10.0;
@@ -346,6 +372,15 @@ class _HomeScreenState extends State<HomeScreen> {
   @override
   void dispose() {
     _homeScrollController.dispose();
+
+    for (final signal in _dustCleaningSignals.values) {
+      signal.dispose();
+    }
+
+    for (final signal in _cobwebShakeSignals.values) {
+      signal.dispose();
+    }
+
     super.dispose();
   }
 
@@ -1107,6 +1142,10 @@ class _HomeScreenState extends State<HomeScreen> {
 
     final nodeOverride = _roomNodeOverrideFor(decorationId, node.id);
 
+    if (nodeOverride.hidden) {
+      return null;
+    }
+
     final nodePoint = _inverseRoomNodeOverridePoint(
       point: point,
       canvasSize: canvasSize,
@@ -1401,6 +1440,11 @@ class _HomeScreenState extends State<HomeScreen> {
         'cleanPoints': override.cleanPoints
             .map((point) => <String, double>{'x': point.dx, 'y': point.dy})
             .toList(),
+      if ((override.opacity - 1.0).abs() >= 0.000001)
+        'opacity': override.opacity,
+      if (override.hidden) 'hidden': true,
+      if (override.interactionCount != 0)
+        'interactionCount': override.interactionCount,
       if (override.activeVariantIndex != null)
         'activeVariantIndex': override.activeVariantIndex,
     };
@@ -1421,6 +1465,9 @@ class _HomeScreenState extends State<HomeScreen> {
             ),
           )
           .toList(),
+      opacity: (json['opacity'] as num?)?.toDouble().clamp(0.0, 1.0) ?? 1.0,
+      hidden: json['hidden'] == true,
+      interactionCount: (json['interactionCount'] as num?)?.toInt() ?? 0,
       activeVariantIndex: (json['activeVariantIndex'] as num?)?.toInt(),
     );
   }
@@ -1471,6 +1518,260 @@ class _HomeScreenState extends State<HomeScreen> {
     }
 
     return _compositeNodeHasEnvironmentRole(composite.root, 'dust');
+  }
+
+  String _cobwebShakeSignalKey(String decorationId, String cobwebNodeId) {
+    return '$decorationId::$cobwebNodeId';
+  }
+
+  _CobwebShakeSignal _cobwebShakeSignalFor(
+    String decorationId,
+    String cobwebNodeId,
+  ) {
+    final key = _cobwebShakeSignalKey(decorationId, cobwebNodeId);
+
+    return _cobwebShakeSignals.putIfAbsent(key, _CobwebShakeSignal.new);
+  }
+
+  _CobwebShakeSignal? _existingCobwebShakeSignal(
+    String? decorationId,
+    String cobwebNodeId,
+  ) {
+    if (decorationId == null) {
+      return null;
+    }
+
+    return _cobwebShakeSignals[_cobwebShakeSignalKey(
+      decorationId,
+      cobwebNodeId,
+    )];
+  }
+
+  Future<void> _shakeCobweb(
+    String decorationId,
+    String cobwebNodeId, {
+    required bool strong,
+  }) async {
+    final signal = _cobwebShakeSignalFor(decorationId, cobwebNodeId);
+
+    final offsets = strong
+        ? <double>[-8.0, 8.0, -6.0, 6.0, -4.0, 3.0, -2.0, 0.0]
+        : <double>[-4.0, 4.0, -3.0, 3.0, -2.0, 1.5, 0.0];
+
+    final step = strong
+        ? const Duration(milliseconds: 42)
+        : const Duration(milliseconds: 36);
+
+    for (final offset in offsets) {
+      if (!mounted) {
+        return;
+      }
+
+      signal.setOffset(offset);
+      await Future<void>.delayed(step);
+    }
+  }
+
+  CompositeNode? _findCobwebGroupHit(
+    CompositeNode node,
+    Offset point,
+    Size canvasSize, {
+    required String decorationId,
+  }) {
+    if (!node.visible) {
+      return null;
+    }
+
+    final override = _roomNodeOverrideFor(decorationId, node.id);
+
+    if (override.hidden) {
+      return null;
+    }
+
+    final nodePoint = _inverseRoomNodeOverridePoint(
+      point: point,
+      canvasSize: canvasSize,
+      override: override,
+    );
+
+    if (node.type == 'variant') {
+      if (node.children.isEmpty) {
+        return null;
+      }
+
+      final activeIndex = _activeRoomVariantIndex(decorationId, node);
+
+      return _findCobwebGroupHit(
+        node.children[activeIndex],
+        nodePoint,
+        canvasSize,
+        decorationId: decorationId,
+      );
+    }
+
+    if (node.type == 'group') {
+      final isCobwebCollection =
+          node.payload['environmentRole']?.toString() == 'cobweb';
+
+      if (isCobwebCollection) {
+        // The environmental group is the collection. Each direct child group
+        // is an independently removable web.
+        //
+        // Composite children are front-to-back, so the first visual hit wins.
+        for (final child in node.children) {
+          if (!child.visible) {
+            continue;
+          }
+
+          final childOverride = _roomNodeOverrideFor(decorationId, child.id);
+
+          if (childOverride.hidden) {
+            continue;
+          }
+
+          final hit = _findCompositeNodeHit(
+            child,
+            nodePoint,
+            canvasSize,
+            decorationId: decorationId,
+            semanticOwner: child,
+          );
+
+          if (hit != null) {
+            return child;
+          }
+        }
+
+        return null;
+      }
+
+      // Search deeper for a nested Cobweb collection.
+      for (final child in node.children) {
+        final hit = _findCobwebGroupHit(
+          child,
+          nodePoint,
+          canvasSize,
+          decorationId: decorationId,
+        );
+
+        if (hit != null) {
+          return hit;
+        }
+      }
+    }
+
+    return null;
+  }
+
+  Future<void> _interactWithCobweb({
+    required PlacedDecoration decoration,
+    required BagItem bagItem,
+    required Offset localPosition,
+    required Size decorationSize,
+    required Rect visibleBounds,
+    required double sceneScale,
+  }) async {
+    if (!_cleanMode || bagItem.composite == null || sceneScale <= 0) {
+      return;
+    }
+
+    final composite = bagItem.composite!;
+
+    final compositePoint = _decorationLocalToCompositePoint(
+      localPosition: localPosition,
+      decorationSize: decorationSize,
+      visibleBounds: visibleBounds,
+      sceneScale: sceneScale,
+      mirrored: decoration.mirrored,
+    );
+
+    final cobwebNode = _findCobwebGroupHit(
+      composite.root,
+      compositePoint,
+      Size(composite.canvasWidth, composite.canvasHeight),
+      decorationId: decoration.id,
+    );
+
+    if (cobwebNode == null) {
+      return;
+    }
+
+    final roomOverrides = _roomNodeOverrides.putIfAbsent(
+      decoration.id,
+      () => <String, _RoomNodeOverride>{},
+    );
+
+    final current = roomOverrides[cobwebNode.id] ?? const _RoomNodeOverride();
+
+    if (current.hidden) {
+      return;
+    }
+
+    // First tap: disturb only this individual web.
+    //
+    // The fact that it has already been disturbed persists, while the shake
+    // itself remains transient.
+    if (current.interactionCount == 0) {
+      setState(() {
+        roomOverrides[cobwebNode.id] = current.copyWith(interactionCount: 1);
+      });
+
+      HapticFeedback.lightImpact();
+
+      await _shakeCobweb(decoration.id, cobwebNode.id, strong: false);
+
+      await _saveDecorations();
+      return;
+    }
+
+    // Second tap: rattle the individual web more aggressively.
+    HapticFeedback.mediumImpact();
+
+    final shakeFuture = _shakeCobweb(
+      decoration.id,
+      cobwebNode.id,
+      strong: true,
+    );
+
+    // Let the break register visually before the web begins dissolving.
+    await Future<void>.delayed(const Duration(milliseconds: 110));
+
+    if (!mounted) {
+      return;
+    }
+
+    final beforeFade =
+        _roomNodeOverrides[decoration.id]?[cobwebNode.id] ?? current;
+
+    setState(() {
+      roomOverrides[cobwebNode.id] = beforeFade.copyWith(
+        interactionCount: 2,
+        opacity: 0.0,
+      );
+    });
+
+    await shakeFuture;
+
+    // Give AnimatedOpacity enough time to visibly complete its 650 ms fade.
+    await Future<void>.delayed(const Duration(milliseconds: 540));
+
+    if (!mounted) {
+      return;
+    }
+
+    final latest =
+        _roomNodeOverrides[decoration.id]?[cobwebNode.id] ??
+        const _RoomNodeOverride();
+
+    setState(() {
+      roomOverrides[cobwebNode.id] = latest.copyWith(
+        opacity: 0.0,
+        hidden: true,
+        interactionCount: 2,
+      );
+    });
+
+    await _saveDecorations();
   }
 
   CompositeNode? _findDustGroupHit(
@@ -2326,21 +2627,36 @@ class _HomeScreenState extends State<HomeScreen> {
   }) {
     final override = _roomNodeOverrideFor(decorationId, node.id);
 
-    if (!override.hasTransformOverride) {
-      return child;
+    if (override.hidden) {
+      return const SizedBox.shrink();
     }
 
-    Widget result = Transform.scale(
-      scaleX: override.mirrored ? -override.scale : override.scale,
-      scaleY: override.scale,
-      alignment: Alignment.center,
+    Widget result = AnimatedOpacity(
+      opacity: override.opacity,
+      duration: const Duration(milliseconds: 650),
+      curve: Curves.easeOutCubic,
       child: child,
     );
 
-    result = Transform.translate(
-      offset: Offset(override.offsetX, override.offsetY),
-      child: result,
-    );
+    if (override.hasTransformOverride) {
+      result = Transform.scale(
+        scaleX: override.mirrored ? -override.scale : override.scale,
+        scaleY: override.scale,
+        alignment: Alignment.center,
+        child: result,
+      );
+
+      result = Transform.translate(
+        offset: Offset(override.offsetX, override.offsetY),
+        child: result,
+      );
+    }
+
+    final shakeSignal = _existingCobwebShakeSignal(decorationId, node.id);
+
+    if (shakeSignal != null) {
+      result = _CobwebShakeTransform(signal: shakeSignal, child: result);
+    }
 
     return result;
   }
@@ -4326,9 +4642,31 @@ class _HomeScreenState extends State<HomeScreen> {
                               mirrored: decoration.mirrored,
                               child: GestureDetector(
                                 behavior: HitTestBehavior.opaque,
-                                onTapUp: !_decorateMode || _cleanMode
+                                onTapUp: !_decorateMode
                                     ? null
                                     : (details) {
+                                        if (_cleanMode) {
+                                          if (bagItem.isComposite &&
+                                              compositeVisibleBounds != null &&
+                                              compositeSceneScale != null) {
+                                            _interactWithCobweb(
+                                              decoration: decoration,
+                                              bagItem: bagItem,
+                                              localPosition:
+                                                  details.localPosition,
+                                              decorationSize: Size(
+                                                decorationWidth,
+                                                decorationHeight,
+                                              ),
+                                              visibleBounds:
+                                                  compositeVisibleBounds,
+                                              sceneScale: compositeSceneScale,
+                                            );
+                                          }
+
+                                          return;
+                                        }
+
                                         // Rooms Awaken #12:
                                         // Composites are sealed in Room Manager.
                                         // A tap selects the complete placed
@@ -5095,6 +5433,69 @@ class _HomeScreenState extends State<HomeScreen> {
           );
         },
       ),
+    );
+  }
+}
+
+class _CobwebShakeSignal extends ChangeNotifier {
+  double _offsetX = 0.0;
+
+  double get offsetX => _offsetX;
+
+  void setOffset(double value) {
+    if ((_offsetX - value).abs() < 0.000001) {
+      return;
+    }
+
+    _offsetX = value;
+    notifyListeners();
+  }
+}
+
+class _CobwebShakeTransform extends StatefulWidget {
+  const _CobwebShakeTransform({required this.signal, required this.child});
+
+  final _CobwebShakeSignal signal;
+  final Widget child;
+
+  @override
+  State<_CobwebShakeTransform> createState() => _CobwebShakeTransformState();
+}
+
+class _CobwebShakeTransformState extends State<_CobwebShakeTransform> {
+  @override
+  void initState() {
+    super.initState();
+    widget.signal.addListener(_handleShake);
+  }
+
+  @override
+  void didUpdateWidget(covariant _CobwebShakeTransform oldWidget) {
+    super.didUpdateWidget(oldWidget);
+
+    if (!identical(oldWidget.signal, widget.signal)) {
+      oldWidget.signal.removeListener(_handleShake);
+      widget.signal.addListener(_handleShake);
+    }
+  }
+
+  @override
+  void dispose() {
+    widget.signal.removeListener(_handleShake);
+    super.dispose();
+  }
+
+  void _handleShake() {
+    if (mounted) {
+      setState(() {});
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Transform.translate(
+      offset: Offset(widget.signal.offsetX, 0.0),
+      child: widget.child,
     );
   }
 }
