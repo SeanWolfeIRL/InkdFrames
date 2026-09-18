@@ -254,6 +254,12 @@ class _HomeScreenState extends State<HomeScreen> {
   static const double _dustCleaningRadius = 44.0;
   static const double _dustCleaningPointSpacing = 10.0;
 
+  // ROOM CONDITION V0.2
+  //
+  // Dust completion is interaction-based rather than artwork-sampled.
+  // A stroke counts only when it begins on visible authored dust.
+  static const int _dustCleaningStrokesRequired = 6;
+
   // --------------------------------------------------------
   // ROOM MANAGER
   //
@@ -1594,6 +1600,112 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
+  // ROOM CONDITION V0.2
+  //
+  // Condition is derived from persistent environmental objectives.
+  //
+  // Cobweb collection:
+  //   each authored-visible direct child = one objective.
+  //
+  // Dust group:
+  //   the environmental dust group itself = one objective.
+  //
+  // Nothing is stored specifically for the meter.
+  ({int total, int cleared}) _roomConditionCounts() {
+    var total = 0;
+    var cleared = 0;
+
+    void visit(CompositeNode node, String decorationId) {
+      if (!node.visible) {
+        return;
+      }
+
+      if (node.type == 'variant') {
+        if (node.children.isEmpty) {
+          return;
+        }
+
+        final activeIndex = _activeRoomVariantIndex(decorationId, node);
+
+        visit(node.children[activeIndex], decorationId);
+        return;
+      }
+
+      if (node.type != 'group') {
+        return;
+      }
+
+      final role = node.payload['environmentRole']?.toString();
+
+      if (role == 'cobweb') {
+        for (final child in node.children) {
+          if (!child.visible) {
+            continue;
+          }
+
+          total++;
+
+          final childOverride = _roomNodeOverrideFor(decorationId, child.id);
+
+          if (childOverride.hidden) {
+            cleared++;
+          }
+        }
+
+        return;
+      }
+
+      if (role == 'dust') {
+        total++;
+
+        final dustOverride = _roomNodeOverrideFor(decorationId, node.id);
+
+        if (dustOverride.hidden) {
+          cleared++;
+        }
+
+        return;
+      }
+
+      final nodeOverride = _roomNodeOverrideFor(decorationId, node.id);
+
+      if (nodeOverride.hidden) {
+        return;
+      }
+
+      for (final child in node.children) {
+        visit(child, decorationId);
+      }
+    }
+
+    for (final decoration in _decorations) {
+      final item = _bagItemsById[decoration.bagItemId];
+      final composite = item?.composite;
+
+      if (composite == null) {
+        continue;
+      }
+
+      visit(composite.root, decoration.id);
+    }
+
+    return (total: total, cleared: cleared);
+  }
+
+  double get _roomConditionProgress {
+    final condition = _roomConditionCounts();
+
+    // A room without authored environmental objectives is not implicitly
+    // considered restored.
+    if (condition.total == 0) {
+      return 0.0;
+    }
+
+    return (condition.cleared / condition.total).clamp(0.0, 1.0);
+  }
+
+  int get _roomConditionPercent => (_roomConditionProgress * 100).round();
+
   CompositeNode? _findCobwebGroupHit(
     CompositeNode node,
     Offset point,
@@ -2040,6 +2152,17 @@ class _HomeScreenState extends State<HomeScreen> {
     _activeCleaningDecorationId = decoration.id;
     _activeCleaningDustNodeId = dustNode.id;
 
+    final roomOverrides = _roomNodeOverrides.putIfAbsent(
+      decoration.id,
+      () => <String, _RoomNodeOverride>{},
+    );
+
+    final current = roomOverrides[dustNode.id] ?? const _RoomNodeOverride();
+
+    roomOverrides[dustNode.id] = current.copyWith(
+      interactionCount: current.interactionCount + 1,
+    );
+
     _dustCleaningSignalFor(decoration.id, dustNode.id).beginStroke();
 
     _appendDustCleaningPoint(
@@ -2110,8 +2233,23 @@ class _HomeScreenState extends State<HomeScreen> {
     final signal = _dustCleaningSignalFor(decorationId, dustNodeId);
     signal.finishStroke();
 
-    // Persistent dust cleaning remains intact.
-    setState(() {});
+    final roomOverrides = _roomNodeOverrides.putIfAbsent(
+      decorationId,
+      () => <String, _RoomNodeOverride>{},
+    );
+
+    final current = roomOverrides[dustNodeId] ?? const _RoomNodeOverride();
+
+    final complete = current.interactionCount >= _dustCleaningStrokesRequired;
+
+    setState(() {
+      if (complete && !current.hidden) {
+        roomOverrides[dustNodeId] = current.copyWith(
+          hidden: true,
+          opacity: 0.0,
+        );
+      }
+    });
 
     _saveDecorations();
   }
@@ -5107,6 +5245,83 @@ class _HomeScreenState extends State<HomeScreen> {
             fit: StackFit.expand,
             children: [
               roomViewport,
+
+              // ROOM CONDITION V0.1
+              //
+              // Screen-space feedback for environmental restoration.
+              // The value is derived from persistent room state rather than
+              // being stored independently.
+              if (_cleanMode)
+                SafeArea(
+                  child: Align(
+                    alignment: Alignment.topCenter,
+                    child: Padding(
+                      padding: const EdgeInsets.fromLTRB(16, 16, 16, 0),
+                      child: IgnorePointer(
+                        child: ConstrainedBox(
+                          constraints: const BoxConstraints(maxWidth: 360),
+                          child: Material(
+                            color: const Color(0xDD1A1720),
+                            borderRadius: BorderRadius.circular(16),
+                            elevation: 8,
+                            child: Padding(
+                              padding: const EdgeInsets.fromLTRB(
+                                16,
+                                12,
+                                16,
+                                14,
+                              ),
+                              child: Column(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  Row(
+                                    children: [
+                                      const Icon(
+                                        Icons.home_outlined,
+                                        size: 18,
+                                        color: Colors.lightGreenAccent,
+                                      ),
+                                      const SizedBox(width: 8),
+                                      const Expanded(
+                                        child: Text(
+                                          'ROOM CONDITION',
+                                          style: TextStyle(
+                                            color: Colors.white,
+                                            fontSize: 12,
+                                            fontWeight: FontWeight.w700,
+                                            letterSpacing: 1.1,
+                                          ),
+                                        ),
+                                      ),
+                                      Text(
+                                        '$_roomConditionPercent%',
+                                        style: const TextStyle(
+                                          color: Colors.white,
+                                          fontSize: 14,
+                                          fontWeight: FontWeight.w700,
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                  const SizedBox(height: 9),
+                                  ClipRRect(
+                                    borderRadius: BorderRadius.circular(999),
+                                    child: LinearProgressIndicator(
+                                      value: _roomConditionProgress,
+                                      minHeight: 8,
+                                      backgroundColor: Colors.white12,
+                                      color: Colors.lightGreenAccent,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
 
               // Screen-space Decorate controls.
               // These stay fixed to the device while the room moves beneath them.
