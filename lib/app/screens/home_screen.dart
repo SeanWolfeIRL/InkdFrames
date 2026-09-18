@@ -929,7 +929,6 @@ class _HomeScreenState extends State<HomeScreen> {
     return false;
   }
 
-  // --------------------------------------------------------
   // ROOMS AWAKEN #9 - SCOPED HIERARCHY NAVIGATION
   // --------------------------------------------------------
 
@@ -1554,20 +1553,43 @@ class _HomeScreenState extends State<HomeScreen> {
   }) async {
     final signal = _cobwebShakeSignalFor(decorationId, cobwebNodeId);
 
-    final offsets = strong
-        ? <double>[-8.0, 8.0, -6.0, 6.0, -4.0, 3.0, -2.0, 0.0]
-        : <double>[-4.0, 4.0, -3.0, 3.0, -2.0, 1.5, 0.0];
+    final frames = strong
+        ? const <_CobwebShakeFrame>[
+            _CobwebShakeFrame(-13.0, 2.0, -0.055),
+            _CobwebShakeFrame(11.0, -2.5, 0.050),
+            _CobwebShakeFrame(-10.0, 1.5, -0.043),
+            _CobwebShakeFrame(8.0, -1.5, 0.036),
+            _CobwebShakeFrame(-6.0, 1.0, -0.029),
+            _CobwebShakeFrame(4.5, -0.8, 0.022),
+            _CobwebShakeFrame(-3.0, 0.5, -0.015),
+            _CobwebShakeFrame(1.5, -0.3, 0.008),
+            _CobwebShakeFrame(0.0, 0.0, 0.0),
+          ]
+        : const <_CobwebShakeFrame>[
+            _CobwebShakeFrame(-7.0, 1.0, -0.028),
+            _CobwebShakeFrame(6.0, -1.2, 0.025),
+            _CobwebShakeFrame(-4.5, 0.8, -0.020),
+            _CobwebShakeFrame(3.5, -0.6, 0.016),
+            _CobwebShakeFrame(-2.0, 0.4, -0.010),
+            _CobwebShakeFrame(1.0, -0.2, 0.005),
+            _CobwebShakeFrame(0.0, 0.0, 0.0),
+          ];
 
     final step = strong
-        ? const Duration(milliseconds: 42)
-        : const Duration(milliseconds: 36);
+        ? const Duration(milliseconds: 48)
+        : const Duration(milliseconds: 44);
 
-    for (final offset in offsets) {
+    for (final frame in frames) {
       if (!mounted) {
         return;
       }
 
-      signal.setOffset(offset);
+      signal.setTransform(
+        offsetX: frame.offsetX,
+        offsetY: frame.offsetY,
+        rotation: frame.rotation,
+      );
+
       await Future<void>.delayed(step);
     }
   }
@@ -1785,6 +1807,10 @@ class _HomeScreenState extends State<HomeScreen> {
     }
 
     final override = _roomNodeOverrideFor(decorationId, node.id);
+
+    if (override.hidden) {
+      return null;
+    }
 
     final nodePoint = _inverseRoomNodeOverridePoint(
       point: point,
@@ -2082,14 +2108,10 @@ class _HomeScreenState extends State<HomeScreen> {
     }
 
     final signal = _dustCleaningSignalFor(decorationId, dustNodeId);
-
-    // Commit the already-collected cleanPoints to the widget tree once at the
-    // end of the gesture. Live movement bypasses Home setState entirely.
-    setState(() {});
-
-    // The persistent mask now owns the completed cleaning, so the temporary
-    // live stroke can be discarded without changing the visible result.
     signal.finishStroke();
+
+    // Persistent dust cleaning remains intact.
+    setState(() {});
 
     _saveDecorations();
   }
@@ -2631,12 +2653,22 @@ class _HomeScreenState extends State<HomeScreen> {
       return const SizedBox.shrink();
     }
 
-    Widget result = AnimatedOpacity(
-      opacity: override.opacity,
-      duration: const Duration(milliseconds: 650),
-      curve: Curves.easeOutCubic,
-      child: child,
-    );
+    final shakeSignal = _existingCobwebShakeSignal(decorationId, node.id);
+
+    // Keep ordinary room nodes on the original direct render path.
+    // A cobweb receives its shake signal on the first interaction, which
+    // ensures AnimatedOpacity already exists before the second interaction
+    // starts fading it out.
+    Widget result = child;
+
+    if ((override.opacity - 1.0).abs() >= 0.000001 || shakeSignal != null) {
+      result = AnimatedOpacity(
+        opacity: override.opacity,
+        duration: const Duration(milliseconds: 650),
+        curve: Curves.easeOutCubic,
+        child: result,
+      );
+    }
 
     if (override.hasTransformOverride) {
       result = Transform.scale(
@@ -2651,8 +2683,6 @@ class _HomeScreenState extends State<HomeScreen> {
         child: result,
       );
     }
-
-    final shakeSignal = _existingCobwebShakeSignal(decorationId, node.id);
 
     if (shakeSignal != null) {
       result = _CobwebShakeTransform(signal: shakeSignal, child: result);
@@ -2845,14 +2875,14 @@ class _HomeScreenState extends State<HomeScreen> {
       if (isDust && decorationId != null) {
         final override = _roomNodeOverrideFor(decorationId, node.id);
 
-        if (override.cleanPoints.isNotEmpty) {
-          groupChild = _DustCleaningMask(
-            points: override.cleanPoints,
-            radius: _dustCleaningRadius,
-            liveSignal: _dustCleaningSignalFor(decorationId, node.id),
-            child: groupChild,
-          );
-        }
+        // Keep the mask mounted even before the first persisted point so its
+        // live signal can repaint the very first cleaning gesture directly.
+        groupChild = _DustCleaningMask(
+          points: override.cleanPoints,
+          radius: _dustCleaningRadius,
+          liveSignal: _dustCleaningSignalFor(decorationId, node.id),
+          child: groupChild,
+        );
       }
 
       groupChild = _applyCompositeGroupBrightness(
@@ -5437,17 +5467,37 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 }
 
+class _CobwebShakeFrame {
+  const _CobwebShakeFrame(this.offsetX, this.offsetY, this.rotation);
+
+  final double offsetX;
+  final double offsetY;
+  final double rotation;
+}
+
 class _CobwebShakeSignal extends ChangeNotifier {
   double _offsetX = 0.0;
+  double _offsetY = 0.0;
+  double _rotation = 0.0;
 
   double get offsetX => _offsetX;
+  double get offsetY => _offsetY;
+  double get rotation => _rotation;
 
-  void setOffset(double value) {
-    if ((_offsetX - value).abs() < 0.000001) {
+  void setTransform({
+    required double offsetX,
+    required double offsetY,
+    required double rotation,
+  }) {
+    if ((_offsetX - offsetX).abs() < 0.000001 &&
+        (_offsetY - offsetY).abs() < 0.000001 &&
+        (_rotation - rotation).abs() < 0.000001) {
       return;
     }
 
-    _offsetX = value;
+    _offsetX = offsetX;
+    _offsetY = offsetY;
+    _rotation = rotation;
     notifyListeners();
   }
 }
@@ -5493,10 +5543,18 @@ class _CobwebShakeTransformState extends State<_CobwebShakeTransform> {
 
   @override
   Widget build(BuildContext context) {
-    return Transform.translate(
-      offset: Offset(widget.signal.offsetX, 0.0),
+    Widget result = Transform.rotate(
+      angle: widget.signal.rotation,
+      alignment: Alignment.center,
       child: widget.child,
     );
+
+    result = Transform.translate(
+      offset: Offset(widget.signal.offsetX, widget.signal.offsetY),
+      child: result,
+    );
+
+    return result;
   }
 }
 
