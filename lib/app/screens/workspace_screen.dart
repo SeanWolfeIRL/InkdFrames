@@ -11811,6 +11811,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     final roleLabel = switch (group.environmentRole) {
       'dust' => 'Dust',
       'cobweb' => 'Cobweb',
+      'curtains' => 'Curtains',
       _ => 'Group',
     };
 
@@ -11926,6 +11927,8 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                       _setLayerGroupEnvironmentRole(group.id, 'dust');
                     } else if (value == 'environment-cobweb') {
                       _setLayerGroupEnvironmentRole(group.id, 'cobweb');
+                    } else if (value == 'environment-curtains') {
+                      _setLayerGroupEnvironmentRole(group.id, 'curtains');
                     } else if (value == 'environment-normal') {
                       _setLayerGroupEnvironmentRole(group.id, null);
                     } else if (value == 'rename') {
@@ -11977,6 +11980,13 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                       child: ListTile(
                         leading: Icon(Icons.blur_on_outlined),
                         title: Text('Mark as Cobweb'),
+                      ),
+                    ),
+                    PopupMenuItem(
+                      value: 'environment-curtains',
+                      child: ListTile(
+                        leading: Icon(Icons.curtains_outlined),
+                        title: Text('Mark as Curtains'),
                       ),
                     ),
                     PopupMenuItem(

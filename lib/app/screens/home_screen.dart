@@ -1692,6 +1692,82 @@ class _HomeScreenState extends State<HomeScreen> {
     return (total: total, cleared: cleared);
   }
 
+  bool get _allCobwebsCleared {
+    var foundCobweb = false;
+    var unclearedCobweb = false;
+
+    void visit(CompositeNode node, String decorationId) {
+      if (!node.visible || unclearedCobweb) {
+        return;
+      }
+
+      final nodeOverride = _roomNodeOverrideFor(decorationId, node.id);
+
+      if (nodeOverride.hidden) {
+        return;
+      }
+
+      if (node.type == 'variant') {
+        if (node.children.isEmpty) {
+          return;
+        }
+
+        final activeIndex = _activeRoomVariantIndex(decorationId, node);
+        visit(node.children[activeIndex], decorationId);
+        return;
+      }
+
+      if (node.type != 'group') {
+        return;
+      }
+
+      final role = node.payload['environmentRole']?.toString();
+
+      if (role == 'cobweb') {
+        for (final child in node.children) {
+          if (!child.visible) {
+            continue;
+          }
+
+          foundCobweb = true;
+
+          final childOverride = _roomNodeOverrideFor(decorationId, child.id);
+
+          if (!childOverride.hidden) {
+            unclearedCobweb = true;
+            return;
+          }
+        }
+
+        return;
+      }
+
+      for (final child in node.children) {
+        visit(child, decorationId);
+
+        if (unclearedCobweb) {
+          return;
+        }
+      }
+    }
+
+    for (final decoration in _decorations) {
+      final composite = _bagItemsById[decoration.bagItemId]?.composite;
+
+      if (composite == null) {
+        continue;
+      }
+
+      visit(composite.root, decoration.id);
+
+      if (unclearedCobweb) {
+        return false;
+      }
+    }
+
+    return foundCobweb;
+  }
+
   double get _roomConditionProgress {
     final condition = _roomConditionCounts();
 
@@ -1705,6 +1781,260 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   int get _roomConditionPercent => (_roomConditionProgress * 100).round();
+
+  CompositeNode? _findCurtainsGroupHit(
+    CompositeNode node,
+    Offset point,
+    Size canvasSize, {
+    required String decorationId,
+  }) {
+    if (!node.visible) {
+      return null;
+    }
+
+    final override = _roomNodeOverrideFor(decorationId, node.id);
+
+    if (override.hidden) {
+      return null;
+    }
+
+    final nodePoint = _inverseRoomNodeOverridePoint(
+      point: point,
+      canvasSize: canvasSize,
+      override: override,
+    );
+
+    if (node.type == 'variant') {
+      if (node.children.isEmpty) {
+        return null;
+      }
+
+      final activeIndex = _activeRoomVariantIndex(decorationId, node);
+
+      return _findCurtainsGroupHit(
+        node.children[activeIndex],
+        nodePoint,
+        canvasSize,
+        decorationId: decorationId,
+      );
+    }
+
+    if (node.type != 'group') {
+      return null;
+    }
+
+    final isCurtains =
+        node.payload['environmentRole']?.toString() == 'curtains';
+
+    if (isCurtains) {
+      for (final child in node.children) {
+        final hit = _findCompositeNodeHit(
+          child,
+          nodePoint,
+          canvasSize,
+          decorationId: decorationId,
+          semanticOwner: node,
+        );
+
+        if (hit != null) {
+          return node;
+        }
+      }
+
+      return null;
+    }
+
+    for (final child in node.children) {
+      final hit = _findCurtainsGroupHit(
+        child,
+        nodePoint,
+        canvasSize,
+        decorationId: decorationId,
+      );
+
+      if (hit != null) {
+        return hit;
+      }
+    }
+
+    return null;
+  }
+
+  CompositeNode? _findVariantNodeInside(CompositeNode node) {
+    if (node.type == 'variant' && node.children.isNotEmpty) {
+      return node;
+    }
+
+    for (final child in node.children) {
+      final variant = _findVariantNodeInside(child);
+
+      if (variant != null) {
+        return variant;
+      }
+    }
+
+    return null;
+  }
+
+  ({CompositeNode variant, int daylightIndex})?
+  _findEnvironmentalDaylightChoice(CompositeNode node) {
+    if (!node.visible) {
+      return null;
+    }
+
+    if (node.type == 'variant' && node.children.isNotEmpty) {
+      final slotName = node.name.toLowerCase();
+
+      final isCurtainSlot = slotName.contains('curtain');
+
+      final looksLikeEnvironmentSlot =
+          slotName.contains('day') ||
+          slotName.contains('night') ||
+          slotName.contains('light');
+
+      if (!isCurtainSlot && looksLikeEnvironmentSlot) {
+        for (var index = 0; index < node.children.length; index++) {
+          final choiceName = node.children[index].name.toLowerCase();
+
+          if (choiceName.contains('day') || choiceName.contains('bright')) {
+            return (variant: node, daylightIndex: index);
+          }
+        }
+      }
+
+      // Search every authored branch here rather than only the active branch.
+      // This helper discovers authored environmental controls; it does not
+      // perform visual hit testing.
+      for (final child in node.children) {
+        final result = _findEnvironmentalDaylightChoice(child);
+
+        if (result != null) {
+          return result;
+        }
+      }
+
+      return null;
+    }
+
+    for (final child in node.children) {
+      final result = _findEnvironmentalDaylightChoice(child);
+
+      if (result != null) {
+        return result;
+      }
+    }
+
+    return null;
+  }
+
+  void _advanceRoomToDaylight({
+    required String decorationId,
+    required CompositeAsset composite,
+  }) {
+    final daylightChoice = _findEnvironmentalDaylightChoice(composite.root);
+
+    if (daylightChoice == null) {
+      return;
+    }
+
+    final currentIndex = _activeRoomVariantIndex(
+      decorationId,
+      daylightChoice.variant,
+    );
+
+    if (currentIndex == daylightChoice.daylightIndex) {
+      return;
+    }
+
+    _setRoomVariantChoiceForDecoration(
+      decorationId,
+      daylightChoice.variant,
+      daylightChoice.daylightIndex,
+    );
+  }
+
+  Future<bool> _interactWithCurtains({
+    required PlacedDecoration decoration,
+    required BagItem bagItem,
+    required Offset localPosition,
+    required Size decorationSize,
+    required Rect visibleBounds,
+    required double sceneScale,
+  }) async {
+    final composite = bagItem.composite;
+
+    if (composite == null || sceneScale <= 0) {
+      return false;
+    }
+
+    final compositePoint = _decorationLocalToCompositePoint(
+      localPosition: localPosition,
+      decorationSize: decorationSize,
+      visibleBounds: visibleBounds,
+      sceneScale: sceneScale,
+      mirrored: decoration.mirrored,
+    );
+
+    final curtainsGroup = _findCurtainsGroupHit(
+      composite.root,
+      compositePoint,
+      Size(composite.canvasWidth, composite.canvasHeight),
+      decorationId: decoration.id,
+    );
+
+    if (curtainsGroup == null) {
+      return false;
+    }
+
+    if (!_allCobwebsCleared) {
+      HapticFeedback.lightImpact();
+      return true;
+    }
+
+    final variant = _findVariantNodeInside(curtainsGroup);
+
+    if (variant == null || variant.children.isEmpty) {
+      return true;
+    }
+
+    var closedIndex = -1;
+
+    for (var index = 0; index < variant.children.length; index++) {
+      final name = variant.children[index].name.trim().toLowerCase();
+
+      if (name.contains('closed')) {
+        closedIndex = index;
+        break;
+      }
+    }
+
+    if (closedIndex < 0 || variant.children.length < 2) {
+      return true;
+    }
+
+    final currentIndex = _activeRoomVariantIndex(decoration.id, variant);
+
+    // Curtains are semantically authored as a state switcher.
+    // For this V1 interaction, opening means leaving the authored
+    // closed state without depending on the artwork filename used
+    // for the alternate state.
+    final openIndex = List<int>.generate(
+      variant.children.length,
+      (index) => index,
+    ).firstWhere((index) => index != closedIndex, orElse: () => closedIndex);
+
+    if (currentIndex == openIndex) {
+      return true;
+    }
+
+    HapticFeedback.mediumImpact();
+
+    _setRoomVariantChoiceForDecoration(decoration.id, variant, openIndex);
+
+    _advanceRoomToDaylight(decorationId: decoration.id, composite: composite);
+
+    return true;
+  }
 
   CompositeNode? _findCobwebGroupHit(
     CompositeNode node,
@@ -2116,6 +2446,17 @@ class _HomeScreenState extends State<HomeScreen> {
       return;
     }
 
+    // RETURNING HOME: Curtains Awaken #1E
+    //
+    // Dust exists as an uncleared room objective before daylight, but it
+    // remains dormant until the authored environmental state becomes day.
+    // Do not use the hidden override here: hidden means actually cleaned.
+    if (_compositeDaylightState(composite.root, decoration.id) != true) {
+      _activeCleaningDecorationId = null;
+      _activeCleaningDustNodeId = null;
+      return;
+    }
+
     final compositePoint = _decorationLocalToCompositePoint(
       localPosition: localPosition,
       decorationSize: decorationSize,
@@ -2378,7 +2719,19 @@ class _HomeScreenState extends State<HomeScreen> {
   void _setRoomVariantChoice(CompositeNode variantNode, int index) {
     final decorationId = _editingRoomDecorationId;
 
-    if (decorationId == null || variantNode.children.isEmpty) {
+    if (decorationId == null) {
+      return;
+    }
+
+    _setRoomVariantChoiceForDecoration(decorationId, variantNode, index);
+  }
+
+  void _setRoomVariantChoiceForDecoration(
+    String decorationId,
+    CompositeNode variantNode,
+    int index,
+  ) {
+    if (variantNode.children.isEmpty) {
       return;
     }
 
@@ -3009,6 +3362,17 @@ class _HomeScreenState extends State<HomeScreen> {
       );
 
       final isDust = node.payload['environmentRole']?.toString() == 'dust';
+
+      // RETURNING HOME: Curtains Awaken #1E
+      //
+      // Night-time dust is unrevealed, not cleared. Keep its persistent
+      // room state untouched and simply omit this authored branch until
+      // the existing environmental Variant reports daylight.
+      if (isDust &&
+          decorationId != null &&
+          _compositeDaylightState(asset.root, decorationId) != true) {
+        return const SizedBox.shrink();
+      }
 
       if (isDust && decorationId != null) {
         final override = _roomNodeOverrideFor(decorationId, node.id);
@@ -4626,7 +4990,103 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
-  Widget _roomHotspot({required String tooltip, required VoidCallback onTap}) {
+  // RETURNING HOME: Curtains Awaken #1B
+  //
+  // Runtime interaction router for authored room content.
+  // Room Manager authors/configures semantic Composite content;
+  // normal Home uses that authored structure without re-enabling
+  // legacy child editing.
+  Future<bool> _handleAuthoredRoomInteraction({
+    required Offset roomPoint,
+    required double roomWidth,
+    required double roomHeight,
+  }) async {
+    if (_decorateMode || _cleanMode) {
+      return false;
+    }
+
+    // Decorations are painted in list order, so test the visual front first.
+    for (final decoration in _decorations.reversed) {
+      final bagItem = _bagItemsById[decoration.bagItemId];
+
+      if (bagItem == null || !bagItem.isComposite) {
+        continue;
+      }
+
+      final composite = bagItem.composite;
+
+      if (composite == null) {
+        continue;
+      }
+
+      // Match the exact Composite geometry used by the Home renderer.
+      final roomScaleX = roomWidth / composite.canvasWidth;
+      final roomScaleY = roomHeight / composite.canvasHeight;
+      final sceneScale = roomScaleX < roomScaleY ? roomScaleX : roomScaleY;
+
+      if (sceneScale <= 0) {
+        continue;
+      }
+
+      final calculatedBounds = _compositeNodePreviewBounds(
+        composite.root,
+        composite,
+        decorationId: decoration.id,
+      );
+
+      final visibleBounds =
+          calculatedBounds != null &&
+              calculatedBounds.width > 0 &&
+              calculatedBounds.height > 0
+          ? calculatedBounds
+          : Rect.fromLTWH(0, 0, composite.canvasWidth, composite.canvasHeight);
+
+      final decorationWidth = visibleBounds.width * sceneScale;
+      final decorationHeight = visibleBounds.height * sceneScale;
+
+      final decorationLeft =
+          (decoration.x * roomWidth) +
+          ((visibleBounds.left - (composite.canvasWidth / 2)) * sceneScale);
+
+      final decorationTop =
+          (decoration.y * roomHeight) +
+          ((visibleBounds.top - (composite.canvasHeight / 2)) * sceneScale);
+
+      final decorationRect = Rect.fromLTWH(
+        decorationLeft,
+        decorationTop,
+        decorationWidth,
+        decorationHeight,
+      );
+
+      if (!decorationRect.contains(roomPoint)) {
+        continue;
+      }
+
+      final handled = await _interactWithCurtains(
+        decoration: decoration,
+        bagItem: bagItem,
+        localPosition: roomPoint - decorationRect.topLeft,
+        decorationSize: decorationRect.size,
+        visibleBounds: visibleBounds,
+        sceneScale: sceneScale,
+      );
+
+      if (handled) {
+        return true;
+      }
+    }
+
+    return false;
+  }
+
+  Widget _roomHotspot({
+    required String tooltip,
+    required VoidCallback onTap,
+    required Offset roomOrigin,
+    required double roomWidth,
+    required double roomHeight,
+  }) {
     return IgnorePointer(
       ignoring: _decorateMode,
       child: Semantics(
@@ -4636,10 +5096,28 @@ class _HomeScreenState extends State<HomeScreen> {
           message: tooltip,
           child: Material(
             color: Colors.transparent,
-            child: InkWell(
-              onTap: onTap,
-              splashColor: Colors.white12,
-              highlightColor: Colors.white10,
+            child: Builder(
+              builder: (hotspotContext) {
+                return InkWell(
+                  onTapUp: (details) async {
+                    final roomPoint = roomOrigin + details.localPosition;
+
+                    final handled = await _handleAuthoredRoomInteraction(
+                      roomPoint: roomPoint,
+                      roomWidth: roomWidth,
+                      roomHeight: roomHeight,
+                    );
+
+                    if (handled) {
+                      return;
+                    }
+
+                    onTap();
+                  },
+                  splashColor: Colors.white12,
+                  highlightColor: Colors.white10,
+                );
+              },
             ),
           ),
         ),
@@ -4810,39 +5288,39 @@ class _HomeScreenState extends State<HomeScreen> {
                               mirrored: decoration.mirrored,
                               child: GestureDetector(
                                 behavior: HitTestBehavior.opaque,
-                                onTapUp: !_decorateMode
-                                    ? null
-                                    : (details) {
-                                        if (_cleanMode) {
-                                          if (bagItem.isComposite &&
-                                              compositeVisibleBounds != null &&
-                                              compositeSceneScale != null) {
-                                            _interactWithCobweb(
-                                              decoration: decoration,
-                                              bagItem: bagItem,
-                                              localPosition:
-                                                  details.localPosition,
-                                              decorationSize: Size(
-                                                decorationWidth,
-                                                decorationHeight,
-                                              ),
-                                              visibleBounds:
-                                                  compositeVisibleBounds,
-                                              sceneScale: compositeSceneScale,
-                                            );
-                                          }
+                                onTapUp: (details) async {
+                                  if (_cleanMode) {
+                                    if (bagItem.isComposite &&
+                                        compositeVisibleBounds != null &&
+                                        compositeSceneScale != null) {
+                                      await _interactWithCobweb(
+                                        decoration: decoration,
+                                        bagItem: bagItem,
+                                        localPosition: details.localPosition,
+                                        decorationSize: Size(
+                                          decorationWidth,
+                                          decorationHeight,
+                                        ),
+                                        visibleBounds: compositeVisibleBounds,
+                                        sceneScale: compositeSceneScale,
+                                      );
+                                    }
 
-                                          return;
-                                        }
+                                    return;
+                                  }
 
-                                        // Rooms Awaken #12:
-                                        // Composites are sealed in Room Manager.
-                                        // A tap selects the complete placed
-                                        // asset rather than an authored child.
-                                        setState(() {
-                                          _selectedDecorationId = decoration.id;
-                                        });
-                                      },
+                                  if (!_decorateMode) {
+                                    return;
+                                  }
+
+                                  // Rooms Awaken #12:
+                                  // Composites are sealed in Room Manager.
+                                  // A tap selects the complete placed
+                                  // asset rather than an authored child.
+                                  setState(() {
+                                    _selectedDecorationId = decoration.id;
+                                  });
+                                },
                                 onPanStart: !_decorateMode
                                     ? null
                                     : (details) {
@@ -5065,6 +5543,9 @@ class _HomeScreenState extends State<HomeScreen> {
                     height: roomHeight * 0.39,
                     child: _roomHotspot(
                       tooltip: 'Project Wall',
+                      roomOrigin: Offset(roomWidth * 0.39, roomHeight * 0.18),
+                      roomWidth: roomWidth,
+                      roomHeight: roomHeight,
                       onTap: () {
                         Navigator.of(context).push(
                           MaterialPageRoute<void>(
@@ -5083,6 +5564,9 @@ class _HomeScreenState extends State<HomeScreen> {
                     height: roomHeight * 0.28,
                     child: _roomHotspot(
                       tooltip: 'Creation Desk',
+                      roomOrigin: Offset(roomWidth * 0.31, roomHeight * 0.63),
+                      roomWidth: roomWidth,
+                      roomHeight: roomHeight,
                       onTap: () async {
                         final action = await showModalBottomSheet<String>(
                           context: context,
@@ -5149,6 +5633,9 @@ class _HomeScreenState extends State<HomeScreen> {
                     height: roomHeight * 0.25,
                     child: _roomHotspot(
                       tooltip: 'The Bag',
+                      roomOrigin: Offset(roomWidth * 0.775, roomHeight * 0.63),
+                      roomWidth: roomWidth,
+                      roomHeight: roomHeight,
                       onTap: () {
                         Navigator.of(context).push(
                           MaterialPageRoute<void>(
@@ -5167,6 +5654,9 @@ class _HomeScreenState extends State<HomeScreen> {
                     height: roomHeight * 0.48,
                     child: _roomHotspot(
                       tooltip: 'Kitchen · Coming Soon',
+                      roomOrigin: Offset(roomWidth * 0.23, roomHeight * 0.12),
+                      roomWidth: roomWidth,
+                      roomHeight: roomHeight,
                       onTap: () {
                         _showComingSoon(context, 'Kitchen');
                       },
@@ -5181,6 +5671,9 @@ class _HomeScreenState extends State<HomeScreen> {
                     height: roomHeight * 0.47,
                     child: _roomHotspot(
                       tooltip: 'Garden · Coming Soon',
+                      roomOrigin: Offset(roomWidth * 0.70, roomHeight * 0.16),
+                      roomWidth: roomWidth,
+                      roomHeight: roomHeight,
                       onTap: () {
                         _showComingSoon(context, 'Garden');
                       },
@@ -5195,6 +5688,9 @@ class _HomeScreenState extends State<HomeScreen> {
                     height: roomHeight * 0.12,
                     child: _roomHotspot(
                       tooltip: 'Options',
+                      roomOrigin: Offset(roomWidth * 0.795, roomHeight * 0.855),
+                      roomWidth: roomWidth,
+                      roomHeight: roomHeight,
                       onTap: () {
                         _showComingSoon(context, 'Options');
                       },
@@ -5209,6 +5705,9 @@ class _HomeScreenState extends State<HomeScreen> {
                     height: roomHeight * 0.42,
                     child: _roomHotspot(
                       tooltip: 'Window',
+                      roomOrigin: Offset(roomWidth * 0.015, roomHeight * 0.18),
+                      roomWidth: roomWidth,
+                      roomHeight: roomHeight,
                       onTap: () {
                         ScaffoldMessenger.of(context).showSnackBar(
                           const SnackBar(
