@@ -24,8 +24,8 @@ import '../painters/animation_canvas_painter.dart';
 import '../painters/bag_item_preview_painter.dart';
 import '../services/bag_service.dart';
 
-class _ImageAlphaMask {
-  const _ImageAlphaMask({
+class HomeImageAlphaMask {
+  const HomeImageAlphaMask({
     required this.width,
     required this.height,
     required this.rgba,
@@ -93,7 +93,7 @@ class _AlphaHitTest extends SingleChildRenderObjectWidget {
     required super.child,
   });
 
-  final _ImageAlphaMask? mask;
+  final HomeImageAlphaMask? mask;
   final bool mirrored;
 
   @override
@@ -113,14 +113,16 @@ class _AlphaHitTest extends SingleChildRenderObjectWidget {
 }
 
 class _RenderAlphaHitTest extends RenderProxyBox {
-  _RenderAlphaHitTest({required _ImageAlphaMask? mask, required bool mirrored})
-    : _mask = mask,
-      _mirrored = mirrored;
+  _RenderAlphaHitTest({
+    required HomeImageAlphaMask? mask,
+    required bool mirrored,
+  }) : _mask = mask,
+       _mirrored = mirrored;
 
-  _ImageAlphaMask? _mask;
+  HomeImageAlphaMask? _mask;
   bool _mirrored;
 
-  set mask(_ImageAlphaMask? value) {
+  set mask(HomeImageAlphaMask? value) {
     _mask = value;
   }
 
@@ -143,8 +145,157 @@ class _RenderAlphaHitTest extends RenderProxyBox {
   }
 }
 
+class HomePreparedScene {
+  const HomePreparedScene._({
+    required this.decorations,
+    required this.itemsById,
+    required this.imageMasks,
+    required this.imagePaths,
+  });
+
+  final List<PlacedDecoration> decorations;
+  final Map<String, BagItem> itemsById;
+  final Map<String, HomeImageAlphaMask> imageMasks;
+  final Set<String> imagePaths;
+}
+
 class HomeScreen extends StatefulWidget {
-  const HomeScreen({super.key});
+  const HomeScreen({super.key, this.preparedScene});
+
+  final HomePreparedScene? preparedScene;
+
+  static Future<HomePreparedScene> prepare() async {
+    final prefs = await SharedPreferences.getInstance();
+    final items = await BagService().loadItems();
+
+    final raw = prefs.getString(_HomeScreenState._decorationsKey);
+    final decorations = <PlacedDecoration>[];
+
+    if (raw != null && raw.isNotEmpty) {
+      try {
+        final decoded = jsonDecode(raw);
+
+        if (decoded is List) {
+          decorations.addAll(
+            decoded.whereType<Map>().map(
+              (entry) => PlacedDecoration.fromJson(
+                entry.map<String, dynamic>(
+                  (key, value) => MapEntry(key.toString(), value),
+                ),
+              ),
+            ),
+          );
+        }
+      } catch (_) {}
+    }
+
+    final itemsById = <String, BagItem>{
+      for (final item in items) item.id: item,
+    };
+
+    final placedItems = <BagItem>[];
+    final placedItemIds = <String>{};
+
+    for (final decoration in decorations) {
+      final item = itemsById[decoration.bagItemId];
+
+      if (item != null && placedItemIds.add(item.id)) {
+        placedItems.add(item);
+      }
+    }
+
+    final imagePaths = <String>{};
+
+    void collectCompositeImagePaths(CompositeNode node) {
+      if (node.type == 'reference') {
+        final mediaType = node.payload['mediaType']?.toString() ?? 'image';
+        final mediaPath = node.payload['mediaPath']?.toString() ?? '';
+
+        if (mediaType == 'image' && mediaPath.isNotEmpty) {
+          imagePaths.add(mediaPath);
+        }
+      }
+
+      for (final child in node.children) {
+        collectCompositeImagePaths(child);
+      }
+    }
+
+    for (final item in placedItems) {
+      if (item.isImage) {
+        final imagePath = item.imagePath;
+
+        if (imagePath != null && imagePath.isNotEmpty) {
+          imagePaths.add(imagePath);
+        }
+      }
+
+      final composite = item.composite;
+
+      if (composite != null) {
+        collectCompositeImagePaths(composite.root);
+      }
+    }
+
+    Future<MapEntry<String, HomeImageAlphaMask>?> loadMask(
+      String imagePath,
+    ) async {
+      try {
+        final file = File(imagePath);
+
+        if (!await file.exists()) {
+          return null;
+        }
+
+        final bytes = await file.readAsBytes();
+        final codec = await ui.instantiateImageCodec(bytes);
+        final frame = await codec.getNextFrame();
+
+        try {
+          final byteData = await frame.image.toByteData(
+            format: ui.ImageByteFormat.rawRgba,
+          );
+
+          if (byteData == null) {
+            return null;
+          }
+
+          return MapEntry(
+            imagePath,
+            HomeImageAlphaMask(
+              width: frame.image.width,
+              height: frame.image.height,
+              rgba: Uint8List.fromList(
+                byteData.buffer.asUint8List(
+                  byteData.offsetInBytes,
+                  byteData.lengthInBytes,
+                ),
+              ),
+            ),
+          );
+        } finally {
+          frame.image.dispose();
+          codec.dispose();
+        }
+      } catch (_) {
+        return null;
+      }
+    }
+
+    final entries = await Future.wait(imagePaths.map(loadMask));
+
+    final imageMasks = <String, HomeImageAlphaMask>{
+      for (final entry in entries)
+        if (entry != null) entry.key: entry.value,
+    };
+
+    return HomePreparedScene._(
+      decorations: decorations,
+      itemsById: itemsById,
+      imageMasks: imageMasks,
+      imagePaths: Set<String>.unmodifiable(imagePaths),
+    );
+  }
 
   @override
   State<HomeScreen> createState() => _HomeScreenState();
@@ -384,8 +535,8 @@ class _HomeScreenState extends State<HomeScreen>
   String? _roomNodePinchDecorationId;
   String? _roomNodePinchNodeId;
 
-  final Map<String, _ImageAlphaMask> _imageAlphaMasks =
-      <String, _ImageAlphaMask>{};
+  final Map<String, HomeImageAlphaMask> _imageAlphaMasks =
+      <String, HomeImageAlphaMask>{};
 
   @override
   void initState() {
@@ -401,7 +552,13 @@ class _HomeScreenState extends State<HomeScreen>
           }
         });
 
-    _loadDecorations();
+    final preparedScene = widget.preparedScene;
+
+    if (preparedScene != null) {
+      _applyPreparedScene(preparedScene);
+    } else {
+      _loadDecorations();
+    }
   }
 
   @override
@@ -605,6 +762,38 @@ class _HomeScreenState extends State<HomeScreen>
     );
   }
 
+  void _applyPreparedScene(HomePreparedScene scene) {
+    final loadedRoomOverrides = <String, Map<String, _RoomNodeOverride>>{};
+
+    for (final decoration in scene.decorations) {
+      if (decoration.roomNodeOverrides.isEmpty) {
+        continue;
+      }
+
+      final nodeOverrides = <String, _RoomNodeOverride>{};
+
+      for (final entry in decoration.roomNodeOverrides.entries) {
+        final override = _roomNodeOverrideFromJson(entry.value);
+
+        if (!override.isIdentity) {
+          nodeOverrides[entry.key] = override;
+        }
+      }
+
+      if (nodeOverrides.isNotEmpty) {
+        loadedRoomOverrides[decoration.id] = nodeOverrides;
+      }
+    }
+
+    _imageAlphaMasks.addAll(scene.imageMasks);
+    _decorations = scene.decorations;
+    _roomNodeOverrides
+      ..clear()
+      ..addAll(loadedRoomOverrides);
+    _bagItemsById = scene.itemsById;
+    _homeSceneReady = true;
+  }
+
   Future<void> _loadDecorations() async {
     final prefs = await SharedPreferences.getInstance();
     final items = await _bagService.loadItems();
@@ -729,7 +918,7 @@ class _HomeScreenState extends State<HomeScreen>
     }
   }
 
-  Future<Map<String, _ImageAlphaMask>> _loadImageAlphaMasks(
+  Future<Map<String, HomeImageAlphaMask>> _loadImageAlphaMasks(
     Iterable<BagItem> items,
   ) async {
     final imagePaths = <String>{};
@@ -750,7 +939,7 @@ class _HomeScreenState extends State<HomeScreen>
       }
     }
 
-    Future<MapEntry<String, _ImageAlphaMask>?> loadMask(
+    Future<MapEntry<String, HomeImageAlphaMask>?> loadMask(
       String imagePath,
     ) async {
       if (_imageAlphaMasks.containsKey(imagePath)) {
@@ -779,7 +968,7 @@ class _HomeScreenState extends State<HomeScreen>
 
           return MapEntry(
             imagePath,
-            _ImageAlphaMask(
+            HomeImageAlphaMask(
               width: frame.image.width,
               height: frame.image.height,
               rgba: Uint8List.fromList(
@@ -802,7 +991,7 @@ class _HomeScreenState extends State<HomeScreen>
 
     final entries = await Future.wait(imagePaths.map(loadMask));
 
-    return <String, _ImageAlphaMask>{
+    return <String, HomeImageAlphaMask>{
       for (final entry in entries)
         if (entry != null) entry.key: entry.value,
     };
@@ -3819,7 +4008,7 @@ class _HomeScreenState extends State<HomeScreen>
     );
   }
 
-  Rect? _alphaMaskVisibleBounds(_ImageAlphaMask mask) {
+  Rect? _alphaMaskVisibleBounds(HomeImageAlphaMask mask) {
     if (mask.width <= 0 || mask.height <= 0 || mask.rgba.isEmpty) {
       return null;
     }

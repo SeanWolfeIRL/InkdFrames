@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 
 import '../services/onboarding_milestone_service.dart';
@@ -21,6 +23,7 @@ class _WelcomeHomeScreenState extends State<WelcomeHomeScreen> {
   bool _welcomeVisible = false;
   bool _tapPromptVisible = false;
   bool _milestoneVisible = false;
+  bool _enteringHome = false;
 
   final ScrollController _exteriorScrollController = ScrollController();
   bool _exteriorInitialPositionApplied = false;
@@ -121,21 +124,85 @@ class _WelcomeHomeScreenState extends State<WelcomeHomeScreen> {
   }
 
   Future<void> _goHome() async {
-    if (_phase != _ArrivalPhase.exploring) {
+    if (_phase != _ArrivalPhase.exploring || _enteringHome) {
       return;
     }
 
-    await OnboardingMilestoneService.complete(
-      OnboardingMilestoneService.enteredHome,
-    );
+    setState(() {
+      _enteringHome = true;
+    });
 
-    if (!mounted) {
-      return;
+    try {
+      final preparedScene = await HomeScreen.prepare();
+
+      if (!mounted) {
+        return;
+      }
+
+      // STARTUP POLISH #5
+      //
+      // Geometry-critical alpha masks are prepared above. Warm the matching
+      // Flutter image providers while the exterior is still on-screen so the
+      // first Home frame has both geometry and render textures ready.
+      for (final imagePath in preparedScene.imagePaths) {
+        if (!mounted) {
+          return;
+        }
+
+        try {
+          final file = File(imagePath);
+
+          if (!await file.exists()) {
+            continue;
+          }
+
+          if (!mounted) {
+            return;
+          }
+
+          await precacheImage(FileImage(file), context);
+        } catch (_) {
+          // A broken optional reference must not block entering Home.
+        }
+      }
+
+      if (!mounted) {
+        return;
+      }
+
+      await OnboardingMilestoneService.complete(
+        OnboardingMilestoneService.enteredHome,
+      );
+
+      if (!mounted) {
+        return;
+      }
+
+      Navigator.of(context).pushReplacement(
+        PageRouteBuilder<void>(
+          transitionDuration: const Duration(milliseconds: 450),
+          reverseTransitionDuration: const Duration(milliseconds: 300),
+          pageBuilder: (context, animation, secondaryAnimation) =>
+              HomeScreen(preparedScene: preparedScene),
+          transitionsBuilder: (context, animation, secondaryAnimation, child) {
+            final curvedAnimation = CurvedAnimation(
+              parent: animation,
+              curve: Curves.easeOutCubic,
+            );
+
+            return FadeTransition(opacity: curvedAnimation, child: child);
+          },
+        ),
+      );
+    } catch (_) {
+      if (!mounted) {
+        return;
+      }
+
+      setState(() {
+        _enteringHome = false;
+      });
     }
-
-    Navigator.of(context).pushReplacement(
-      MaterialPageRoute<void>(builder: (_) => const HomeScreen()),
-    );
   }
 
   Widget _buildExterior({
@@ -404,7 +471,8 @@ class _WelcomeHomeScreenState extends State<WelcomeHomeScreen> {
           // the lightweight arrival milestone state is being resolved.
           // Loading only controls interaction/overlays; it should never
           // produce an intentional blank frame.
-          final doorEnabled = _phase == _ArrivalPhase.exploring;
+          final doorEnabled =
+              _phase == _ArrivalPhase.exploring && !_enteringHome;
 
           return Stack(
             fit: StackFit.expand,
