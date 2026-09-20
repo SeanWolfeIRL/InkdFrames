@@ -2048,6 +2048,23 @@ class _HomeScreenState extends State<HomeScreen>
         condition.strokes >= condition.total * _dustCleaningStrokesRequired;
   }
 
+  bool get _dustConditionRevealed {
+    for (final decoration in _decorations) {
+      final composite = _bagItemsById[decoration.bagItemId]?.composite;
+
+      if (composite == null ||
+          !_compositeNodeHasEnvironmentRole(composite.root, 'dust')) {
+        continue;
+      }
+
+      if (_compositeDaylightState(composite.root, decoration.id) == true) {
+        return true;
+      }
+    }
+
+    return false;
+  }
+
   bool get _allCobwebsCleared {
     var foundCobweb = false;
     var unclearedCobweb = false;
@@ -6535,7 +6552,8 @@ class _HomeScreenState extends State<HomeScreen>
                                       percent: _cobwebConditionPercent,
                                     ),
                                   ],
-                                  if (_dustConditionCounts.total > 0) ...[
+                                  if (_dustConditionCounts.total > 0 &&
+                                      _dustConditionRevealed) ...[
                                     const SizedBox(height: 9),
                                     _buildConditionCategoryRow(
                                       label: 'Dust',
