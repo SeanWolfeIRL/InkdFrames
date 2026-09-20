@@ -226,7 +226,8 @@ class _RoomNodeOverride {
       activeVariantIndex == null;
 }
 
-class _HomeScreenState extends State<HomeScreen> {
+class _HomeScreenState extends State<HomeScreen>
+    with SingleTickerProviderStateMixin {
   static const String _decorationsKey = 'inkdframes_home_decorations_v1';
 
   final BagService _bagService = BagService();
@@ -235,8 +236,25 @@ class _HomeScreenState extends State<HomeScreen> {
 
   Map<String, BagItem> _bagItemsById = <String, BagItem>{};
 
+  // STARTUP POLISH #2
+  //
+  // Home is published only after the persisted scene and the image resources
+  // needed by placed decorations are ready. This prevents Composite geometry
+  // from changing underneath the player as alpha masks arrive.
+  bool _homeSceneReady = false;
+
   bool _decorateMode = false;
   bool _cleanMode = false;
+
+  // DAYLIGHT POLISH #1
+  //
+  // Environmental illumination is driven by one room-level clock rather
+  // than a forest of independent TweenAnimationBuilders.
+  late final AnimationController _daylightController;
+  String? _daylightTransitionDecorationId;
+  CompositeNode? _pendingDaylightVariant;
+  int? _pendingDaylightSourceIndex;
+  int? _pendingDaylightIndex;
 
   String? _selectedDecorationId;
 
@@ -372,11 +390,23 @@ class _HomeScreenState extends State<HomeScreen> {
   @override
   void initState() {
     super.initState();
+
+    _daylightController =
+        AnimationController(
+          vsync: this,
+          duration: const Duration(milliseconds: 1600),
+        )..addListener(() {
+          if (mounted) {
+            setState(() {});
+          }
+        });
+
     _loadDecorations();
   }
 
   @override
   void dispose() {
+    _daylightController.dispose();
     _homeScrollController.dispose();
 
     for (final signal in _dustCleaningSignals.values) {
@@ -625,18 +655,42 @@ class _HomeScreenState extends State<HomeScreen> {
       }
     }
 
+    final itemsById = <String, BagItem>{
+      for (final item in items) item.id: item,
+    };
+
+    final placedItems = <BagItem>[];
+    final placedItemIds = <String>{};
+
+    for (final decoration in decorations) {
+      final item = itemsById[decoration.bagItemId];
+
+      if (item != null && placedItemIds.add(item.id)) {
+        placedItems.add(item);
+      }
+    }
+
+    // Resolve geometry and warm visible image resources before exposing the
+    // furnished room. One publication means one stable first composition.
+    final primedMasks = await _loadImageAlphaMasks(placedItems);
+
+    if (!mounted) return;
+
     setState(() {
+      _imageAlphaMasks.addAll(primedMasks);
+
       _decorations = decorations;
       _roomNodeOverrides
         ..clear()
         ..addAll(loadedRoomOverrides);
 
-      _bagItemsById = <String, BagItem>{
-        for (final item in items) item.id: item,
-      };
+      _bagItemsById = itemsById;
+      _homeSceneReady = true;
     });
 
-    await _primeImageAlphaMasks(items);
+    // Warm Flutter's ImageCache after the geometry-critical masks exist.
+    // This is best-effort and must never block the room becoming usable.
+    _precacheHomeImages(placedItems);
   }
 
   Future<void> _saveDecorations() async {
@@ -675,8 +729,86 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
-  Future<void> _primeImageAlphaMasks(Iterable<BagItem> items) async {
-    final loaded = <String, _ImageAlphaMask>{};
+  Future<Map<String, _ImageAlphaMask>> _loadImageAlphaMasks(
+    Iterable<BagItem> items,
+  ) async {
+    final imagePaths = <String>{};
+
+    for (final item in items) {
+      if (item.isImage) {
+        final imagePath = item.imagePath;
+
+        if (imagePath != null && imagePath.isNotEmpty) {
+          imagePaths.add(imagePath);
+        }
+      }
+
+      final composite = item.composite;
+
+      if (composite != null) {
+        _collectCompositeImagePaths(composite.root, imagePaths);
+      }
+    }
+
+    Future<MapEntry<String, _ImageAlphaMask>?> loadMask(
+      String imagePath,
+    ) async {
+      if (_imageAlphaMasks.containsKey(imagePath)) {
+        return null;
+      }
+
+      try {
+        final file = File(imagePath);
+
+        if (!await file.exists()) {
+          return null;
+        }
+
+        final bytes = await file.readAsBytes();
+        final codec = await ui.instantiateImageCodec(bytes);
+        final frame = await codec.getNextFrame();
+
+        try {
+          final byteData = await frame.image.toByteData(
+            format: ui.ImageByteFormat.rawRgba,
+          );
+
+          if (byteData == null) {
+            return null;
+          }
+
+          return MapEntry(
+            imagePath,
+            _ImageAlphaMask(
+              width: frame.image.width,
+              height: frame.image.height,
+              rgba: Uint8List.fromList(
+                byteData.buffer.asUint8List(
+                  byteData.offsetInBytes,
+                  byteData.lengthInBytes,
+                ),
+              ),
+            ),
+          );
+        } finally {
+          frame.image.dispose();
+          codec.dispose();
+        }
+      } catch (_) {
+        // A broken optional reference must not prevent Home from opening.
+        return null;
+      }
+    }
+
+    final entries = await Future.wait(imagePaths.map(loadMask));
+
+    return <String, _ImageAlphaMask>{
+      for (final entry in entries)
+        if (entry != null) entry.key: entry.value,
+    };
+  }
+
+  Future<void> _precacheHomeImages(Iterable<BagItem> items) async {
     final imagePaths = <String>{};
 
     for (final item in items) {
@@ -696,9 +828,8 @@ class _HomeScreenState extends State<HomeScreen> {
     }
 
     for (final imagePath in imagePaths) {
-      if (_imageAlphaMasks.containsKey(imagePath) ||
-          loaded.containsKey(imagePath)) {
-        continue;
+      if (!mounted) {
+        return;
       }
 
       try {
@@ -708,42 +839,15 @@ class _HomeScreenState extends State<HomeScreen> {
           continue;
         }
 
-        final bytes = await file.readAsBytes();
-        final codec = await ui.instantiateImageCodec(bytes);
-        final frame = await codec.getNextFrame();
-
-        final byteData = await frame.image.toByteData(
-          format: ui.ImageByteFormat.rawRgba,
-        );
-
-        if (byteData != null) {
-          loaded[imagePath] = _ImageAlphaMask(
-            width: frame.image.width,
-            height: frame.image.height,
-            rgba: Uint8List.fromList(
-              byteData.buffer.asUint8List(
-                byteData.offsetInBytes,
-                byteData.lengthInBytes,
-              ),
-            ),
-          );
+        if (!mounted) {
+          return;
         }
 
-        frame.image.dispose();
-        codec.dispose();
+        await precacheImage(FileImage(file), context);
       } catch (_) {
-        // If an image cannot be decoded, leave it unmasked rather than
-        // breaking Home/Decorate rendering.
+        // Rendering already has its normal error fallback.
       }
     }
-
-    if (!mounted || loaded.isEmpty) {
-      return;
-    }
-
-    setState(() {
-      _imageAlphaMasks.addAll(loaded);
-    });
   }
 
   List<VectorStroke> _bagItemStrokes(BagItem item) {
@@ -1768,6 +1872,52 @@ class _HomeScreenState extends State<HomeScreen> {
     return foundCobweb;
   }
 
+  bool _homeHasAuthoredRole(String role) {
+    bool containsRole(CompositeNode node, String decorationId) {
+      if (!node.visible) {
+        return false;
+      }
+
+      final override = _roomNodeOverrideFor(decorationId, node.id);
+
+      if (override.hidden) {
+        return false;
+      }
+
+      if (node.payload['environmentRole']?.toString() == role) {
+        return true;
+      }
+
+      if (node.type == 'variant') {
+        if (node.children.isEmpty) {
+          return false;
+        }
+
+        final activeIndex = _activeRoomVariantIndex(decorationId, node);
+
+        return containsRole(node.children[activeIndex], decorationId);
+      }
+
+      for (final child in node.children) {
+        if (containsRole(child, decorationId)) {
+          return true;
+        }
+      }
+
+      return false;
+    }
+
+    for (final decoration in _decorations) {
+      final composite = _bagItemsById[decoration.bagItemId]?.composite;
+
+      if (composite != null && containsRole(composite.root, decoration.id)) {
+        return true;
+      }
+    }
+
+    return false;
+  }
+
   double get _roomConditionProgress {
     final condition = _roomConditionCounts();
 
@@ -1781,6 +1931,86 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   int get _roomConditionPercent => (_roomConditionProgress * 100).round();
+
+  CompositeNode? _findAuthoredRoleHit(
+    CompositeNode node,
+    Offset point,
+    Size canvasSize, {
+    required String decorationId,
+    required Set<String> roles,
+  }) {
+    if (!node.visible) {
+      return null;
+    }
+
+    final override = _roomNodeOverrideFor(decorationId, node.id);
+
+    if (override.hidden) {
+      return null;
+    }
+
+    final nodePoint = _inverseRoomNodeOverridePoint(
+      point: point,
+      canvasSize: canvasSize,
+      override: override,
+    );
+
+    if (node.type == 'variant') {
+      if (node.children.isEmpty) {
+        return null;
+      }
+
+      final activeIndex = _activeRoomVariantIndex(decorationId, node);
+
+      return _findAuthoredRoleHit(
+        node.children[activeIndex],
+        nodePoint,
+        canvasSize,
+        decorationId: decorationId,
+        roles: roles,
+      );
+    }
+
+    if (node.type != 'group') {
+      return null;
+    }
+
+    final role = node.payload['environmentRole']?.toString();
+
+    if (role != null && roles.contains(role)) {
+      for (final child in node.children) {
+        final hit = _findCompositeNodeHit(
+          child,
+          nodePoint,
+          canvasSize,
+          decorationId: decorationId,
+          semanticOwner: node,
+        );
+
+        if (hit != null) {
+          return node;
+        }
+      }
+
+      return null;
+    }
+
+    for (final child in node.children) {
+      final hit = _findAuthoredRoleHit(
+        child,
+        nodePoint,
+        canvasSize,
+        decorationId: decorationId,
+        roles: roles,
+      );
+
+      if (hit != null) {
+        return hit;
+      }
+    }
+
+    return null;
+  }
 
   CompositeNode? _findCurtainsGroupHit(
     CompositeNode node,
@@ -1946,11 +2176,44 @@ class _HomeScreenState extends State<HomeScreen> {
       return;
     }
 
-    _setRoomVariantChoiceForDecoration(
-      decorationId,
-      daylightChoice.variant,
-      daylightChoice.daylightIndex,
-    );
+    if (_daylightController.isAnimating) {
+      return;
+    }
+
+    _daylightTransitionDecorationId = decorationId;
+    _pendingDaylightVariant = daylightChoice.variant;
+    _pendingDaylightSourceIndex = currentIndex;
+    _pendingDaylightIndex = daylightChoice.daylightIndex;
+
+    _daylightController.forward(from: 0.0).whenComplete(() {
+      if (!mounted ||
+          _daylightTransitionDecorationId != decorationId ||
+          _pendingDaylightVariant == null ||
+          _pendingDaylightSourceIndex == null ||
+          _pendingDaylightIndex == null) {
+        return;
+      }
+
+      final variant = _pendingDaylightVariant!;
+      final daylightIndex = _pendingDaylightIndex!;
+
+      // Commit the authored environmental state only after the visual
+      // illumination has completed. This prevents the day branch and dust
+      // from popping into existence at the beginning of the transition.
+      _setRoomVariantChoiceForDecoration(decorationId, variant, daylightIndex);
+
+      if (!mounted) {
+        return;
+      }
+
+      setState(() {
+        _daylightTransitionDecorationId = null;
+        _pendingDaylightVariant = null;
+        _pendingDaylightSourceIndex = null;
+        _pendingDaylightIndex = null;
+        _daylightController.value = 0.0;
+      });
+    });
   }
 
   Future<bool> _interactWithCurtains({
@@ -3315,26 +3578,21 @@ class _HomeScreenState extends State<HomeScreen> {
 
     final daylight = _compositeDaylightState(asset.root, decorationId);
 
-    // Match Workspace:
-    //
-    // Daylight visually raises authored group brightness to full.
-    // Night/no daylight falls back to the authored value.
-    //
-    // The Composite payload itself is never modified.
-    final targetBrightness = daylight == true ? 1.0 : authoredBrightness;
+    double targetBrightness;
 
-    return TweenAnimationBuilder<double>(
-      tween: Tween<double>(end: targetBrightness),
-      duration: const Duration(milliseconds: 900),
-      curve: Curves.easeInOutCubic,
-      child: child,
-      builder: (context, value, brightnessChild) {
-        return _applyCompositeBrightness(
-          brightnessChild ?? const SizedBox.shrink(),
-          value,
-        );
-      },
-    );
+    if (decorationId != null &&
+        decorationId == _daylightTransitionDecorationId) {
+      final progress = Curves.easeInOutCubic.transform(
+        _daylightController.value.clamp(0.0, 1.0),
+      );
+
+      targetBrightness =
+          authoredBrightness + ((1.0 - authoredBrightness) * progress);
+    } else {
+      targetBrightness = daylight == true ? 1.0 : authoredBrightness;
+    }
+
+    return _applyCompositeBrightness(child, targetBrightness);
   }
 
   Widget _buildCompositeNode(
@@ -3407,6 +3665,52 @@ class _HomeScreenState extends State<HomeScreen> {
       }
 
       final activeIndex = _activeRoomVariantIndex(decorationId, node);
+
+      final isDaylightCrossfade =
+          decorationId != null &&
+          decorationId == _daylightTransitionDecorationId &&
+          identical(node, _pendingDaylightVariant) &&
+          _pendingDaylightSourceIndex != null &&
+          _pendingDaylightIndex != null;
+
+      if (isDaylightCrossfade) {
+        final sourceIndex = _pendingDaylightSourceIndex!.clamp(
+          0,
+          node.children.length - 1,
+        );
+        final targetIndex = _pendingDaylightIndex!.clamp(
+          0,
+          node.children.length - 1,
+        );
+
+        final progress = Curves.easeInOutCubic.transform(
+          _daylightController.value.clamp(0.0, 1.0),
+        );
+
+        final sourceChild = _buildCompositeNode(
+          node.children[sourceIndex],
+          asset: asset,
+          decorationId: decorationId,
+        );
+
+        final targetChild = _buildCompositeNode(
+          node.children[targetIndex],
+          asset: asset,
+          decorationId: decorationId,
+        );
+
+        return _applyRoomNodeOverride(
+          node: node,
+          decorationId: decorationId,
+          child: Stack(
+            fit: StackFit.expand,
+            children: [
+              Opacity(opacity: 1.0 - progress, child: sourceChild),
+              Opacity(opacity: progress, child: targetChild),
+            ],
+          ),
+        );
+      }
 
       return _applyRoomNodeOverride(
         node: node,
@@ -3956,9 +4260,17 @@ class _HomeScreenState extends State<HomeScreen> {
     final prefs = await SharedPreferences.getInstance();
     final items = await _bagService.loadItems();
 
-    await _primeImageAlphaMasks(items);
+    final primedMasks = await _loadImageAlphaMasks(items);
 
     if (!mounted) return;
+
+    if (primedMasks.isNotEmpty) {
+      setState(() {
+        _imageAlphaMasks.addAll(primedMasks);
+      });
+    }
+
+    _precacheHomeImages(items);
 
     // --------------------------------------------------------
     // Read the exact same Pocket data used by BagScreen.
@@ -5063,10 +5375,58 @@ class _HomeScreenState extends State<HomeScreen> {
         continue;
       }
 
+      final localPosition = roomPoint - decorationRect.topLeft;
+
+      final compositePoint = _decorationLocalToCompositePoint(
+        localPosition: localPosition,
+        decorationSize: decorationRect.size,
+        visibleBounds: visibleBounds,
+        sceneScale: sceneScale,
+        mirrored: decoration.mirrored,
+      );
+
+      final authoredNavigationHit = _findAuthoredRoleHit(
+        composite.root,
+        compositePoint,
+        Size(composite.canvasWidth, composite.canvasHeight),
+        decorationId: decoration.id,
+        roles: const {'bag', 'projectWall', 'sketchbook'},
+      );
+
+      if (authoredNavigationHit != null) {
+        final role = authoredNavigationHit.payload['environmentRole']
+            ?.toString();
+
+        if (role == 'bag') {
+          Navigator.of(
+            context,
+          ).push(MaterialPageRoute<void>(builder: (_) => const BagScreen()));
+          return true;
+        }
+
+        if (role == 'projectWall') {
+          Navigator.of(context).push(
+            MaterialPageRoute<void>(
+              builder: (_) => const ProjectLibraryScreen(),
+            ),
+          );
+          return true;
+        }
+
+        if (role == 'sketchbook') {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('The sketchbook is waiting for its first page.'),
+            ),
+          );
+          return true;
+        }
+      }
+
       final handled = await _interactWithCurtains(
         decoration: decoration,
         bagItem: bagItem,
-        localPosition: roomPoint - decorationRect.topLeft,
+        localPosition: localPosition,
         decorationSize: decorationRect.size,
         visibleBounds: visibleBounds,
         sceneScale: sceneScale,
@@ -5131,6 +5491,10 @@ class _HomeScreenState extends State<HomeScreen> {
       backgroundColor: Colors.black,
       body: LayoutBuilder(
         builder: (context, constraints) {
+          if (!_homeSceneReady) {
+            return const SizedBox.expand();
+          }
+
           final isPortrait = constraints.maxHeight > constraints.maxWidth;
 
           final roomHeight = constraints.maxHeight;
@@ -5148,14 +5512,6 @@ class _HomeScreenState extends State<HomeScreen> {
               child: Stack(
                 fit: StackFit.expand,
                 children: [
-                  Positioned.fill(
-                    child: Image.asset(
-                      'assets/images/inkdframes_home_room_v1.png',
-                      fit: BoxFit.cover,
-                      alignment: Alignment.center,
-                    ),
-                  ),
-
                   for (final decoration in _decorations)
                     if (_bagItemsById[decoration.bagItemId] != null)
                       Builder(
@@ -5507,6 +5863,26 @@ class _HomeScreenState extends State<HomeScreen> {
                         },
                       ),
 
+                  // HOME POLISH #1
+                  //
+                  // Authored Composite content owns its own interaction
+                  // geometry. The full room forwards taps into the semantic
+                  // hit router; alpha-aware Composite hit testing decides
+                  // whether anything meaningful was actually touched.
+                  if (!_decorateMode)
+                    Positioned.fill(
+                      child: GestureDetector(
+                        behavior: HitTestBehavior.translucent,
+                        onTapUp: (details) async {
+                          await _handleAuthoredRoomInteraction(
+                            roomPoint: details.localPosition,
+                            roomWidth: roomWidth,
+                            roomHeight: roomHeight,
+                          );
+                        },
+                      ),
+                    ),
+
                   // DEVELOPMENT: RETURN TO HOME EXTERIOR
                   Positioned(
                     right: roomWidth * 0.025,
@@ -5535,26 +5911,31 @@ class _HomeScreenState extends State<HomeScreen> {
                     ),
                   ),
 
-                  // PROJECT WALL
-                  Positioned(
-                    left: roomWidth * 0.39,
-                    top: roomHeight * 0.18,
-                    width: roomWidth * 0.31,
-                    height: roomHeight * 0.39,
-                    child: _roomHotspot(
-                      tooltip: 'Project Wall',
-                      roomOrigin: Offset(roomWidth * 0.39, roomHeight * 0.18),
-                      roomWidth: roomWidth,
-                      roomHeight: roomHeight,
-                      onTap: () {
-                        Navigator.of(context).push(
-                          MaterialPageRoute<void>(
-                            builder: (_) => const ProjectLibraryScreen(),
-                          ),
-                        );
-                      },
+                  // HOME POLISH #1B
+                  //
+                  // Migration fallback: once a Project Wall role exists in
+                  // authored room content, the artwork itself owns the tap
+                  // and this legacy rectangle disappears automatically.
+                  if (!_homeHasAuthoredRole('projectWall'))
+                    Positioned(
+                      left: roomWidth * 0.39,
+                      top: roomHeight * 0.18,
+                      width: roomWidth * 0.31,
+                      height: roomHeight * 0.39,
+                      child: _roomHotspot(
+                        tooltip: 'Project Wall',
+                        roomOrigin: Offset(roomWidth * 0.39, roomHeight * 0.18),
+                        roomWidth: roomWidth,
+                        roomHeight: roomHeight,
+                        onTap: () {
+                          Navigator.of(context).push(
+                            MaterialPageRoute<void>(
+                              builder: (_) => const ProjectLibraryScreen(),
+                            ),
+                          );
+                        },
+                      ),
                     ),
-                  ),
 
                   // CREATION DESK
                   Positioned(
@@ -5625,26 +6006,34 @@ class _HomeScreenState extends State<HomeScreen> {
                     ),
                   ),
 
-                  // BAG
-                  Positioned(
-                    left: roomWidth * 0.775,
-                    top: roomHeight * 0.63,
-                    width: roomWidth * 0.18,
-                    height: roomHeight * 0.25,
-                    child: _roomHotspot(
-                      tooltip: 'The Bag',
-                      roomOrigin: Offset(roomWidth * 0.775, roomHeight * 0.63),
-                      roomWidth: roomWidth,
-                      roomHeight: roomHeight,
-                      onTap: () {
-                        Navigator.of(context).push(
-                          MaterialPageRoute<void>(
-                            builder: (_) => const BagScreen(),
-                          ),
-                        );
-                      },
+                  // HOME POLISH #1B
+                  //
+                  // Migration fallback: once a Bag role exists in authored
+                  // room content, the visible Bag becomes the interaction
+                  // target and this rectangle disappears automatically.
+                  if (!_homeHasAuthoredRole('bag'))
+                    Positioned(
+                      left: roomWidth * 0.775,
+                      top: roomHeight * 0.63,
+                      width: roomWidth * 0.18,
+                      height: roomHeight * 0.25,
+                      child: _roomHotspot(
+                        tooltip: 'The Bag',
+                        roomOrigin: Offset(
+                          roomWidth * 0.775,
+                          roomHeight * 0.63,
+                        ),
+                        roomWidth: roomWidth,
+                        roomHeight: roomHeight,
+                        onTap: () {
+                          Navigator.of(context).push(
+                            MaterialPageRoute<void>(
+                              builder: (_) => const BagScreen(),
+                            ),
+                          );
+                        },
+                      ),
                     ),
-                  ),
 
                   // KITCHEN
                   Positioned(

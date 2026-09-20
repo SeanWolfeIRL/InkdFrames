@@ -11812,6 +11812,9 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
       'dust' => 'Dust',
       'cobweb' => 'Cobweb',
       'curtains' => 'Curtains',
+      'bag' => 'Bag',
+      'projectWall' => 'Project Wall',
+      'sketchbook' => 'Sketchbook',
       _ => 'Group',
     };
 
@@ -11929,6 +11932,12 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                       _setLayerGroupEnvironmentRole(group.id, 'cobweb');
                     } else if (value == 'environment-curtains') {
                       _setLayerGroupEnvironmentRole(group.id, 'curtains');
+                    } else if (value == 'environment-bag') {
+                      _setLayerGroupEnvironmentRole(group.id, 'bag');
+                    } else if (value == 'environment-project-wall') {
+                      _setLayerGroupEnvironmentRole(group.id, 'projectWall');
+                    } else if (value == 'environment-sketchbook') {
+                      _setLayerGroupEnvironmentRole(group.id, 'sketchbook');
                     } else if (value == 'environment-normal') {
                       _setLayerGroupEnvironmentRole(group.id, null);
                     } else if (value == 'rename') {
@@ -11987,6 +11996,28 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                       child: ListTile(
                         leading: Icon(Icons.curtains_outlined),
                         title: Text('Mark as Curtains'),
+                      ),
+                    ),
+                    PopupMenuDivider(),
+                    PopupMenuItem(
+                      value: 'environment-bag',
+                      child: ListTile(
+                        leading: Icon(Icons.backpack_outlined),
+                        title: Text('Mark as Bag'),
+                      ),
+                    ),
+                    PopupMenuItem(
+                      value: 'environment-project-wall',
+                      child: ListTile(
+                        leading: Icon(Icons.photo_library_outlined),
+                        title: Text('Mark as Project Wall'),
+                      ),
+                    ),
+                    PopupMenuItem(
+                      value: 'environment-sketchbook',
+                      child: ListTile(
+                        leading: Icon(Icons.menu_book_outlined),
+                        title: Text('Mark as Sketchbook'),
                       ),
                     ),
                     PopupMenuItem(

@@ -398,10 +398,12 @@ class _WelcomeHomeScreenState extends State<WelcomeHomeScreen> {
       backgroundColor: Colors.black,
       body: LayoutBuilder(
         builder: (context, constraints) {
-          if (_phase == _ArrivalPhase.loading) {
-            return const SizedBox.expand();
-          }
-
+          // STARTUP POLISH #1
+          //
+          // The exterior is our first visual scene, so keep it mounted while
+          // the lightweight arrival milestone state is being resolved.
+          // Loading only controls interaction/overlays; it should never
+          // produce an intentional blank frame.
           final doorEnabled = _phase == _ArrivalPhase.exploring;
 
           return Stack(
