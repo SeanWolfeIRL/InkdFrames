@@ -1904,37 +1904,36 @@ class _HomeScreenState extends State<HomeScreen>
   //   the environmental dust group itself = one objective.
   //
   // Nothing is stored specifically for the meter.
-  ({int total, int cleared}) _roomConditionCounts() {
+  // ROOM CONDITION V0.3
+  //
+  // Each authored environmental role owns its own progress category.
+  // The overall Room Condition averages categories, not individual objects.
+  ({int total, int cleared}) get _cobwebConditionCounts {
     var total = 0;
     var cleared = 0;
 
     void visit(CompositeNode node, String decorationId) {
-      if (!node.visible) {
-        return;
-      }
+      if (!node.visible) return;
+
+      final nodeOverride = _roomNodeOverrideFor(decorationId, node.id);
+
+      if (nodeOverride.hidden) return;
 
       if (node.type == 'variant') {
-        if (node.children.isEmpty) {
-          return;
-        }
+        if (node.children.isEmpty) return;
 
         final activeIndex = _activeRoomVariantIndex(decorationId, node);
-
         visit(node.children[activeIndex], decorationId);
         return;
       }
 
-      if (node.type != 'group') {
-        return;
-      }
+      if (node.type != 'group') return;
 
       final role = node.payload['environmentRole']?.toString();
 
       if (role == 'cobweb') {
         for (final child in node.children) {
-          if (!child.visible) {
-            continue;
-          }
+          if (!child.visible) continue;
 
           total++;
 
@@ -1948,13 +1947,53 @@ class _HomeScreenState extends State<HomeScreen>
         return;
       }
 
+      for (final child in node.children) {
+        visit(child, decorationId);
+      }
+    }
+
+    for (final decoration in _decorations) {
+      final composite = _bagItemsById[decoration.bagItemId]?.composite;
+
+      if (composite != null) {
+        visit(composite.root, decoration.id);
+      }
+    }
+
+    return (total: total, cleared: cleared);
+  }
+
+  ({int total, int strokes}) get _dustConditionCounts {
+    var total = 0;
+    var strokes = 0;
+
+    void visit(CompositeNode node, String decorationId) {
+      if (!node.visible) return;
+
+      if (node.type == 'variant') {
+        if (node.children.isEmpty) return;
+
+        final activeIndex = _activeRoomVariantIndex(decorationId, node);
+        visit(node.children[activeIndex], decorationId);
+        return;
+      }
+
+      if (node.type != 'group') return;
+
+      final role = node.payload['environmentRole']?.toString();
+
       if (role == 'dust') {
         total++;
 
         final dustOverride = _roomNodeOverrideFor(decorationId, node.id);
 
         if (dustOverride.hidden) {
-          cleared++;
+          strokes += _dustCleaningStrokesRequired;
+        } else {
+          strokes += dustOverride.interactionCount.clamp(
+            0,
+            _dustCleaningStrokesRequired,
+          );
         }
 
         return;
@@ -1962,9 +2001,7 @@ class _HomeScreenState extends State<HomeScreen>
 
       final nodeOverride = _roomNodeOverrideFor(decorationId, node.id);
 
-      if (nodeOverride.hidden) {
-        return;
-      }
+      if (nodeOverride.hidden) return;
 
       for (final child in node.children) {
         visit(child, decorationId);
@@ -1972,17 +2009,43 @@ class _HomeScreenState extends State<HomeScreen>
     }
 
     for (final decoration in _decorations) {
-      final item = _bagItemsById[decoration.bagItemId];
-      final composite = item?.composite;
+      final composite = _bagItemsById[decoration.bagItemId]?.composite;
 
-      if (composite == null) {
-        continue;
+      if (composite != null) {
+        visit(composite.root, decoration.id);
       }
-
-      visit(composite.root, decoration.id);
     }
 
-    return (total: total, cleared: cleared);
+    return (total: total, strokes: strokes);
+  }
+
+  double get _cobwebConditionProgress {
+    final condition = _cobwebConditionCounts;
+
+    if (condition.total == 0) return 0.0;
+
+    return (condition.cleared / condition.total).clamp(0.0, 1.0);
+  }
+
+  double get _dustConditionProgress {
+    final condition = _dustConditionCounts;
+
+    if (condition.total == 0) return 0.0;
+
+    final required = condition.total * _dustCleaningStrokesRequired;
+
+    return (condition.strokes / required).clamp(0.0, 1.0);
+  }
+
+  int get _cobwebConditionPercent => (_cobwebConditionProgress * 100).round();
+
+  int get _dustConditionPercent => (_dustConditionProgress * 100).round();
+
+  bool get _allDustCleared {
+    final condition = _dustConditionCounts;
+
+    return condition.total > 0 &&
+        condition.strokes >= condition.total * _dustCleaningStrokesRequired;
   }
 
   bool get _allCobwebsCleared {
@@ -2108,15 +2171,26 @@ class _HomeScreenState extends State<HomeScreen>
   }
 
   double get _roomConditionProgress {
-    final condition = _roomConditionCounts();
+    final categories = <double>[];
 
-    // A room without authored environmental objectives is not implicitly
-    // considered restored.
-    if (condition.total == 0) {
+    if (_cobwebConditionCounts.total > 0) {
+      categories.add(_cobwebConditionProgress);
+    }
+
+    if (_dustConditionCounts.total > 0) {
+      categories.add(_dustConditionProgress);
+    }
+
+    if (categories.isEmpty) {
       return 0.0;
     }
 
-    return (condition.cleared / condition.total).clamp(0.0, 1.0);
+    final total = categories.fold<double>(
+      0.0,
+      (sum, progress) => sum + progress,
+    );
+
+    return (total / categories.length).clamp(0.0, 1.0);
   }
 
   int get _roomConditionPercent => (_roomConditionProgress * 100).round();
@@ -5587,6 +5661,21 @@ class _HomeScreenState extends State<HomeScreen>
             ?.toString();
 
         if (role == 'bag') {
+          if (!mounted) {
+            return true;
+          }
+
+          if (_dustConditionCounts.total > 0 && !_allDustCleared) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(
+                content: Text(
+                  "It's too dusty in here. I should clean up first.",
+                ),
+              ),
+            );
+            return true;
+          }
+
           Navigator.of(
             context,
           ).push(MaterialPageRoute<void>(builder: (_) => const BagScreen()));
@@ -5671,6 +5760,54 @@ class _HomeScreenState extends State<HomeScreen>
           ),
         ),
       ),
+    );
+  }
+
+  Widget _buildConditionCategoryRow({
+    required String label,
+    required double progress,
+    required int percent,
+  }) {
+    final complete = progress >= 1.0;
+
+    return Row(
+      children: [
+        SizedBox(
+          width: 76,
+          child: Text(
+            label,
+            style: const TextStyle(
+              color: Colors.white70,
+              fontSize: 11,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+        ),
+        Expanded(
+          child: ClipRRect(
+            borderRadius: BorderRadius.circular(999),
+            child: LinearProgressIndicator(
+              value: progress,
+              minHeight: 6,
+              backgroundColor: Colors.white12,
+              color: Colors.lightGreenAccent,
+            ),
+          ),
+        ),
+        const SizedBox(width: 10),
+        SizedBox(
+          width: 42,
+          child: Text(
+            complete ? '✓' : '$percent%',
+            textAlign: TextAlign.right,
+            style: TextStyle(
+              color: complete ? Colors.lightGreenAccent : Colors.white70,
+              fontSize: 11,
+              fontWeight: FontWeight.w700,
+            ),
+          ),
+        ),
+      ],
     );
   }
 
@@ -6390,6 +6527,22 @@ class _HomeScreenState extends State<HomeScreen>
                                       color: Colors.lightGreenAccent,
                                     ),
                                   ),
+                                  if (_cobwebConditionCounts.total > 0) ...[
+                                    const SizedBox(height: 12),
+                                    _buildConditionCategoryRow(
+                                      label: 'Cobwebs',
+                                      progress: _cobwebConditionProgress,
+                                      percent: _cobwebConditionPercent,
+                                    ),
+                                  ],
+                                  if (_dustConditionCounts.total > 0) ...[
+                                    const SizedBox(height: 9),
+                                    _buildConditionCategoryRow(
+                                      label: 'Dust',
+                                      progress: _dustConditionProgress,
+                                      percent: _dustConditionPercent,
+                                    ),
+                                  ],
                                 ],
                               ),
                             ),
