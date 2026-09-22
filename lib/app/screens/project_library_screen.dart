@@ -6,6 +6,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../models/inkdframes_project.dart';
 import '../models/vector_stroke.dart';
 import '../painters/frame_thumbnail_painter.dart';
+import '../services/project_storage_service.dart';
 import 'workspace_screen.dart';
 
 class ProjectLibraryScreen extends StatefulWidget {
@@ -29,12 +30,13 @@ class _ProjectLibraryScreenState extends State<ProjectLibraryScreen> {
     final projectIds = prefs.getStringList('project_ids') ?? [];
     final projects = <InkdFramesProject>[];
 
-    for (final id in projectIds) {
-      final jsonString = prefs.getString('project_$id');
+    final storage = ProjectStorageService();
 
-      if (jsonString != null) {
-        final json = jsonDecode(jsonString) as Map<String, dynamic>;
-        projects.add(InkdFramesProject.fromJson(json));
+    for (final id in projectIds) {
+      final project = await storage.loadProject(id);
+
+      if (project != null) {
+        projects.add(project);
       }
     }
 
@@ -178,10 +180,9 @@ class _ProjectLibraryScreenState extends State<ProjectLibraryScreen> {
 
     if (shouldDelete != true) return;
 
+    await ProjectStorageService().deleteProject(project.id);
+
     final prefs = await SharedPreferences.getInstance();
-
-    await prefs.remove('project_${project.id}');
-
     final projectIds = prefs.getStringList('project_ids') ?? [];
     projectIds.remove(project.id);
     await prefs.setStringList('project_ids', projectIds);

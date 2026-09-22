@@ -23,6 +23,7 @@ import '../painters/frame_thumbnail_painter.dart';
 import '../services/animation_export_service.dart';
 import '../services/brush_preset_service.dart';
 import '../services/bag_service.dart';
+import '../services/project_storage_service.dart';
 import 'bag_screen.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -746,11 +747,9 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
       referenceFrameTimesMs: _referenceFrameTimesMs,
     );
 
-    final jsonString = jsonEncode(project.toJson());
+    await ProjectStorageService().saveProject(project);
 
     final prefs = await SharedPreferences.getInstance();
-    await prefs.setString('project_${project.id}', jsonString);
-
     final projectIds = prefs.getStringList('project_ids') ?? [];
 
     if (!projectIds.contains(project.id)) {
@@ -4092,15 +4091,11 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
   }
 
   Future<void> _loadProject() async {
-    final prefs = await SharedPreferences.getInstance();
-    final jsonString = prefs.getString('project_$_projectId');
+    final project = await ProjectStorageService().loadProject(_projectId);
 
-    if (jsonString == null) {
+    if (project == null) {
       return;
     }
-
-    final json = jsonDecode(jsonString) as Map<String, dynamic>;
-    final project = InkdFramesProject.fromJson(json);
 
     if (!mounted) return;
 
