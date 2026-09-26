@@ -3949,7 +3949,8 @@ class _HomeScreenState extends State<HomeScreen>
       final isDaylightCrossfade =
           decorationId != null &&
           decorationId == _daylightTransitionDecorationId &&
-          identical(node, _pendingDaylightVariant) &&
+          _pendingDaylightVariant != null &&
+          node.id == _pendingDaylightVariant!.id &&
           _pendingDaylightSourceIndex != null &&
           _pendingDaylightIndex != null;
 
