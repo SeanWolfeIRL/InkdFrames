@@ -5,6 +5,16 @@ import '../models/inkdframes_project.dart';
 import 'inkdframes_storage.dart';
 
 class ProjectStorageService {
+  Future<File> previewFileFor(String projectId) async {
+    await InkdFramesStorage.ensureDirectories();
+
+    final safeId = InkdFramesStorage.safeFileName(projectId);
+
+    return File(
+      '${InkdFramesStorage.projectPreviewsDirectory.path}/$safeId.png',
+    );
+  }
+
   Future<File> _fileFor(String projectId) async {
     await InkdFramesStorage.ensureDirectories();
 
@@ -69,6 +79,12 @@ class ProjectStorageService {
 
     if (await tempFile.exists()) {
       await tempFile.delete();
+    }
+
+    final previewFile = await previewFileFor(projectId);
+
+    if (await previewFile.exists()) {
+      await previewFile.delete();
     }
   }
 }

@@ -1,4 +1,4 @@
-import 'dart:convert';
+import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -18,6 +18,7 @@ class ProjectLibraryScreen extends StatefulWidget {
 
 class _ProjectLibraryScreenState extends State<ProjectLibraryScreen> {
   final List<InkdFramesProject> _projects = [];
+  bool _directoryOpen = false;
 
   @override
   void initState() {
@@ -118,8 +119,6 @@ class _ProjectLibraryScreenState extends State<ProjectLibraryScreen> {
       return;
     }
 
-    final prefs = await SharedPreferences.getInstance();
-
     // Preserve the complete project structure and change only the name.
     // This avoids dropping newer fields such as Layers or ReferenceLayers.
     final renamedJson = Map<String, dynamic>.from(project.toJson());
@@ -127,10 +126,7 @@ class _ProjectLibraryScreenState extends State<ProjectLibraryScreen> {
 
     final renamedProject = InkdFramesProject.fromJson(renamedJson);
 
-    await prefs.setString(
-      'project_${project.id}',
-      jsonEncode(renamedProject.toJson()),
-    );
+    await ProjectStorageService().saveProject(renamedProject);
 
     if (!mounted) {
       return;
@@ -458,20 +454,33 @@ class _ProjectLibraryScreenState extends State<ProjectLibraryScreen> {
                   ),
                   padding: const EdgeInsets.all(6),
                   child: ClipRect(
-                    child: CustomPaint(
-                      painter: thumbnailStrokes.isNotEmpty
-                          ? FrameThumbnailPainter(strokes: thumbnailStrokes)
-                          : null,
-                      child: thumbnailStrokes.isEmpty
-                          ? const Center(
-                              child: Icon(
-                                Icons.movie_outlined,
-                                size: 34,
-                                color: Color(0xFF70543C),
-                              ),
-                            )
-                          : const SizedBox.expand(),
-                    ),
+                    child:
+                        project.previewImagePath != null &&
+                            File(project.previewImagePath!).existsSync()
+                        ? Image.file(
+                            File(project.previewImagePath!),
+                            key: ValueKey(
+                              '${project.id}-${File(project.previewImagePath!).lastModifiedSync().millisecondsSinceEpoch}',
+                            ),
+                            fit: BoxFit.contain,
+                            gaplessPlayback: true,
+                          )
+                        : CustomPaint(
+                            painter: thumbnailStrokes.isNotEmpty
+                                ? FrameThumbnailPainter(
+                                    strokes: thumbnailStrokes,
+                                  )
+                                : null,
+                            child: thumbnailStrokes.isEmpty
+                                ? const Center(
+                                    child: Icon(
+                                      Icons.movie_outlined,
+                                      size: 34,
+                                      color: Color(0xFF70543C),
+                                    ),
+                                  )
+                                : const SizedBox.expand(),
+                          ),
                   ),
                 ),
               ),
@@ -554,133 +563,233 @@ class _ProjectLibraryScreenState extends State<ProjectLibraryScreen> {
     );
   }
 
+  Widget _buildProjectDirectory() {
+    final projects = List<InkdFramesProject>.of(_projects)
+      ..sort((a, b) {
+        final result = a.name.toLowerCase().compareTo(b.name.toLowerCase());
+        return result != 0 ? result : a.id.compareTo(b.id);
+      });
+
+    return Center(
+      child: Container(
+        constraints: const BoxConstraints(maxWidth: 560, maxHeight: 720),
+        margin: const EdgeInsets.all(16),
+        decoration: BoxDecoration(
+          color: const Color(0xFF211D1B),
+          borderRadius: BorderRadius.circular(20),
+          border: Border.all(color: const Color(0xFFB88A52)),
+        ),
+        child: Column(
+          children: [
+            Padding(
+              padding: const EdgeInsets.all(12),
+              child: Row(
+                children: [
+                  const Expanded(
+                    child: Text(
+                      'Project Directory',
+                      style: TextStyle(
+                        color: Color(0xFFF4E7D0),
+                        fontSize: 21,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                  ),
+                  IconButton(
+                    tooltip: 'Close directory',
+                    onPressed: () {
+                      setState(() => _directoryOpen = false);
+                    },
+                    icon: const Icon(Icons.close, color: Color(0xFFF4E7D0)),
+                  ),
+                ],
+              ),
+            ),
+            const Divider(color: Color(0xFF574838)),
+            Expanded(
+              child: ListView.builder(
+                itemCount: projects.length,
+                itemBuilder: (context, index) {
+                  final project = projects[index];
+
+                  return ListTile(
+                    leading: const Icon(
+                      Icons.description_outlined,
+                      color: Color(0xFFD8B47A),
+                    ),
+                    title: Text(
+                      project.name,
+                      style: const TextStyle(color: Color(0xFFF4E7D0)),
+                    ),
+                    trailing: const Icon(
+                      Icons.chevron_right,
+                      color: Color(0xFFD8B47A),
+                    ),
+                    onTap: () => _openProject(project),
+                  );
+                },
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: const Color(0xFF17110D),
-      body: LayoutBuilder(
-        builder: (context, constraints) {
-          // Native Project Wall artwork:
-          // 1536 x 1024 = 3:2 landscape.
-          const artworkAspect = 1536 / 1024;
+      body: Stack(
+        children: [
+          LayoutBuilder(
+            builder: (context, constraints) {
+              // Native Project Wall artwork:
+              // 1536 x 1024 = 3:2 landscape.
+              const artworkAspect = 1536 / 1024;
 
-          final viewportWidth = constraints.maxWidth;
-          final viewportHeight = constraints.maxHeight;
-          final isPortrait = viewportHeight > viewportWidth;
+              final viewportWidth = constraints.maxWidth;
+              final viewportHeight = constraints.maxHeight;
+              final isPortrait = viewportHeight > viewportWidth;
 
-          // Portrait:
-          // Fill the screen height. The 3:2 scene becomes wider than the
-          // phone and is explored horizontally.
-          //
-          // Landscape:
-          // Fill the available width while preserving the exact same
-          // authored 3:2 scene.
-          final sceneHeight = isPortrait
-              ? viewportHeight
-              : viewportWidth / artworkAspect;
+              // Portrait:
+              // Fill the screen height. The 3:2 scene becomes wider than the
+              // phone and is explored horizontally.
+              //
+              // Landscape:
+              // Fill the available width while preserving the exact same
+              // authored 3:2 scene.
+              final sceneHeight = isPortrait
+                  ? viewportHeight
+                  : viewportWidth / artworkAspect;
 
-          final sceneWidth = isPortrait
-              ? sceneHeight * artworkAspect
-              : viewportWidth;
+              final sceneWidth = isPortrait
+                  ? sceneHeight * artworkAspect
+                  : viewportWidth;
 
-          Widget buildWallScene() {
-            return SizedBox(
-              width: sceneWidth,
-              height: sceneHeight,
-              child: Stack(
-                children: [
-                  Positioned.fill(
-                    child: Image.asset(
-                      'assets/images/inkdframes_project_wall_v1.png',
-                      fit: BoxFit.fill,
-                    ),
-                  ),
-
-                  Positioned.fill(
-                    child: IgnorePointer(
-                      child: ColoredBox(
-                        color: Colors.black.withValues(alpha: 0.05),
+              Widget buildWallScene() {
+                return SizedBox(
+                  width: sceneWidth,
+                  height: sceneHeight,
+                  child: Stack(
+                    children: [
+                      Positioned.fill(
+                        child: Image.asset(
+                          'assets/images/inkdframes_project_wall_v1.png',
+                          fit: BoxFit.fill,
+                        ),
                       ),
+
+                      Positioned.fill(
+                        child: IgnorePointer(
+                          child: ColoredBox(
+                            color: Colors.black.withValues(alpha: 0.05),
+                          ),
+                        ),
+                      ),
+
+                      if (_projects.isEmpty)
+                        Positioned(
+                          left: sceneWidth * 0.39,
+                          top: sceneHeight * 0.43,
+                          width: sceneWidth * 0.22,
+                          child: _buildEmptyState(),
+                        )
+                      else
+                        ...List.generate(
+                          _projects.length > 8 ? 8 : _projects.length,
+                          (index) {
+                            // -------------------------------------------------
+                            // PROJECT WALL GRID
+                            //
+                            // These four values control the entire canvas grid.
+                            //
+                            // gridLeft   = move whole grid left/right
+                            // gridTop    = move whole grid up/down
+                            // columnGap  = horizontal distance between canvases
+                            // rowGap     = vertical distance between rows
+                            // -------------------------------------------------
+                            const gridLeft = 0.240;
+                            const gridTop = 0.245;
+                            const columnGap = 0.135;
+                            const rowGap = 0.265;
+
+                            final column = index % 4;
+                            final row = index ~/ 4;
+
+                            final slot = Offset(
+                              gridLeft + (column * columnGap),
+                              gridTop + (row * rowGap),
+                            );
+
+                            final cardWidth = sceneWidth * 0.100;
+                            final cardHeight = sceneHeight * 0.165;
+
+                            return Positioned(
+                              left: sceneWidth * slot.dx,
+                              top: sceneHeight * slot.dy,
+                              width: cardWidth,
+                              height: cardHeight,
+                              child: _buildProjectCard(_projects[index], index),
+                            );
+                          },
+                        ),
+
+                      Positioned(
+                        left: sceneWidth * 0.02,
+                        top: sceneHeight * 0.02,
+                        width: sceneWidth * 0.18,
+                        height: sceneHeight * 0.08,
+                        child: GestureDetector(
+                          behavior: HitTestBehavior.opaque,
+                          onTap: () => Navigator.pop(context),
+                          child: const SizedBox.expand(),
+                        ),
+                      ),
+                    ],
+                  ),
+                );
+              }
+
+              return ClipRect(
+                child: SingleChildScrollView(
+                  scrollDirection: Axis.horizontal,
+                  physics: const BouncingScrollPhysics(),
+                  child: ConstrainedBox(
+                    constraints: BoxConstraints(minWidth: viewportWidth),
+                    child: Align(
+                      alignment: isPortrait
+                          ? Alignment.topLeft
+                          : Alignment.center,
+                      child: buildWallScene(),
                     ),
                   ),
-
-                  if (_projects.isEmpty)
-                    Positioned(
-                      left: sceneWidth * 0.39,
-                      top: sceneHeight * 0.43,
-                      width: sceneWidth * 0.22,
-                      child: _buildEmptyState(),
-                    )
-                  else
-                    ...List.generate(
-                      _projects.length > 8 ? 8 : _projects.length,
-                      (index) {
-                        // -------------------------------------------------
-                        // PROJECT WALL GRID
-                        //
-                        // These four values control the entire canvas grid.
-                        //
-                        // gridLeft   = move whole grid left/right
-                        // gridTop    = move whole grid up/down
-                        // columnGap  = horizontal distance between canvases
-                        // rowGap     = vertical distance between rows
-                        // -------------------------------------------------
-                        const gridLeft = 0.240;
-                        const gridTop = 0.245;
-                        const columnGap = 0.135;
-                        const rowGap = 0.265;
-
-                        final column = index % 4;
-                        final row = index ~/ 4;
-
-                        final slot = Offset(
-                          gridLeft + (column * columnGap),
-                          gridTop + (row * rowGap),
-                        );
-
-                        final cardWidth = sceneWidth * 0.100;
-                        final cardHeight = sceneHeight * 0.165;
-
-                        return Positioned(
-                          left: sceneWidth * slot.dx,
-                          top: sceneHeight * slot.dy,
-                          width: cardWidth,
-                          height: cardHeight,
-                          child: _buildProjectCard(_projects[index], index),
-                        );
-                      },
-                    ),
-
-                  Positioned(
-                    left: sceneWidth * 0.02,
-                    top: sceneHeight * 0.02,
-                    width: sceneWidth * 0.18,
-                    height: sceneHeight * 0.08,
-                    child: GestureDetector(
-                      behavior: HitTestBehavior.opaque,
-                      onTap: () => Navigator.pop(context),
-                      child: const SizedBox.expand(),
-                    ),
-                  ),
-                ],
-              ),
-            );
-          }
-
-          return ClipRect(
-            child: SingleChildScrollView(
-              scrollDirection: Axis.horizontal,
-              physics: const BouncingScrollPhysics(),
-              child: ConstrainedBox(
-                constraints: BoxConstraints(minWidth: viewportWidth),
-                child: Align(
-                  alignment: isPortrait ? Alignment.topLeft : Alignment.center,
-                  child: buildWallScene(),
                 ),
+              );
+            },
+          ),
+          Positioned(
+            right: 16,
+            top: MediaQuery.paddingOf(context).top + 12,
+            child: FloatingActionButton.small(
+              heroTag: 'project_directory_button',
+              tooltip: 'Project Directory',
+              backgroundColor: const Color(0xFFE3C99D),
+              foregroundColor: const Color(0xFF3C291E),
+              onPressed: () {
+                setState(() => _directoryOpen = true);
+              },
+              child: const Icon(Icons.folder_open),
+            ),
+          ),
+          if (_directoryOpen)
+            Positioned.fill(
+              child: ColoredBox(
+                color: Colors.black54,
+                child: SafeArea(child: _buildProjectDirectory()),
               ),
             ),
-          );
-        },
+        ],
       ),
     );
   }

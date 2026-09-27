@@ -5694,9 +5694,15 @@ class _HomeScreenState extends State<HomeScreen>
             return true;
           }
 
-          Navigator.of(
+          await Navigator.of(
             context,
           ).push(MaterialPageRoute<void>(builder: (_) => const BagScreen()));
+
+          if (!mounted) {
+            return true;
+          }
+
+          await _refreshHomeBagAssets();
           return true;
         }
 
@@ -5827,6 +5833,43 @@ class _HomeScreenState extends State<HomeScreen>
         ),
       ],
     );
+  }
+
+  Future<void> _refreshHomeBagAssets() async {
+    final items = await _bagService.loadItems();
+
+    if (!mounted) {
+      return;
+    }
+
+    final itemsById = <String, BagItem>{
+      for (final item in items) item.id: item,
+    };
+
+    final placedItems = <BagItem>[];
+    final placedItemIds = <String>{};
+
+    for (final decoration in _decorations) {
+      final item = itemsById[decoration.bagItemId];
+
+      if (item != null && placedItemIds.add(item.id)) {
+        placedItems.add(item);
+      }
+    }
+
+    // A Composite edited through the Bag may introduce new image/reference
+    // nodes. Prime those resources before publishing the refreshed Bag map
+    // so Home never renders the updated hierarchy half-prepared.
+    final newMasks = await _loadImageAlphaMasks(placedItems);
+
+    if (!mounted) {
+      return;
+    }
+
+    setState(() {
+      _bagItemsById = itemsById;
+      _imageAlphaMasks.addAll(newMasks);
+    });
   }
 
   @override
@@ -6369,12 +6412,18 @@ class _HomeScreenState extends State<HomeScreen>
                         ),
                         roomWidth: roomWidth,
                         roomHeight: roomHeight,
-                        onTap: () {
-                          Navigator.of(context).push(
+                        onTap: () async {
+                          await Navigator.of(context).push(
                             MaterialPageRoute<void>(
                               builder: (_) => const BagScreen(),
                             ),
                           );
+
+                          if (!mounted) {
+                            return;
+                          }
+
+                          await _refreshHomeBagAssets();
                         },
                       ),
                     ),

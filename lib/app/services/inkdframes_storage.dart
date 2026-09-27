@@ -22,9 +22,15 @@ class InkdFramesStorage {
     return Directory('${rootDirectory.path}/bag_items');
   }
 
+  /// Persistent rendered previews used by the Project Wall.
+  static Directory get projectPreviewsDirectory {
+    return Directory('${rootDirectory.path}/project_previews');
+  }
+
   static Future<void> ensureDirectories() async {
     await projectsDirectory.create(recursive: true);
     await bagItemsDirectory.create(recursive: true);
+    await projectPreviewsDirectory.create(recursive: true);
   }
 
   static String safeFileName(String value) {

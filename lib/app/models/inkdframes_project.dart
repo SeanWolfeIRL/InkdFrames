@@ -25,6 +25,7 @@ class InkdFramesProject {
     List<int>? referenceFrameTimesMs,
     this.referenceVisible = true,
     this.referenceOpacity = 1.0,
+    this.previewImagePath,
   }) : layers = layers ?? _layersFromLegacyFrames(frames),
        layerGroups = layerGroups ?? <LayerGroup>[],
        rootOrder =
@@ -152,6 +153,7 @@ class InkdFramesProject {
           json['activeReferenceLayerId'] as String? ??
           (referenceLayers.isNotEmpty ? referenceLayers.first.id : null),
       referenceFrameTimesMs: legacyReferenceFrameTimesMs,
+      previewImagePath: json['previewImagePath'] as String?,
     );
   }
 
@@ -203,6 +205,12 @@ class InkdFramesProject {
   final bool referenceVisible;
   final double referenceOpacity;
 
+  /// Persistent rendered snapshot used by the Project Wall.
+  ///
+  /// Nullable so projects created before Project Wall snapshots continue
+  /// loading normally and fall back to the legacy vector thumbnail.
+  final String? previewImagePath;
+
   /// Exact video timestamp belonging to each animation frame.
   ///
   /// Empty for blank animations, image references, and legacy projects.
@@ -239,6 +247,7 @@ class InkdFramesProject {
       'referenceVisible': referenceVisible,
       'referenceOpacity': referenceOpacity,
       'referenceFrameTimesMs': referenceFrameTimesMs,
+      'previewImagePath': previewImagePath,
     };
   }
 

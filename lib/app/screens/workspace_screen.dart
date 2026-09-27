@@ -142,6 +142,21 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
   // Autosave deliberately remains project-only.
   String? _initialBagCompositeRootGroupId;
 
+  // BAG COMPOSITE IDENTITY BRIDGE
+  //
+  // Composite nodes receive fresh runtime IDs when reconstructed in Workspace
+  // so they cannot collide with existing project hierarchy IDs.
+  //
+  // When Workspace was opened directly from a Composite Bag item, remember
+  // which authored Composite node each runtime node came from. Explicit Save
+  // can then restore those authored IDs, preserving Home instance overrides
+  // that are keyed by Composite node ID.
+  //
+  // Nodes created during this editing session are intentionally absent from
+  // this map and therefore keep their newly generated IDs.
+  final Map<String, String> _initialBagCompositeAuthoredNodeIds =
+      <String, String>{};
+
   Future<void> _insertInitialBagItemIfNeeded() async {
     if (_initialBagItemInserted) {
       return;
@@ -392,6 +407,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
 
   String _projectId = '';
   String _projectName = 'Untitled Animation';
+  String? _projectPreviewImagePath;
   String? _referenceMediaPath;
   String? _referenceMediaType;
   VideoPlayerController? _videoController;
@@ -745,16 +761,22 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
       referenceVisible: _referenceVisible,
       referenceOpacity: _referenceOpacity,
       referenceFrameTimesMs: _referenceFrameTimesMs,
+      previewImagePath: _projectPreviewImagePath,
     );
 
     await ProjectStorageService().saveProject(project);
 
-    final prefs = await SharedPreferences.getInstance();
-    final projectIds = prefs.getStringList('project_ids') ?? [];
+    // A Workspace opened directly from the Bag is an asset-editing
+    // session, not a Project Wall project. Keep its file-backed autosave
+    // for recovery, but do not register it in the project directory.
+    if (widget.initialBagItem == null) {
+      final prefs = await SharedPreferences.getInstance();
+      final projectIds = prefs.getStringList('project_ids') ?? [];
 
-    if (!projectIds.contains(project.id)) {
-      projectIds.add(project.id);
-      await prefs.setStringList('project_ids', projectIds);
+      if (!projectIds.contains(project.id)) {
+        projectIds.add(project.id);
+        await prefs.setStringList('project_ids', projectIds);
+      }
     }
 
     if (!mounted) return;
@@ -1249,6 +1271,11 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     String? rebuildNode(CompositeNode node) {
       if (node.type == 'layer') {
         final newId = freshId('composite_layer');
+
+        if (widget.initialBagItem?.isComposite == true) {
+          _initialBagCompositeAuthoredNodeIds[newId] = node.id;
+        }
+
         final rawFrames = node.payload['frames'] as List? ?? const [];
 
         final frames = rawFrames
@@ -1280,6 +1307,10 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
 
       if (node.type == 'reference') {
         final newId = freshId('composite_reference');
+
+        if (widget.initialBagItem?.isComposite == true) {
+          _initialBagCompositeAuthoredNodeIds[newId] = node.id;
+        }
 
         final mediaPath = node.payload['mediaPath'] as String? ?? '';
         final mediaType = node.payload['mediaType'] as String? ?? 'image';
@@ -1316,6 +1347,11 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
 
       if (node.type == 'variant') {
         final newId = freshId('composite_variant');
+
+        if (widget.initialBagItem?.isComposite == true) {
+          _initialBagCompositeAuthoredNodeIds[newId] = node.id;
+        }
+
         final childOrder = <String>[];
 
         for (final child in node.children) {
@@ -1348,6 +1384,10 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
 
       if (node.type == 'group') {
         final newId = freshId('composite_group');
+
+        if (widget.initialBagItem?.isComposite == true) {
+          _initialBagCompositeAuthoredNodeIds[newId] = node.id;
+        }
 
         final childOrder = <String>[];
         final childLayerIds = <String>[];
@@ -1876,7 +1916,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
 
       return CompositeNode(
         type: 'layer',
-        id: layer.id,
+        id: _initialBagCompositeAuthoredNodeIds[layer.id] ?? layer.id,
         name: layer.name,
         visible: layer.visible,
         payload: <String, dynamic>{
@@ -1903,7 +1943,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
 
       return CompositeNode(
         type: 'reference',
-        id: reference.id,
+        id: _initialBagCompositeAuthoredNodeIds[reference.id] ?? reference.id,
         name: reference.name,
         visible: reference.visible,
         payload: <String, dynamic>{
@@ -1980,7 +2020,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
 
       return CompositeNode(
         type: 'group',
-        id: group.id,
+        id: _initialBagCompositeAuthoredNodeIds[group.id] ?? group.id,
         name: group.name,
         visible: group.visible,
         children: children,
@@ -2028,7 +2068,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
 
       return CompositeNode(
         type: 'variant',
-        id: slot.id,
+        id: _initialBagCompositeAuthoredNodeIds[slot.id] ?? slot.id,
         name: slot.name,
         children: children,
         payload: <String, dynamic>{
@@ -2086,6 +2126,73 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     );
   }
 
+  Future<void> _refreshProjectWallPreview() async {
+    // Bag-editing Workspaces are intentionally absent from the Project Wall.
+    if (widget.initialBagItem != null) {
+      return;
+    }
+
+    // Make sure the RepaintBoundary reflects the latest scene state.
+    await WidgetsBinding.instance.endOfFrame;
+
+    if (!mounted) {
+      return;
+    }
+
+    final renderObject = _canvasSampleKey.currentContext?.findRenderObject();
+
+    if (renderObject is! RenderRepaintBoundary) {
+      return;
+    }
+
+    final boundarySize = renderObject.size;
+
+    if (boundarySize.width <= 0 || boundarySize.height <= 0) {
+      return;
+    }
+
+    // Project Wall cards are small. Cap the longest preview dimension rather
+    // than encoding the full authored 1920x1080 canvas on every manual save.
+    const maxPreviewDimension = 768.0;
+
+    final longestSide = math.max(boundarySize.width, boundarySize.height);
+    final pixelRatio = longestSide > 0
+        ? math.min(1.0, maxPreviewDimension / longestSide)
+        : 1.0;
+
+    final image = await renderObject.toImage(pixelRatio: pixelRatio);
+
+    try {
+      final byteData = await image.toByteData(format: ui.ImageByteFormat.png);
+
+      if (byteData == null) {
+        return;
+      }
+
+      final storage = ProjectStorageService();
+      final previewFile = await storage.previewFileFor(_projectId);
+      final tempFile = File('${previewFile.path}.tmp');
+
+      await tempFile.writeAsBytes(
+        byteData.buffer.asUint8List(
+          byteData.offsetInBytes,
+          byteData.lengthInBytes,
+        ),
+        flush: true,
+      );
+
+      if (await previewFile.exists()) {
+        await previewFile.delete();
+      }
+
+      await tempFile.rename(previewFile.path);
+
+      _projectPreviewImagePath = previewFile.path;
+    } finally {
+      image.dispose();
+    }
+  }
+
   Future<void> _saveProjectAndOriginatingBagItem() async {
     // Project persistence happens first.
     //
@@ -2093,6 +2200,15 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     // still calls _saveProject() directly and therefore cannot silently
     // mutate a reusable Bag source asset.
     await _saveProject();
+
+    // Manual Save also refreshes the Project Wall from the exact scene that
+    // Workspace is displaying. Autosave deliberately remains JSON-only.
+    await _refreshProjectWallPreview();
+
+    if (widget.initialBagItem == null) {
+      // Persist the freshly written preview path into the project JSON.
+      await _saveProject();
+    }
 
     final sourceItem = widget.initialBagItem;
     final rootGroupId = _initialBagCompositeRootGroupId;
@@ -4101,6 +4217,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
 
     _projectId = project.id;
     _projectName = project.name;
+    _projectPreviewImagePath = project.previewImagePath;
 
     setState(() {
       _frameDurations
@@ -4121,6 +4238,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
               visible: group.visible,
               expanded: group.expanded,
               brightness: group.brightness,
+              environmentRole: group.environmentRole,
               childLayerIds: List<String>.from(group.childLayerIds),
               childGroupIds: List<String>.from(group.childGroupIds),
               childOrder: List<String>.from(group.childOrder),
@@ -11810,6 +11928,9 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
       'bag' => 'Bag',
       'projectWall' => 'Project Wall',
       'sketchbook' => 'Sketchbook',
+      'sink' => 'Sink',
+      'cup' => 'Cup',
+      'plant' => 'Plant',
       _ => 'Group',
     };
 
@@ -11933,6 +12054,12 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                       _setLayerGroupEnvironmentRole(group.id, 'projectWall');
                     } else if (value == 'environment-sketchbook') {
                       _setLayerGroupEnvironmentRole(group.id, 'sketchbook');
+                    } else if (value == 'environment-sink') {
+                      _setLayerGroupEnvironmentRole(group.id, 'sink');
+                    } else if (value == 'environment-cup') {
+                      _setLayerGroupEnvironmentRole(group.id, 'cup');
+                    } else if (value == 'environment-plant') {
+                      _setLayerGroupEnvironmentRole(group.id, 'plant');
                     } else if (value == 'environment-normal') {
                       _setLayerGroupEnvironmentRole(group.id, null);
                     } else if (value == 'rename') {
@@ -12013,6 +12140,28 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                       child: ListTile(
                         leading: Icon(Icons.menu_book_outlined),
                         title: Text('Mark as Sketchbook'),
+                      ),
+                    ),
+                    PopupMenuDivider(),
+                    PopupMenuItem(
+                      value: 'environment-sink',
+                      child: ListTile(
+                        leading: Icon(Icons.water_drop_outlined),
+                        title: Text('Mark as Sink'),
+                      ),
+                    ),
+                    PopupMenuItem(
+                      value: 'environment-cup',
+                      child: ListTile(
+                        leading: Icon(Icons.local_cafe_outlined),
+                        title: Text('Mark as Cup'),
+                      ),
+                    ),
+                    PopupMenuItem(
+                      value: 'environment-plant',
+                      child: ListTile(
+                        leading: Icon(Icons.local_florist_outlined),
+                        title: Text('Mark as Plant'),
                       ),
                     ),
                     PopupMenuItem(
@@ -12923,6 +13072,16 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                                                 color: _canvasBackgroundColor,
                                               ),
                                             ..._buildMixedHierarchySceneWidgets(
+                                              // Normal Workspace rendering
+                                              // always traverses the complete
+                                              // authoritative scene hierarchy.
+                                              //
+                                              // Only an explicit Composite PNG
+                                              // export isolates a single group.
+                                              // This keeps Bag/asset exports
+                                              // surgical while allowing normal
+                                              // project/scene consumers to see
+                                              // the complete resolved scene.
                                               isolatedGroupId:
                                                   _isCompositePngCapture
                                                   ? _compositePngCaptureGroupId
@@ -13119,6 +13278,27 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                                       icon: Icon(
                                         Icons.edit,
                                         color: _drawingExpanded
+                                            ? Colors.deepPurpleAccent
+                                            : Colors.white70,
+                                      ),
+                                    ),
+                                    const SizedBox(height: 2),
+                                    IconButton(
+                                      tooltip: editToolbarExpanded
+                                          ? 'Hide Edit Tools'
+                                          : 'Show Edit Tools',
+                                      visualDensity: VisualDensity.compact,
+                                      onPressed: () {
+                                        setState(() {
+                                          final next = !editToolbarExpanded;
+                                          _editToolbarExpanded = next;
+                                        });
+                                      },
+                                      icon: Icon(
+                                        editToolbarExpanded
+                                            ? Icons.chevron_right
+                                            : Icons.tune,
+                                        color: editToolbarExpanded
                                             ? Colors.deepPurpleAccent
                                             : Colors.white70,
                                       ),
@@ -14662,7 +14842,22 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                                       : constraints.maxWidth - 32,
                                   child: ConstrainedBox(
                                     constraints: BoxConstraints(
-                                      maxHeight: constraints.maxHeight * 0.68,
+                                      // Keep the expanded Layers panel below
+                                      // the top workspace controls so the
+                                      // Add Reference / Group / Layer buttons
+                                      // always remain reachable.
+                                      maxHeight: math.min(
+                                        constraints.maxHeight * 0.68,
+                                        math.max(
+                                          180.0,
+                                          constraints.maxHeight -
+                                              MediaQuery.of(
+                                                context,
+                                              ).viewPadding.top -
+                                              kToolbarHeight -
+                                              128.0,
+                                        ),
+                                      ),
                                     ),
                                     child: SingleChildScrollView(
                                       key: _layersScrollViewportKey,
@@ -15291,23 +15486,6 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                                     ),
                                   ],
                                 ],
-                                IconButton(
-                                  tooltip: editToolbarExpanded
-                                      ? 'Hide Edit Tools'
-                                      : 'Show Edit Tools',
-                                  visualDensity: VisualDensity.compact,
-                                  onPressed: () {
-                                    setState(() {
-                                      final next = !editToolbarExpanded;
-                                      _editToolbarExpanded = next;
-                                    });
-                                  },
-                                  icon: Icon(
-                                    editToolbarExpanded
-                                        ? Icons.chevron_right
-                                        : Icons.tune,
-                                  ),
-                                ),
                               ],
                             ),
                           ),
