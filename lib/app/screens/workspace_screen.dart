@@ -4451,6 +4451,55 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     await _seekReferenceVideoToMs(targetMs);
   }
 
+  void _collapseFloatingPanels({
+    bool keepDrawing = false,
+    bool keepEdit = false,
+    bool keepBlend = false,
+    bool keepTexture = false,
+    bool keepStamp = false,
+    bool keepLayers = false,
+    bool keepTransform = false,
+    bool keepTimeline = false,
+    bool keepTiming = false,
+  }) {
+    if (!keepDrawing) {
+      _drawingExpanded = false;
+    }
+
+    if (!keepEdit) {
+      _editToolbarExpanded = false;
+    }
+
+    if (!keepBlend) {
+      _blendExpanded = false;
+      _blendSamplingArmed = false;
+    }
+
+    if (!keepTexture) {
+      _textureExpanded = false;
+    }
+
+    if (!keepStamp) {
+      _stampBrushPanelExpanded = false;
+    }
+
+    if (!keepLayers) {
+      _layersPanelExpanded = false;
+    }
+
+    if (!keepTransform) {
+      _transformToolbarExpanded = false;
+    }
+
+    if (!keepTimeline) {
+      _timelineExpanded = false;
+    }
+
+    if (!keepTiming) {
+      _timingExpanded = false;
+    }
+  }
+
   void _resetCanvasView() {
     _transformationController.value = Matrix4.identity();
 
@@ -4476,7 +4525,8 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
       _drawingMode = false;
       _drawingExpanded = false;
 
-      // Reopen the reference controls.
+      // Reopen the reference controls as the sole floating panel.
+      _collapseFloatingPanels(keepLayers: true);
       _layersPanelExpanded = true;
       _referenceVisible = true;
 
@@ -4524,12 +4574,9 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
       _layersPanelExpanded = false;
 
       // Open the drawing tools ready for the captured frame.
+      _collapseFloatingPanels(keepDrawing: true);
       _drawingMode = true;
       _drawingExpanded = true;
-
-      _timingExpanded = false;
-      _timelineExpanded = false;
-      _transformToolbarExpanded = false;
 
       _isEraserActive = false;
       _isFillToolActive = false;
@@ -5425,6 +5472,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
       _stampBrushActive = false;
       _stampBrushItem = null;
 
+      _collapseFloatingPanels(keepTransform: true);
       _isTransformActive = true;
       _transformToolbarExpanded = true;
 
@@ -5700,6 +5748,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
       _stampBrushActive = false;
       _stampBrushItem = null;
 
+      _collapseFloatingPanels(keepTransform: true);
       _isTransformActive = true;
       _transformToolbarExpanded = true;
 
@@ -7194,7 +7243,9 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     }
 
     setState(() {
+      _collapseFloatingPanels(keepDrawing: true, keepStamp: true);
       _drawingMode = true;
+      _drawingExpanded = true;
 
       _stampBrushItem = item;
       _stampBrushActive = true;
@@ -13270,7 +13321,15 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                                       visualDensity: VisualDensity.compact,
                                       onPressed: () {
                                         setState(() {
-                                          _drawingExpanded = !_drawingExpanded;
+                                          final next = !_drawingExpanded;
+
+                                          if (next) {
+                                            _collapseFloatingPanels(
+                                              keepDrawing: true,
+                                            );
+                                          }
+
+                                          _drawingExpanded = next;
                                         });
                                       },
                                       icon: Icon(
@@ -13289,6 +13348,13 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                                       onPressed: () {
                                         setState(() {
                                           final next = !editToolbarExpanded;
+
+                                          if (next) {
+                                            _collapseFloatingPanels(
+                                              keepEdit: true,
+                                            );
+                                          }
+
                                           _editToolbarExpanded = next;
                                         });
                                       },
@@ -13324,6 +13390,12 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                                         onPressed: () {
                                           setState(() {
                                             if (!_blendExpanded) {
+                                              _collapseFloatingPanels(
+                                                keepDrawing: true,
+                                                keepBlend: true,
+                                              );
+                                              _drawingMode = true;
+                                              _drawingExpanded = true;
                                               _blendExpanded = true;
                                               _blendSamplingArmed = true;
                                               _blendBaseColor = _brushColor;
@@ -13352,8 +13424,18 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                                         visualDensity: VisualDensity.compact,
                                         onPressed: () {
                                           setState(() {
-                                            _textureExpanded =
-                                                !_textureExpanded;
+                                            final next = !_textureExpanded;
+
+                                            if (next) {
+                                              _collapseFloatingPanels(
+                                                keepDrawing: true,
+                                                keepTexture: true,
+                                              );
+                                              _drawingMode = true;
+                                              _drawingExpanded = true;
+                                            }
+
+                                            _textureExpanded = next;
                                             _textureActive = _textureExpanded;
 
                                             if (_textureExpanded) {
@@ -13396,6 +13478,12 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                                           if (_stampBrushActive &&
                                               !_stampBrushPanelExpanded) {
                                             setState(() {
+                                              _collapseFloatingPanels(
+                                                keepDrawing: true,
+                                                keepStamp: true,
+                                              );
+                                              _drawingMode = true;
+                                              _drawingExpanded = true;
                                               _stampBrushPanelExpanded = true;
                                             });
                                             return;
@@ -13447,6 +13535,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
 
                             if (_drawingExpanded ||
                                 (_drawingMode && _blendExpanded) ||
+                                (_drawingMode && _textureExpanded) ||
                                 (_drawingMode &&
                                     _stampBrushActive &&
                                     _stampBrushPanelExpanded)) ...[
@@ -15151,8 +15240,13 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                                     : 'Show Layers',
                                 onPressed: () {
                                   setState(() {
-                                    _layersPanelExpanded =
-                                        !_layersPanelExpanded;
+                                    final next = !_layersPanelExpanded;
+
+                                    if (next) {
+                                      _collapseFloatingPanels(keepLayers: true);
+                                    }
+
+                                    _layersPanelExpanded = next;
                                   });
                                 },
                                 icon: Icon(
@@ -15328,8 +15422,16 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                                         ? null
                                         : () {
                                             setState(() {
-                                              _transformToolbarExpanded =
+                                              final next =
                                                   !_transformToolbarExpanded;
+
+                                              if (next) {
+                                                _collapseFloatingPanels(
+                                                  keepTransform: true,
+                                                );
+                                              }
+
+                                              _transformToolbarExpanded = next;
                                             });
                                           },
                                     icon: Icon(
@@ -15676,8 +15778,20 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                                                               ),
                                                         onPressed: () {
                                                           setState(() {
-                                                            _timingExpanded =
+                                                            final next =
                                                                 !_timingExpanded;
+
+                                                            if (next) {
+                                                              _collapseFloatingPanels(
+                                                                keepTimeline:
+                                                                    true,
+                                                                keepTiming:
+                                                                    true,
+                                                              );
+                                                            }
+
+                                                            _timingExpanded =
+                                                                next;
                                                           });
                                                         },
                                                         icon: Icon(
@@ -16166,6 +16280,9 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                                   tooltip: 'Show Timeline',
                                   onPressed: () {
                                     setState(() {
+                                      _collapseFloatingPanels(
+                                        keepTimeline: true,
+                                      );
                                       _timelineExpanded = true;
                                     });
                                   },
