@@ -10081,7 +10081,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     final selected = _activeReferenceLayerId == reference.id;
 
     return Container(
-      margin: EdgeInsets.fromLTRB(6.0 + (hierarchyDepth * 10.0), 4, 6, 0),
+      margin: EdgeInsets.fromLTRB(hierarchyDepth > 0 ? 12.0 : 6.0, 4, 6, 0),
       decoration: BoxDecoration(
         color: selected
             ? Colors.amberAccent.withValues(alpha: 0.10)
@@ -11276,7 +11276,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     }
 
     return Container(
-      margin: EdgeInsets.fromLTRB(6.0 + (depth * 10.0), 4, 6, 0),
+      margin: EdgeInsets.fromLTRB(depth > 0 ? 12.0 : 6.0, 4, 6, 0),
       decoration: BoxDecoration(
         color: Colors.deepPurpleAccent.withValues(alpha: 0.07),
         borderRadius: BorderRadius.circular(10),
@@ -11943,7 +11943,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     }
 
     return Container(
-      margin: EdgeInsets.fromLTRB(6.0 + (depth * 10.0), 4, 6, 0),
+      margin: EdgeInsets.fromLTRB(depth > 0 ? 12.0 : 6.0, 4, 6, 0),
       decoration: BoxDecoration(
         color: selected
             ? Colors.deepPurpleAccent.withValues(alpha: 0.14)
@@ -12232,9 +12232,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
 
     return Container(
       margin: EdgeInsets.fromLTRB(
-        hierarchyDepth > 0
-            ? 6.0 + (hierarchyDepth * 10.0)
-            : (indented ? 22.0 : 6.0),
+        hierarchyDepth > 0 ? 12.0 : (indented ? 12.0 : 6.0),
         4,
         6,
         0,
