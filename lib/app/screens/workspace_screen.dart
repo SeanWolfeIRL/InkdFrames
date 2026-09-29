@@ -175,7 +175,13 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     }
   }
 
-  final List<List<VectorStroke>> _frames = [<VectorStroke>[]];
+  // Drawing layers are the authoritative frame store.
+  //
+  // Do not retain a second fully-composited copy of every frame in memory.
+  // Large projects can contain millions of vector points, so eagerly
+  // rebuilding `_frames` duplicates a substantial portion of the project.
+  //
+  // Composite individual frames lazily with _compositeFrame() instead.
   final List<DrawingLayer> _layers = [
     DrawingLayer(id: 'linework', name: 'Linework', frames: [<VectorStroke>[]]),
   ];
@@ -745,7 +751,9 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
       id: _projectId,
       name: _projectName,
       fps: _fps,
-      frames: _frames,
+      // Legacy project compatibility is generated only at persistence time.
+      // It is intentionally not retained as Workspace runtime state.
+      frames: _legacyCompositeFrames(),
       layers: _layers,
       layerGroups: _layerGroups,
       rootOrder: _rootLayerOrder,
@@ -904,7 +912,15 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
 
     for (var layerIndex = 0; layerIndex < _layers.length; layerIndex++) {
       final layer = _layers[layerIndex];
-      final frames = _copyLayerFrames(layer.frames);
+
+      if (layer.frames.length == frameCount) {
+        continue;
+      }
+
+      // Frame-count normalization only changes the outer frame list.
+      // Existing frame/stroke data is immutable for this operation, so do
+      // not deep-copy every stroke and VectorPoint in large projects.
+      final frames = List<List<VectorStroke>>.from(layer.frames);
 
       while (frames.length < frameCount) {
         frames.add(<VectorStroke>[]);
@@ -1015,11 +1031,16 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
   }
 
   void _rebuildCompositeFrames() {
+    // Compatibility hook retained while callers migrate away from the old
+    // eager `_frames` cache.
+    //
+    // Layers are authoritative. Keep their frame counts synchronized, but
+    // never manufacture a second project-wide vector representation.
     _ensureLayerFrameCount();
+  }
 
-    _frames
-      ..clear()
-      ..addAll(List.generate(_frameDurations.length, _compositeFrame));
+  List<List<VectorStroke>> _legacyCompositeFrames() {
+    return List.generate(_frameDurations.length, _compositeFrame);
   }
 
   void _resetUndoRedo() {
@@ -4284,9 +4305,12 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
         ..clear()
         ..addAll(project.frameDurations);
 
+      // loadProject() returns a freshly deserialized project graph.
+      // Workspace can take ownership of those immutable stroke/point objects
+      // directly instead of deep-copying the entire project a second time.
       _layers
         ..clear()
-        ..addAll(project.layers.map(_copyLayer));
+        ..addAll(project.layers);
 
       _layerGroups
         ..clear()
@@ -4330,10 +4354,9 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
       }
 
       _activeLayerIndex = 0;
-      _ensureLayerFrameCount();
+
       _rebuildCompositeFrames();
       _resetUndoRedo();
-
       _fps = project.fps;
       _canvasWidth = project.canvasWidth;
       _canvasHeight = project.canvasHeight;
@@ -4365,7 +4388,6 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
       _activeReferenceLayerId = project.activeReferenceLayerId;
 
       _loadLegacyReferenceStateFromActiveLayer();
-
       _selectedFrameIndex = 0;
       _draftStroke = const <VectorPoint>[];
     });
@@ -4888,9 +4910,9 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
   }
 
   void _navigateToFrame(int index) {
-    if (_frames.isEmpty) return;
+    if (_frameDurations.isEmpty) return;
 
-    final safeIndex = index.clamp(0, _frames.length - 1);
+    final safeIndex = index.clamp(0, _frameDurations.length - 1);
 
     _stopPlaybackForNavigation();
     _selectFrame(safeIndex);
@@ -4905,7 +4927,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
   }
 
   void _selectFrame(int index) {
-    if (index < 0 || index >= _frames.length) {
+    if (index < 0 || index >= _frameDurations.length) {
       return;
     }
 
@@ -5034,7 +5056,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     if (controller == null ||
         !controller.value.isInitialized ||
         index < 0 ||
-        index >= _frames.length) {
+        index >= _frameDurations.length) {
       return;
     }
 
@@ -5079,7 +5101,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
       if (!mounted || !_isPlaying) return;
 
       setState(() {
-        if (_selectedFrameIndex < _frames.length - 1) {
+        if (_selectedFrameIndex < _frameDurations.length - 1) {
           _selectedFrameIndex += 1;
         } else {
           _selectedFrameIndex = 0;
@@ -5098,7 +5120,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
   }
 
   Future<void> _togglePlayback() async {
-    if (_frames.length < 2) {
+    if (_frameDurations.length < 2) {
       return;
     }
 
@@ -6290,7 +6312,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
   }
 
   void _pasteCopiedStrokes() {
-    if (_strokeClipboard.isEmpty || _frames.isEmpty) return;
+    if (_strokeClipboard.isEmpty || _frameDurations.isEmpty) return;
 
     // Save undo before modifying the destination frame.
     if (_activeLayerGroup != null) {
@@ -8917,7 +8939,9 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
 
       final outputPath = await const AnimationExportService().exportMp4(
         projectName: _projectName,
-        frames: _frames,
+        // Legacy project compatibility is generated only at persistence time.
+        // It is intentionally not retained as Workspace runtime state.
+        frames: _legacyCompositeFrames(),
         frameDurations: _frameDurations,
         fps: _fps,
         canvasWidth: _canvasWidth,
@@ -8971,15 +8995,15 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
       return const <VectorStroke>[];
     }
 
-    return _frames[_selectedFrameIndex - 1];
+    return _compositeFrame(_selectedFrameIndex - 1);
   }
 
   List<VectorStroke> _getNextFrameStrokes() {
-    if (_selectedFrameIndex >= _frames.length - 1) {
+    if (_selectedFrameIndex >= _frameDurations.length - 1) {
       return const <VectorStroke>[];
     }
 
-    return _frames[_selectedFrameIndex + 1];
+    return _compositeFrame(_selectedFrameIndex + 1);
   }
 
   void _rememberRecentColor(Color color) {
@@ -12612,8 +12636,10 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     final savedFrameStrokes = <VectorStroke>[];
 
     if (_selectedFrameIndex >= 0 && _selectedFrameIndex < layer.frames.length) {
+      final sourceStrokes = layer.frames[_selectedFrameIndex];
+
       savedFrameStrokes.addAll(
-        layer.frames[_selectedFrameIndex].map(
+        sourceStrokes.map(
           (stroke) => _strokeWithOpacity(stroke, layer.opacity),
         ),
       );
@@ -13024,11 +13050,12 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
   }
 
   Widget _buildImageReferenceWidget(ReferenceLayer reference) {
-    if (!_referenceImageAlphaMasks.containsKey(reference.mediaPath) &&
-        !_referenceImageAlphaLoadsInFlight.contains(reference.mediaPath)) {
-      unawaited(_primeReferenceImageAlphaMask(reference.mediaPath));
-    }
-
+    // Alpha masks are intentionally lazy.
+    //
+    // Do not decode reference images into full raw-RGBA masks merely because
+    // they are being rendered. Large/duplicate references can otherwise cause
+    // a severe memory spike while a project is opening. Hit testing primes the
+    // mask on demand through _referenceImageHitTest().
     final transformed = _buildReferenceTransformWidget(
       reference,
       Opacity(
@@ -16148,7 +16175,8 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                                                       const EdgeInsets.symmetric(
                                                         horizontal: 4,
                                                       ),
-                                                  itemCount: _frames.length,
+                                                  itemCount:
+                                                      _frameDurations.length,
                                                   onReorderItem: _reorderFrame,
                                                   itemBuilder: (context, index) {
                                                     final isSelected =
@@ -16190,11 +16218,12 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                                                           child: Stack(
                                                             children: [
                                                               CustomPaint(
-                                                                painter:
-                                                                    FrameThumbnailPainter(
-                                                                      strokes:
-                                                                          _frames[index],
-                                                                    ),
+                                                                painter: FrameThumbnailPainter(
+                                                                  strokes:
+                                                                      _compositeFrame(
+                                                                        index,
+                                                                      ),
+                                                                ),
                                                                 child:
                                                                     const SizedBox.expand(),
                                                               ),
@@ -16283,7 +16312,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                                                           MainAxisSize.min,
                                                       children: [
                                                         Text(
-                                                          'Frame ${_selectedFrameIndex + 1} / ${_frames.length}',
+                                                          'Frame ${_selectedFrameIndex + 1} / ${_frameDurations.length}',
                                                           textAlign:
                                                               TextAlign.center,
                                                           style:
@@ -16317,16 +16346,27 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                                                       value: _selectedFrameIndex
                                                           .toDouble(),
                                                       min: 0,
-                                                      max: _frames.length > 1
-                                                          ? (_frames.length - 1)
+                                                      max:
+                                                          _frameDurations
+                                                                  .length >
+                                                              1
+                                                          ? (_frameDurations
+                                                                        .length -
+                                                                    1)
                                                                 .toDouble()
                                                           : 1,
                                                       divisions:
-                                                          _frames.length > 1
-                                                          ? _frames.length - 1
+                                                          _frameDurations
+                                                                  .length >
+                                                              1
+                                                          ? _frameDurations
+                                                                    .length -
+                                                                1
                                                           : 1,
                                                       onChanged:
-                                                          _frames.length <= 1
+                                                          _frameDurations
+                                                                  .length <=
+                                                              1
                                                           ? null
                                                           : (value) {
                                                               _navigateToFrame(
@@ -16341,7 +16381,9 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                                                         VisualDensity.compact,
                                                     onPressed:
                                                         _selectedFrameIndex >=
-                                                            _frames.length - 1
+                                                            _frameDurations
+                                                                    .length -
+                                                                1
                                                         ? null
                                                         : _nextFrame,
                                                     icon: const Icon(
@@ -16355,13 +16397,15 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                                                         VisualDensity.compact,
                                                     onPressed:
                                                         _selectedFrameIndex >=
-                                                            _frames.length - 1
+                                                            _frameDurations
+                                                                    .length -
+                                                                1
                                                         ? null
-                                                        : () =>
-                                                              _navigateToFrame(
-                                                                _frames.length -
-                                                                    1,
-                                                              ),
+                                                        : () => _navigateToFrame(
+                                                            _frameDurations
+                                                                    .length -
+                                                                1,
+                                                          ),
                                                     icon: const Icon(
                                                       Icons.last_page,
                                                       size: 21,

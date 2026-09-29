@@ -62,27 +62,50 @@ class AnimationCanvasPainter extends CustomPainter {
         .where((stroke) => !stroke.alphaLocked)
         .toList(growable: false);
 
+    // Paint the ordinary artwork first. It establishes both the visible
+    // base and the stable Alpha Lock footprint.
     for (final stroke in strokes) {
-      if (!stroke.alphaLocked || alphaLockMask.isEmpty) {
+      if (!stroke.alphaLocked) {
         _paintStroke(canvas, stroke, stroke.color);
-        continue;
       }
+    }
 
-      canvas.saveLayer(Offset.zero & size, Paint());
+    // Composite all saved Alpha-Locked strokes as one batch.
+    //
+    // Previously every locked stroke created its own pair of saveLayers and
+    // repainted the complete base artwork as a dstIn mask. Complex painted
+    // layers therefore scaled roughly as:
+    //
+    //   locked strokes × complete mask geometry
+    //
+    // which could exhaust the renderer on large projects.
+    //
+    // The Alpha Lock footprint is identical for every locked stroke, so build
+    // the locked artwork together and apply that footprint exactly once.
+    if (alphaLockMask.isNotEmpty) {
+      final alphaLockedStrokes = strokes
+          .where((stroke) => stroke.alphaLocked)
+          .toList(growable: false);
 
-      _paintStroke(canvas, stroke, stroke.color);
+      if (alphaLockedStrokes.isNotEmpty) {
+        canvas.saveLayer(Offset.zero & size, Paint());
 
-      canvas.saveLayer(
-        Offset.zero & size,
-        Paint()..blendMode = BlendMode.dstIn,
-      );
+        for (final stroke in alphaLockedStrokes) {
+          _paintStroke(canvas, stroke, stroke.color);
+        }
 
-      for (final maskStroke in alphaLockMask) {
-        _paintStroke(canvas, maskStroke, Colors.white);
+        canvas.saveLayer(
+          Offset.zero & size,
+          Paint()..blendMode = BlendMode.dstIn,
+        );
+
+        for (final maskStroke in alphaLockMask) {
+          _paintStroke(canvas, maskStroke, Colors.white);
+        }
+
+        canvas.restore();
+        canvas.restore();
       }
-
-      canvas.restore();
-      canvas.restore();
     }
 
     // Current stroke being drawn.

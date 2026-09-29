@@ -47,15 +47,28 @@ class InkdFramesProject {
        referenceFrameTimesMs = referenceFrameTimesMs ?? <int>[];
 
   factory InkdFramesProject.fromJson(Map<String, dynamic> json) {
-    final legacyFrames = _readLegacyFrames(json['frames']);
-
     final rawLayers = json['layers'];
     final rawLayerGroups = json['layerGroups'];
     final rawRootOrder = json['rootOrder'];
     final rawReferenceLayers = json['referenceLayers'];
     final rawVariantSlots = json['variantSlots'];
 
-    final layers = rawLayers is List && rawLayers.isNotEmpty
+    // Modern projects use drawing layers as the authoritative vector source.
+    //
+    // Do not deserialize the legacy composited `frames` payload when modern
+    // layers are present. Large projects can contain the complete artwork in
+    // both representations, and parsing both creates a large temporary memory
+    // spike while opening the project.
+    //
+    // Legacy projects remain supported by reading `frames` only when no
+    // modern drawing layers exist.
+    final hasModernLayers = rawLayers is List && rawLayers.isNotEmpty;
+
+    final legacyFrames = hasModernLayers
+        ? <List<VectorStroke>>[]
+        : _readLegacyFrames(json['frames']);
+
+    final layers = hasModernLayers
         ? rawLayers
               .map(
                 (layer) => DrawingLayer.fromJson(
@@ -113,15 +126,16 @@ class InkdFramesProject {
             referenceFrameTimesMs: legacyReferenceFrameTimesMs,
           );
 
-    final frameCount = legacyFrames.isNotEmpty
-        ? legacyFrames.length
-        : layers.isNotEmpty
+    final frameCount = layers.isNotEmpty
         ? layers.first.frames.length
+        : legacyFrames.isNotEmpty
+        ? legacyFrames.length
         : 1;
 
-    final frames = legacyFrames.isNotEmpty
-        ? legacyFrames
-        : _legacyFramesFromLayers(layers, frameCount);
+    // Runtime Workspace state rebuilds its composite frames from layers.
+    // Avoid manufacturing another complete vector copy during deserialization
+    // for modern layered projects.
+    final frames = hasModernLayers ? <List<VectorStroke>>[] : legacyFrames;
 
     return InkdFramesProject(
       id: json['id'] as String,
