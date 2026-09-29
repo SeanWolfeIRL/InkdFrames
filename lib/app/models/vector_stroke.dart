@@ -11,6 +11,7 @@ class VectorStroke {
     this.color = Colors.white,
     this.filled = false,
     this.brushType = StrokeBrushType.solid,
+    this.alphaLocked = false,
   }) : points = List<VectorPoint>.from(points);
 
   factory VectorStroke.fromJson(Map<String, dynamic> json) {
@@ -32,6 +33,7 @@ class VectorStroke {
       color: Color(json['color'] as int),
       filled: json['filled'] as bool? ?? false,
       brushType: brushType,
+      alphaLocked: json['alphaLocked'] as bool? ?? false,
     );
   }
 
@@ -41,6 +43,11 @@ class VectorStroke {
   final bool filled;
   final StrokeBrushType brushType;
 
+  /// True when this stroke was painted while its drawing layer had
+  /// Alpha Lock enabled. The renderer can therefore reconstruct the
+  /// clipping relationship without rasterising the vector artwork.
+  final bool alphaLocked;
+
   Map<String, dynamic> toJson() {
     return {
       'points': points.map((point) => point.toJson()).toList(),
@@ -48,6 +55,7 @@ class VectorStroke {
       'color': color.toARGB32(),
       'filled': filled,
       'brushType': brushType.name,
+      'alphaLocked': alphaLocked,
     };
   }
 
@@ -58,6 +66,7 @@ class VectorStroke {
       color: color,
       filled: filled,
       brushType: brushType,
+      alphaLocked: alphaLocked,
     );
   }
 }

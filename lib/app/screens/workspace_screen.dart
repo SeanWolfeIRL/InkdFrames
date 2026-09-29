@@ -894,6 +894,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
       name: layer.name,
       visible: layer.visible,
       opacity: layer.opacity,
+      alphaLocked: layer.alphaLocked,
       frames: _copyLayerFrames(layer.frames),
     );
   }
@@ -925,6 +926,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
       strokeWidth: stroke.strokeWidth,
       filled: stroke.filled,
       brushType: stroke.brushType,
+      alphaLocked: stroke.alphaLocked,
       color: stroke.color.withValues(
         alpha: (sourceAlpha * opacity).clamp(0.0, 1.0),
       ),
@@ -3473,13 +3475,13 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
           final group = _layerGroups[groupIndex];
 
           final updatedIds = <String>[];
-          var mergedInserted = false;
+          var mergedIdInserted = false;
 
           for (final id in group.childLayerIds) {
             if (selectedIds.contains(id)) {
-              if (!mergedInserted) {
+              if (!mergedIdInserted) {
                 updatedIds.add(mergedLayer.id);
-                mergedInserted = true;
+                mergedIdInserted = true;
               }
               continue;
             }
@@ -3487,15 +3489,73 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
             updatedIds.add(id);
           }
 
-          if (!mergedInserted) {
+          if (!mergedIdInserted) {
             updatedIds.insert(0, mergedLayer.id);
           }
 
-          _layerGroups[groupIndex] = group.copyWith(childLayerIds: updatedIds);
+          // childOrder is the authoritative hierarchy order. Replace the
+          // selected layer entries at their first position so the merged
+          // layer remains in the same visible stack position.
+          final updatedOrder = <String>[];
+          var mergedOrderInserted = false;
+
+          for (final entry in group.childOrder) {
+            final isSelectedLayer =
+                entry.startsWith('layer:') &&
+                selectedIds.contains(entry.substring(6));
+
+            if (isSelectedLayer) {
+              if (!mergedOrderInserted) {
+                updatedOrder.add('layer:${mergedLayer.id}');
+                mergedOrderInserted = true;
+              }
+              continue;
+            }
+
+            updatedOrder.add(entry);
+          }
+
+          if (!mergedOrderInserted) {
+            updatedOrder.insert(0, 'layer:${mergedLayer.id}');
+          }
+
+          _layerGroups[groupIndex] = group.copyWith(
+            childLayerIds: updatedIds,
+            childOrder: updatedOrder,
+          );
 
           _layerInsertionGroupId = firstGroup.id;
         }
       } else {
+        // Root layers use the same authoritative hierarchy-entry model.
+        // Replace the selected entries rather than leaving stale layer IDs.
+        final updatedRootOrder = <String>[];
+        var mergedInserted = false;
+
+        for (final entry in _rootLayerOrder) {
+          final isSelectedLayer =
+              entry.startsWith('layer:') &&
+              selectedIds.contains(entry.substring(6));
+
+          if (isSelectedLayer) {
+            if (!mergedInserted) {
+              updatedRootOrder.add('layer:${mergedLayer.id}');
+              mergedInserted = true;
+            }
+            continue;
+          }
+
+          updatedRootOrder.add(entry);
+        }
+
+        if (!mergedInserted) {
+          updatedRootOrder.insert(0, 'layer:${mergedLayer.id}');
+        }
+
+        _rootLayerOrder
+          ..clear()
+          ..addAll(updatedRootOrder);
+
         _layerInsertionGroupId = null;
       }
 
@@ -5929,6 +5989,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
           color: stroke.color,
           filled: stroke.filled,
           brushType: stroke.brushType,
+          alphaLocked: stroke.alphaLocked,
         );
       }
 
@@ -6003,6 +6064,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
             color: source.color,
             filled: source.filled,
             brushType: source.brushType,
+            alphaLocked: source.alphaLocked,
           );
         }
 
@@ -6103,6 +6165,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
           color: source.color,
           filled: source.filled,
           brushType: source.brushType,
+          alphaLocked: source.alphaLocked,
         );
       }
 
@@ -6279,6 +6342,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
             color: source.color,
             filled: source.filled,
             brushType: source.brushType,
+            alphaLocked: source.alphaLocked,
           ),
         );
       }
@@ -6394,6 +6458,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
           color: source.color,
           filled: source.filled,
           brushType: source.brushType,
+          alphaLocked: source.alphaLocked,
         );
       }
 
@@ -6848,6 +6913,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
             color: stroke.color,
             filled: stroke.filled,
             brushType: stroke.brushType,
+            alphaLocked: stroke.alphaLocked,
           ),
         );
 
@@ -7151,6 +7217,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
         color: stroke.color,
         filled: stroke.filled,
         brushType: stroke.brushType,
+        alphaLocked: stroke.alphaLocked,
       );
     }).toList();
   }
@@ -7719,6 +7786,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
       color: resultColor,
       filled: stroke.filled,
       brushType: stroke.brushType,
+      alphaLocked: stroke.alphaLocked,
     );
   }
 
@@ -8748,15 +8816,17 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
 
     _saveUndoState();
 
+    final layer = _activeLayer;
+
     final stroke = VectorStroke(
       points: List<VectorPoint>.from(_draftStroke),
       strokeWidth: _brushSize,
       color: _brushColor.withValues(alpha: _brushOpacity),
       brushType: _brushType,
+      alphaLocked: layer.alphaLocked,
     );
 
     setState(() {
-      final layer = _activeLayer;
       final frames = _copyLayerFrames(layer.frames);
 
       frames[_selectedFrameIndex] = <VectorStroke>[
@@ -12270,6 +12340,20 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     );
   }
 
+  void _toggleLayerAlphaLock(int index) {
+    if (index < 0 || index >= _layers.length) {
+      return;
+    }
+
+    setState(() {
+      final layer = _layers[index];
+      _layers[index] = layer.copyWith(alphaLocked: !layer.alphaLocked);
+    });
+
+    _scheduleAutosave();
+    HapticFeedback.lightImpact();
+  }
+
   Widget _buildDrawingLayerCard(
     int index, {
     required bool indented,
@@ -12365,6 +12449,22 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                           ),
                         ],
                       ),
+                    ),
+                  ),
+                  IconButton(
+                    tooltip: layer.alphaLocked
+                        ? 'Disable Alpha Lock'
+                        : 'Enable Alpha Lock',
+                    visualDensity: VisualDensity.compact,
+                    onPressed: _isPlaying
+                        ? null
+                        : () => _toggleLayerAlphaLock(index),
+                    icon: Icon(
+                      layer.alphaLocked ? Icons.lock : Icons.lock_open,
+                      size: 18,
+                      color: layer.alphaLocked
+                          ? Colors.tealAccent
+                          : Colors.white54,
                     ),
                   ),
                   PopupMenuButton<String>(
@@ -12509,13 +12609,16 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     final isActiveLayer = layerIndex == _activeLayerIndex;
 
     final frameStrokes = <VectorStroke>[];
+    final savedFrameStrokes = <VectorStroke>[];
 
     if (_selectedFrameIndex >= 0 && _selectedFrameIndex < layer.frames.length) {
-      frameStrokes.addAll(
+      savedFrameStrokes.addAll(
         layer.frames[_selectedFrameIndex].map(
           (stroke) => _strokeWithOpacity(stroke, layer.opacity),
         ),
       );
+
+      frameStrokes.addAll(savedFrameStrokes);
     }
 
     if (isActiveLayer) {
@@ -12550,6 +12653,9 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
           paintBackground: false,
           previousOnionSkinColor: Colors.transparent,
           nextOnionSkinColor: Colors.transparent,
+          alphaLockMaskStrokes: isActiveLayer && layer.alphaLocked
+              ? savedFrameStrokes
+              : const <VectorStroke>[],
         ),
         child: const SizedBox.expand(),
       ),

@@ -1059,6 +1059,7 @@ class _HomeScreenState extends State<HomeScreen>
             ),
             filled: stroke.filled,
             brushType: stroke.brushType,
+            alphaLocked: stroke.alphaLocked,
           ),
         );
       }
@@ -3759,6 +3760,7 @@ class _HomeScreenState extends State<HomeScreen>
           color: stroke.color.withValues(alpha: stroke.color.a * layerOpacity),
           filled: stroke.filled,
           brushType: stroke.brushType,
+          alphaLocked: stroke.alphaLocked,
         ),
       );
     }

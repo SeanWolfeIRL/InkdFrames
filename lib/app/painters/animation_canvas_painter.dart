@@ -19,6 +19,7 @@ class AnimationCanvasPainter extends CustomPainter {
     required this.brushType,
     required this.backgroundColor,
     this.paintBackground = true,
+    this.alphaLockMaskStrokes = const <VectorStroke>[],
   });
 
   final List<VectorStroke> strokes;
@@ -35,6 +36,13 @@ class AnimationCanvasPainter extends CustomPainter {
   final Color backgroundColor;
   final bool paintBackground;
 
+  /// Saved artwork used as the Alpha Lock footprint.
+  ///
+  /// When non-empty, the current live stroke is composited through the
+  /// rendered alpha of these strokes rather than being allowed to paint
+  /// outside the existing artwork.
+  final List<VectorStroke> alphaLockMaskStrokes;
+
   @override
   void paint(Canvas canvas, Size size) {
     if (paintBackground) {
@@ -46,21 +54,71 @@ class AnimationCanvasPainter extends CustomPainter {
     }
 
     // Current saved frame.
+    //
+    // Ordinary strokes establish the layer's Alpha Lock footprint.
+    // Strokes authored while Alpha Lock was enabled are rendered through
+    // that stable footprint and never enlarge the mask themselves.
+    final alphaLockMask = strokes
+        .where((stroke) => !stroke.alphaLocked)
+        .toList(growable: false);
+
     for (final stroke in strokes) {
+      if (!stroke.alphaLocked || alphaLockMask.isEmpty) {
+        _paintStroke(canvas, stroke, stroke.color);
+        continue;
+      }
+
+      canvas.saveLayer(Offset.zero & size, Paint());
+
       _paintStroke(canvas, stroke, stroke.color);
+
+      canvas.saveLayer(
+        Offset.zero & size,
+        Paint()..blendMode = BlendMode.dstIn,
+      );
+
+      for (final maskStroke in alphaLockMask) {
+        _paintStroke(canvas, maskStroke, Colors.white);
+      }
+
+      canvas.restore();
+      canvas.restore();
     }
 
     // Current stroke being drawn.
     if (currentStroke != null && currentStroke!.isNotEmpty) {
-      _paintStroke(
-        canvas,
-        VectorStroke(
-          points: currentStroke!,
-          strokeWidth: strokeWidth,
-          brushType: brushType,
-        ),
-        strokeColor,
+      final liveStroke = VectorStroke(
+        points: currentStroke!,
+        strokeWidth: strokeWidth,
+        brushType: brushType,
       );
+
+      final liveAlphaLockMask = alphaLockMaskStrokes
+          .where((stroke) => !stroke.alphaLocked)
+          .toList(growable: false);
+
+      if (liveAlphaLockMask.isEmpty) {
+        _paintStroke(canvas, liveStroke, strokeColor);
+      } else {
+        // Paint the live stroke into an isolated layer, then retain only
+        // pixels covered by the established non-Alpha-Locked artwork.
+        // Locked shading therefore cannot progressively expand its mask.
+        canvas.saveLayer(Offset.zero & size, Paint());
+
+        _paintStroke(canvas, liveStroke, strokeColor);
+
+        canvas.saveLayer(
+          Offset.zero & size,
+          Paint()..blendMode = BlendMode.dstIn,
+        );
+
+        for (final maskStroke in liveAlphaLockMask) {
+          _paintStroke(canvas, maskStroke, Colors.white);
+        }
+
+        canvas.restore();
+        canvas.restore();
+      }
     }
 
     // Onion skins are intentionally painted last so they remain
