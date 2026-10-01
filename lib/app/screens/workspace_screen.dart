@@ -4793,6 +4793,11 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
 
   void _duplicateFrame() {
     setState(() {
+      final sourceFrameId = _selectedFrameIndex < _frameIds.length
+          ? _frameIds[_selectedFrameIndex]
+          : null;
+      final duplicatedFrameId = _newFrameId();
+
       for (var i = 0; i < _layers.length; i++) {
         final layer = _layers[i];
         final frames = _copyLayerFrames(layer.frames);
@@ -4807,7 +4812,29 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
       }
 
       _frameDurations.add(_frameDurations[_selectedFrameIndex]);
-      _frameIds.add(_newFrameId());
+      _frameIds.add(duplicatedFrameId);
+
+      // A duplicated animation frame inherits the complete semantic pose of
+      // its source frame, but receives independent keyframe identities.
+      //
+      // This keeps the duplicate visually identical while allowing either
+      // frame to be posed independently afterward.
+      if (sourceFrameId != null) {
+        final sourceKeyframes = _transformKeyframes
+            .where((keyframe) => keyframe.frameId == sourceFrameId)
+            .toList();
+
+        final keyframeTimestamp = DateTime.now().microsecondsSinceEpoch;
+
+        for (var i = 0; i < sourceKeyframes.length; i++) {
+          _transformKeyframes.add(
+            sourceKeyframes[i].copyWith(
+              id: 'transform_key_${keyframeTimestamp}_$i',
+              frameId: duplicatedFrameId,
+            ),
+          );
+        }
+      }
 
       if (_referenceFrameTimesMs.isNotEmpty &&
           _selectedFrameIndex < _referenceFrameTimesMs.length) {
@@ -5304,6 +5331,26 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
       bounds = bounds == null
           ? referenceBounds
           : bounds.expandToInclude(referenceBounds);
+    }
+
+    // A keyed whole-group pose is rendered non-destructively, so the
+    // transform overlay must follow that displayed pose rather than remain
+    // attached to the authored descendant geometry.
+    //
+    // Translation is handled first. Rotation/scale-aware posed bounds will
+    // extend this same boundary once their live keyframe gestures are wired.
+    if (bounds != null && _editingKeyedTransformGroupPose) {
+      final groupId = _transformTargetGroupId;
+
+      if (groupId != null) {
+        final keyframe = _transformKeyframeForCurrentFrame(groupId);
+
+        if (keyframe != null) {
+          bounds = bounds.shift(
+            Offset(keyframe.translateX, keyframe.translateY),
+          );
+        }
+      }
     }
 
     return bounds;
@@ -5921,6 +5968,67 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     );
   }
 
+  TransformKeyframe? _transformKeyframeForFrame(
+    String frameId,
+    String groupId,
+  ) {
+    final index = _transformKeyframeIndexFor(
+      frameId: frameId,
+      targetGroupId: groupId,
+    );
+
+    if (index == -1) {
+      return null;
+    }
+
+    final keyframe = _transformKeyframes[index];
+
+    return keyframe.enabled ? keyframe : null;
+  }
+
+  TransformKeyframe? _transformKeyframeForCurrentFrame(String groupId) {
+    final frameId = _currentFrameId;
+
+    if (frameId == null) {
+      return null;
+    }
+
+    return _transformKeyframeForFrame(frameId, groupId);
+  }
+
+  bool get _editingKeyedTransformGroupPose {
+    final groupId = _transformTargetGroupId;
+
+    return groupId != null &&
+        _transformReferenceLayerId == null &&
+        _transformKeyframeForCurrentFrame(groupId) != null;
+  }
+
+  void _translateCurrentTransformKeyframe(Offset delta) {
+    final frameId = _currentFrameId;
+    final groupId = _transformTargetGroupId;
+
+    if (frameId == null || groupId == null) {
+      return;
+    }
+
+    final index = _transformKeyframeIndexFor(
+      frameId: frameId,
+      targetGroupId: groupId,
+    );
+
+    if (index == -1) {
+      return;
+    }
+
+    final keyframe = _transformKeyframes[index];
+
+    _transformKeyframes[index] = keyframe.copyWith(
+      translateX: keyframe.translateX + delta.dx,
+      translateY: keyframe.translateY + delta.dy,
+    );
+  }
+
   bool get _currentTransformGroupHasKeyframe {
     final frameId = _currentFrameId;
     final groupId = _transformTargetGroupId;
@@ -5966,6 +6074,21 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
           : _transformKeyframes[existingIndex].id,
       frameId: frameId,
       targetGroupId: groupId,
+      translateX: existingIndex == -1
+          ? 0.0
+          : _transformKeyframes[existingIndex].translateX,
+      translateY: existingIndex == -1
+          ? 0.0
+          : _transformKeyframes[existingIndex].translateY,
+      rotation: existingIndex == -1
+          ? 0.0
+          : _transformKeyframes[existingIndex].rotation,
+      scaleX: existingIndex == -1
+          ? 1.0
+          : _transformKeyframes[existingIndex].scaleX,
+      scaleY: existingIndex == -1
+          ? 1.0
+          : _transformKeyframes[existingIndex].scaleY,
       pivotX: _transformPivot?.dx,
       pivotY: _transformPivot?.dy,
     );
@@ -8688,7 +8811,14 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
         setState(() {
           if (_transformReferenceLayerId != null) {
             _moveReferenceTransform(delta);
+          } else if (_editingKeyedTransformGroupPose) {
+            // Animation pose lane:
+            // move the semantic group at render time without rewriting any
+            // descendant strokes or reference-layer transforms.
+            _translateCurrentTransformKeyframe(delta);
           } else {
+            // Authored artwork lane:
+            // preserve the existing destructive Transform behaviour.
             _moveSelectedStrokes(delta);
             _moveGroupReferences(delta);
           }
@@ -12773,15 +12903,20 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     return _isGroupEffectivelyVisible(group.id);
   }
 
-  Widget _buildDrawingLayerSceneWidget(DrawingLayer layer) {
+  Widget _buildDrawingLayerSceneWidget(DrawingLayer layer, {int? frameIndex}) {
+    final resolvedFrameIndex = frameIndex ?? _selectedFrameIndex;
     final layerIndex = _layers.indexWhere((item) => item.id == layer.id);
-    final isActiveLayer = layerIndex == _activeLayerIndex;
+
+    // Draft artwork belongs only to the actively edited frame.
+    // Historical/future frame renders such as onion skins must contain only
+    // committed artwork from that requested frame.
+    final isActiveLayer = frameIndex == null && layerIndex == _activeLayerIndex;
 
     final frameStrokes = <VectorStroke>[];
     final savedFrameStrokes = <VectorStroke>[];
 
-    if (_selectedFrameIndex >= 0 && _selectedFrameIndex < layer.frames.length) {
-      final sourceStrokes = layer.frames[_selectedFrameIndex];
+    if (resolvedFrameIndex >= 0 && resolvedFrameIndex < layer.frames.length) {
+      final sourceStrokes = layer.frames[resolvedFrameIndex];
 
       savedFrameStrokes.addAll(
         sourceStrokes.map(
@@ -12835,7 +12970,83 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     return _applySceneBrightness(scene, _effectiveBrightnessForLayer(layer));
   }
 
-  List<Widget> _buildMixedHierarchySceneWidgets({String? isolatedGroupId}) {
+  Widget _applyOnionSkinTint(Widget child, Color color) {
+    final red = color.r;
+    final green = color.g;
+    final blue = color.b;
+
+    return Opacity(
+      opacity: 0.40,
+      child: ColorFiltered(
+        colorFilter: ColorFilter.matrix(<double>[
+          0,
+          0,
+          0,
+          0,
+          red,
+          0,
+          0,
+          0,
+          0,
+          green,
+          0,
+          0,
+          0,
+          0,
+          blue,
+          0,
+          0,
+          0,
+          1,
+          0,
+        ]),
+        child: child,
+      ),
+    );
+  }
+
+  Widget _applyTransformKeyframeToGroup(
+    String groupId,
+    Widget child, {
+    String? frameId,
+  }) {
+    final resolvedFrameId = frameId ?? _currentFrameId;
+
+    if (resolvedFrameId == null) {
+      return child;
+    }
+
+    final keyframe = _transformKeyframeForFrame(resolvedFrameId, groupId);
+
+    if (keyframe == null) {
+      return child;
+    }
+
+    final pivot = Offset(
+      keyframe.pivotX ?? (_canvasWidth / 2),
+      keyframe.pivotY ?? (_canvasHeight / 2),
+    );
+
+    final matrix = Matrix4.identity()
+      ..translateByDouble(keyframe.translateX, keyframe.translateY, 0.0, 1.0)
+      ..translateByDouble(pivot.dx, pivot.dy, 0.0, 1.0)
+      ..rotateZ(keyframe.rotation)
+      ..scaleByDouble(keyframe.scaleX, keyframe.scaleY, 1.0, 1.0)
+      ..translateByDouble(-pivot.dx, -pivot.dy, 0.0, 1.0);
+
+    return Transform(
+      transform: matrix,
+      alignment: Alignment.topLeft,
+      child: child,
+    );
+  }
+
+  List<Widget> _buildMixedHierarchySceneWidgets({
+    String? isolatedGroupId,
+    int? frameIndex,
+    String? frameId,
+    bool drawingOnly = false,
+  }) {
     final widgets = <Widget>[];
 
     final visitedLayerIds = <String>{};
@@ -12909,7 +13120,9 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
           return;
         }
 
-        widgets.add(_buildDrawingLayerSceneWidget(layer));
+        widgets.add(
+          _buildDrawingLayerSceneWidget(layer, frameIndex: frameIndex),
+        );
         return;
       }
 
@@ -12917,6 +13130,13 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
         final referenceId = entry.substring(10);
 
         if (!visitedReferenceIds.add(referenceId)) {
+          return;
+        }
+
+        // Onion/history scene renders remain drawing-only, matching the
+        // original onion-skin behaviour. Reference images and video should
+        // never become red/green animation ghosts.
+        if (drawingOnly) {
           return;
         }
 
@@ -12994,10 +13214,39 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
           return;
         }
 
+        // Give every semantic LayerGroup its own scene boundary.
+        //
+        // Child artwork still renders exactly as before, but collecting the
+        // branch into a full-canvas Stack gives Animation Mode one stable
+        // widget boundary that can later receive a non-destructive pose
+        // transform without rewriting descendant artwork.
+        final groupWidgets = <Widget>[];
+
+        final outerWidgets = widgets;
+
         // Layer panel order is top-to-bottom.
         // Flutter Stack paints first-to-last, so walk children bottom-to-top.
         for (final childEntry in group.childOrder.reversed) {
+          final beforeCount = outerWidgets.length;
+
           addEntry(childEntry);
+
+          if (outerWidgets.length > beforeCount) {
+            groupWidgets.addAll(outerWidgets.sublist(beforeCount));
+            outerWidgets.removeRange(beforeCount, outerWidgets.length);
+          }
+        }
+
+        if (groupWidgets.isNotEmpty) {
+          widgets.add(
+            Positioned.fill(
+              child: _applyTransformKeyframeToGroup(
+                group.id,
+                Stack(fit: StackFit.expand, children: groupWidgets),
+                frameId: frameId,
+              ),
+            ),
+          );
         }
       }
     }
@@ -13023,23 +13272,25 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     // rendered underneath the authoritative hierarchy rather than vanishing.
     final fallbackWidgets = <Widget>[];
 
-    for (final reference in _referenceLayers) {
-      final entry = 'reference:${reference.id}';
+    if (!drawingOnly) {
+      for (final reference in _referenceLayers) {
+        final entry = 'reference:${reference.id}';
 
-      if (visitedReferenceIds.contains(reference.id) ||
-          _variantSlotContainingEntry(entry) != null ||
-          !_isReferenceEffectivelyVisible(reference) ||
-          reference.mediaPath.isEmpty) {
-        continue;
-      }
+        if (visitedReferenceIds.contains(reference.id) ||
+            _variantSlotContainingEntry(entry) != null ||
+            !_isReferenceEffectivelyVisible(reference) ||
+            reference.mediaPath.isEmpty) {
+          continue;
+        }
 
-      if (reference.mediaType == 'image') {
-        fallbackWidgets.add(_buildImageReferenceWidget(reference));
-      } else if (reference.mediaType == 'video' &&
-          reference.id == _activeReferenceLayerId &&
-          _videoReady &&
-          _videoController != null) {
-        fallbackWidgets.add(_buildActiveVideoReferenceWidget());
+        if (reference.mediaType == 'image') {
+          fallbackWidgets.add(_buildImageReferenceWidget(reference));
+        } else if (reference.mediaType == 'video' &&
+            reference.id == _activeReferenceLayerId &&
+            _videoReady &&
+            _videoController != null) {
+          fallbackWidgets.add(_buildActiveVideoReferenceWidget());
+        }
       }
     }
 
@@ -13049,7 +13300,9 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
         continue;
       }
 
-      fallbackWidgets.add(_buildDrawingLayerSceneWidget(layer));
+      fallbackWidgets.add(
+        _buildDrawingLayerSceneWidget(layer, frameIndex: frameIndex),
+      );
     }
 
     return <Widget>[...fallbackWidgets, ...widgets];
@@ -13287,9 +13540,6 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final previousFrameStrokes = _getPreviousFrameStrokes();
-    final nextFrameStrokes = _getNextFrameStrokes();
-
     return Scaffold(
       extendBodyBehindAppBar: true,
       appBar: AppBar(
@@ -13415,40 +13665,55 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                                                   : null,
                                             ),
 
-                                            // Onion skins remain a workspace
-                                            // guide overlay above the scene.
+                                            // Pose-aware onion skins render
+                                            // the neighbouring frame through
+                                            // the same semantic hierarchy as
+                                            // the live scene. Group keyframes
+                                            // therefore move the ghost without
+                                            // mutating authored artwork.
                                             if (_showOnionSkin &&
-                                                !_isCompositePngCapture)
+                                                !_isCompositePngCapture &&
+                                                _selectedFrameIndex > 0 &&
+                                                _selectedFrameIndex - 1 <
+                                                    _frameIds.length)
                                               IgnorePointer(
-                                                child: CustomPaint(
-                                                  painter: AnimationCanvasPainter(
-                                                    strokes:
-                                                        const <VectorStroke>[],
-                                                    currentStroke: null,
-                                                    previousOnionSkinStrokes:
-                                                        previousFrameStrokes,
-                                                    nextOnionSkinStrokes:
-                                                        nextFrameStrokes,
-                                                    strokeColor:
-                                                        Colors.transparent,
-                                                    strokeWidth: _brushSize,
-                                                    brushType: _brushType,
-                                                    backgroundColor:
-                                                        _canvasBackgroundColor,
-                                                    paintBackground: false,
-                                                    previousOnionSkinColor:
-                                                        Colors.redAccent
-                                                            .withValues(
-                                                              alpha: 0.40,
-                                                            ),
-                                                    nextOnionSkinColor: Colors
-                                                        .greenAccent
-                                                        .withValues(
-                                                          alpha: 0.40,
-                                                        ),
+                                                child: _applyOnionSkinTint(
+                                                  Stack(
+                                                    fit: StackFit.expand,
+                                                    children: _buildMixedHierarchySceneWidgets(
+                                                      frameIndex:
+                                                          _selectedFrameIndex -
+                                                          1,
+                                                      frameId:
+                                                          _frameIds[_selectedFrameIndex -
+                                                              1],
+                                                      drawingOnly: true,
+                                                    ),
                                                   ),
-                                                  child:
-                                                      const SizedBox.expand(),
+                                                  Colors.redAccent,
+                                                ),
+                                              ),
+                                            if (_showOnionSkin &&
+                                                !_isCompositePngCapture &&
+                                                _selectedFrameIndex + 1 <
+                                                    _frameDurations.length &&
+                                                _selectedFrameIndex + 1 <
+                                                    _frameIds.length)
+                                              IgnorePointer(
+                                                child: _applyOnionSkinTint(
+                                                  Stack(
+                                                    fit: StackFit.expand,
+                                                    children: _buildMixedHierarchySceneWidgets(
+                                                      frameIndex:
+                                                          _selectedFrameIndex +
+                                                          1,
+                                                      frameId:
+                                                          _frameIds[_selectedFrameIndex +
+                                                              1],
+                                                      drawingOnly: true,
+                                                    ),
+                                                  ),
+                                                  Colors.greenAccent,
                                                 ),
                                               ),
                                             if (_fillLassoPoints.length > 1 &&
