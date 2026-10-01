@@ -15,6 +15,7 @@ import '../models/drawing_layer.dart';
 import '../models/inkdframes_project.dart';
 import '../models/layer_group.dart';
 import '../models/reference_layer.dart';
+import '../models/transform_keyframe.dart';
 import '../models/variant_slot.dart';
 import '../models/vector_point.dart';
 import '../models/vector_stroke.dart';
@@ -233,6 +234,13 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
   final List<String> _frameIds = ['frame_initial'];
 
   String _newFrameId() => 'frame_${DateTime.now().microsecondsSinceEpoch}';
+
+  // Non-destructive animation pose data.
+  //
+  // These records describe how semantic LayerGroups should be posed on stable
+  // animation frames. They never replace or rewrite the authored artwork.
+  final List<TransformKeyframe> _transformKeyframes = <TransformKeyframe>[];
+
   final List<int> _referenceFrameTimesMs = <int>[];
   int _selectedFrameIndex = 0;
   int _activePointerCount = 0;
@@ -320,6 +328,13 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
   // pivot as the selected drawing strokes.
   Set<String> _transformGroupReferenceIds = <String>{};
   Map<String, ReferenceLayer>? _transformGroupReferenceSnapshot;
+
+  // Semantic hierarchy target for whole-group transforms.
+  //
+  // The expanded stroke/reference selection is transient editor state.
+  // Animation keyframes must target the stable LayerGroup identity instead,
+  // so artwork edits cannot detach animation data from its intended part.
+  String? _transformTargetGroupId;
 
   /// Temporary in-memory clipboard used by Transform copy/paste.
   final Map<String, List<VectorStroke>> _strokeClipboard =
@@ -765,6 +780,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
       rootOrder: _rootLayerOrder,
       referenceLayers: _referenceLayers,
       variantSlots: _variantSlots,
+      transformKeyframes: _transformKeyframes,
       activeReferenceLayerId: _activeReferenceLayerId,
       frameDurations: _frameDurations,
       frameIds: _frameIds,
@@ -4326,6 +4342,10 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
         _frameIds.removeRange(_frameDurations.length, _frameIds.length);
       }
 
+      _transformKeyframes
+        ..clear()
+        ..addAll(project.transformKeyframes);
+
       // loadProject() returns a freshly deserialized project graph.
       // Workspace can take ownership of those immutable stroke/point objects
       // directly instead of deep-copying the entire project a second time.
@@ -5644,6 +5664,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     _referenceTransformSnapshot = null;
     _transformGroupReferenceIds = <String>{};
     _transformGroupReferenceSnapshot = null;
+    _transformTargetGroupId = null;
     _transformLastPosition = null;
     _transformScaleAnchor = null;
     _transformScaleStartDistance = null;
@@ -5872,12 +5893,103 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
 
       _selectedTransformStrokes = selected;
       _transformGroupReferenceIds = Set<String>.from(referenceIds);
+      _transformTargetGroupId = groupId;
 
       final bounds = _transformSelectionBounds();
       _transformPivot = bounds?.center;
     });
 
     HapticFeedback.mediumImpact();
+  }
+
+  String? get _currentFrameId {
+    if (_selectedFrameIndex < 0 || _selectedFrameIndex >= _frameIds.length) {
+      return null;
+    }
+
+    return _frameIds[_selectedFrameIndex];
+  }
+
+  int _transformKeyframeIndexFor({
+    required String frameId,
+    required String targetGroupId,
+  }) {
+    return _transformKeyframes.indexWhere(
+      (keyframe) =>
+          keyframe.frameId == frameId &&
+          keyframe.targetGroupId == targetGroupId,
+    );
+  }
+
+  bool get _currentTransformGroupHasKeyframe {
+    final frameId = _currentFrameId;
+    final groupId = _transformTargetGroupId;
+
+    if (frameId == null || groupId == null) {
+      return false;
+    }
+
+    return _transformKeyframeIndexFor(
+          frameId: frameId,
+          targetGroupId: groupId,
+        ) !=
+        -1;
+  }
+
+  void _keyCurrentTransformGroupPose() {
+    final frameId = _currentFrameId;
+    final groupId = _transformTargetGroupId;
+
+    if (frameId == null || groupId == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Select a whole layer group to key its pose'),
+        ),
+      );
+      return;
+    }
+
+    final groupIndex = _layerGroups.indexWhere((group) => group.id == groupId);
+
+    if (groupIndex == -1) {
+      return;
+    }
+
+    final existingIndex = _transformKeyframeIndexFor(
+      frameId: frameId,
+      targetGroupId: groupId,
+    );
+
+    final keyframe = TransformKeyframe(
+      id: existingIndex == -1
+          ? 'transform_key_${DateTime.now().microsecondsSinceEpoch}'
+          : _transformKeyframes[existingIndex].id,
+      frameId: frameId,
+      targetGroupId: groupId,
+      pivotX: _transformPivot?.dx,
+      pivotY: _transformPivot?.dy,
+    );
+
+    setState(() {
+      if (existingIndex == -1) {
+        _transformKeyframes.add(keyframe);
+      } else {
+        _transformKeyframes[existingIndex] = keyframe;
+      }
+    });
+
+    _scheduleAutosave();
+
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          existingIndex == -1
+              ? '${_layerGroups[groupIndex].name} pose keyed'
+              : '${_layerGroups[groupIndex].name} pose key updated',
+        ),
+        duration: const Duration(seconds: 1),
+      ),
+    );
   }
 
   void _enterLayerTransform(int layerIndex) {
@@ -15824,6 +15936,25 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                                       ? null
                                       : _flipSelectedStrokesHorizontally,
                                   icon: const Icon(Icons.flip),
+                                ),
+                                IconButton(
+                                  tooltip: _currentTransformGroupHasKeyframe
+                                      ? 'Update Key Pose'
+                                      : 'Key Pose',
+                                  visualDensity: VisualDensity.compact,
+                                  onPressed:
+                                      _isPlaying ||
+                                          _transformTargetGroupId == null
+                                      ? null
+                                      : _keyCurrentTransformGroupPose,
+                                  icon: Icon(
+                                    _currentTransformGroupHasKeyframe
+                                        ? Icons.key
+                                        : Icons.key_outlined,
+                                    color: _currentTransformGroupHasKeyframe
+                                        ? Colors.amberAccent
+                                        : null,
+                                  ),
                                 ),
                                 IconButton(
                                   tooltip: 'Copy Selection',

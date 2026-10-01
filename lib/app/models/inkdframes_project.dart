@@ -1,6 +1,7 @@
 import 'drawing_layer.dart';
 import 'layer_group.dart';
 import 'reference_layer.dart';
+import 'transform_keyframe.dart';
 import 'variant_slot.dart';
 import 'vector_stroke.dart';
 
@@ -22,6 +23,7 @@ class InkdFramesProject {
     List<String>? rootOrder,
     List<ReferenceLayer>? referenceLayers,
     List<VariantSlot>? variantSlots,
+    List<TransformKeyframe>? transformKeyframes,
     this.activeReferenceLayerId,
     List<int>? referenceFrameTimesMs,
     this.referenceVisible = true,
@@ -36,6 +38,7 @@ class InkdFramesProject {
              layerGroups ?? <LayerGroup>[],
            ),
        variantSlots = variantSlots ?? <VariantSlot>[],
+       transformKeyframes = transformKeyframes ?? <TransformKeyframe>[],
        referenceLayers =
            referenceLayers ??
            _referenceLayersFromLegacy(
@@ -54,6 +57,7 @@ class InkdFramesProject {
     final rawRootOrder = json['rootOrder'];
     final rawReferenceLayers = json['referenceLayers'];
     final rawVariantSlots = json['variantSlots'];
+    final rawTransformKeyframes = json['transformKeyframes'];
 
     // Modern projects use drawing layers as the authoritative vector source.
     //
@@ -99,6 +103,22 @@ class InkdFramesProject {
               )
               .toList()
         : <VariantSlot>[];
+
+    final transformKeyframes = rawTransformKeyframes is List
+        ? rawTransformKeyframes
+              .whereType<Map>()
+              .map(
+                (entry) => TransformKeyframe.fromJson(
+                  Map<String, dynamic>.from(entry),
+                ),
+              )
+              .where(
+                (keyframe) =>
+                    keyframe.frameId.isNotEmpty &&
+                    keyframe.targetGroupId.isNotEmpty,
+              )
+              .toList()
+        : <TransformKeyframe>[];
 
     final legacyReferenceFrameTimesMs = json['referenceFrameTimesMs'] is List
         ? (json['referenceFrameTimesMs'] as List)
@@ -187,6 +207,7 @@ class InkdFramesProject {
           : null,
       referenceLayers: referenceLayers,
       variantSlots: variantSlots,
+      transformKeyframes: transformKeyframes,
       activeReferenceLayerId:
           json['activeReferenceLayerId'] as String? ??
           (referenceLayers.isNotEmpty ? referenceLayers.first.id : null),
@@ -228,6 +249,12 @@ class InkdFramesProject {
   /// The slot itself has a stable position in rootOrder or a group's
   /// childOrder. Upgrade #3B will make only the active child render.
   final List<VariantSlot> variantSlots;
+
+  /// Non-destructive group pose keys attached to stable animation frames.
+  ///
+  /// Keyframes reference semantic LayerGroup IDs and stable frame IDs rather
+  /// than copying or replacing the underlying authored artwork.
+  final List<TransformKeyframe> transformKeyframes;
 
   /// Reference currently driving video playback/scrubbing.
   final String? activeReferenceLayerId;
@@ -282,6 +309,9 @@ class InkdFramesProject {
           .map((reference) => reference.toJson())
           .toList(),
       'variantSlots': variantSlots.map((slot) => slot.toJson()).toList(),
+      'transformKeyframes': transformKeyframes
+          .map((keyframe) => keyframe.toJson())
+          .toList(),
       'activeReferenceLayerId': activeReferenceLayerId,
 
       'frameDurations': frameDurations,
