@@ -11,6 +11,7 @@ class InkdFramesProject {
     required this.fps,
     required this.frames,
     required this.frameDurations,
+    List<String>? frameIds,
     this.canvasWidth = 1920,
     this.canvasHeight = 1080,
     this.canvasBackgroundColor = 0xFF1F1B24,
@@ -44,7 +45,8 @@ class InkdFramesProject {
              referenceOpacity: referenceOpacity,
              referenceFrameTimesMs: referenceFrameTimesMs ?? <int>[],
            ),
-       referenceFrameTimesMs = referenceFrameTimesMs ?? <int>[];
+       referenceFrameTimesMs = referenceFrameTimesMs ?? <int>[],
+       frameIds = frameIds ?? <String>[];
 
   factory InkdFramesProject.fromJson(Map<String, dynamic> json) {
     final rawLayers = json['layers'];
@@ -137,11 +139,33 @@ class InkdFramesProject {
     // for modern layered projects.
     final frames = hasModernLayers ? <List<VectorStroke>>[] : legacyFrames;
 
+    // Animation frames need stable identity so future keyframes remain attached
+    // to the same animation moment when frames are reordered.
+    //
+    // Older projects have no frameIds. Generate them once during migration;
+    // the next save persists them permanently.
+    final rawFrameIds = json['frameIds'];
+    final loadedFrameIds = rawFrameIds is List
+        ? rawFrameIds.map((entry) => entry.toString()).toList()
+        : <String>[];
+
+    final frameIds =
+        loadedFrameIds.length == frameCount &&
+            loadedFrameIds.every((id) => id.isNotEmpty) &&
+            loadedFrameIds.toSet().length == loadedFrameIds.length
+        ? loadedFrameIds
+        : List<String>.generate(
+            frameCount,
+            (index) =>
+                'frame_${DateTime.now().microsecondsSinceEpoch}_${index}',
+          );
+
     return InkdFramesProject(
       id: json['id'] as String,
       name: json['name'] as String,
       fps: (json['fps'] as num).toDouble(),
       frames: frames,
+      frameIds: frameIds,
       frameDurations: json['frameDurations'] != null
           ? (json['frameDurations'] as List)
                 .map((duration) => (duration as num).toInt())
@@ -209,6 +233,14 @@ class InkdFramesProject {
   final String? activeReferenceLayerId;
 
   final List<int> frameDurations;
+
+  /// Stable identity for each animation frame.
+  ///
+  /// IDs travel with frames during reorder operations so animation metadata
+  /// such as transform keyframes can target a frame without depending on its
+  /// current timeline index.
+  final List<String> frameIds;
+
   final double canvasWidth;
   final double canvasHeight;
   final int canvasBackgroundColor;
@@ -253,6 +285,7 @@ class InkdFramesProject {
       'activeReferenceLayerId': activeReferenceLayerId,
 
       'frameDurations': frameDurations,
+      'frameIds': frameIds,
       'canvasWidth': canvasWidth,
       'canvasHeight': canvasHeight,
       'canvasBackgroundColor': canvasBackgroundColor,

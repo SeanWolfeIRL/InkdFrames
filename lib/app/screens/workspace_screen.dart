@@ -227,6 +227,12 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
   final Set<String> _mergeSelectedLayerIds = <String>{};
 
   final List<int> _frameDurations = [1];
+
+  // Stable animation-frame identity. Future keyframes target these IDs rather
+  // than positional frame indices so reordering cannot detach animation data.
+  final List<String> _frameIds = ['frame_initial'];
+
+  String _newFrameId() => 'frame_${DateTime.now().microsecondsSinceEpoch}';
   final List<int> _referenceFrameTimesMs = <int>[];
   int _selectedFrameIndex = 0;
   int _activePointerCount = 0;
@@ -761,6 +767,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
       variantSlots: _variantSlots,
       activeReferenceLayerId: _activeReferenceLayerId,
       frameDurations: _frameDurations,
+      frameIds: _frameIds,
       canvasWidth: _canvasWidth,
       canvasHeight: _canvasHeight,
       canvasBackgroundColor: _canvasBackgroundColor.toARGB32(),
@@ -4305,6 +4312,20 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
         ..clear()
         ..addAll(project.frameDurations);
 
+      _frameIds
+        ..clear()
+        ..addAll(project.frameIds);
+
+      // Defensive normalization for projects whose timeline metadata became
+      // inconsistent in an older build.
+      while (_frameIds.length < _frameDurations.length) {
+        _frameIds.add(_newFrameId());
+      }
+
+      if (_frameIds.length > _frameDurations.length) {
+        _frameIds.removeRange(_frameDurations.length, _frameIds.length);
+      }
+
       // loadProject() returns a freshly deserialized project graph.
       // Workspace can take ownership of those immutable stroke/point objects
       // directly instead of deep-copying the entire project a second time.
@@ -4698,6 +4719,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
 
     setState(() {
       _frameDurations.insert(insertIndex, 1);
+      _frameIds.insert(insertIndex, _newFrameId());
 
       if (capturedReferenceTimeMs != null) {
         final safeReferenceIndex = insertIndex.clamp(
@@ -4765,6 +4787,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
       }
 
       _frameDurations.add(_frameDurations[_selectedFrameIndex]);
+      _frameIds.add(_newFrameId());
 
       if (_referenceFrameTimesMs.isNotEmpty &&
           _selectedFrameIndex < _referenceFrameTimesMs.length) {
@@ -4794,6 +4817,10 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
       }
 
       _frameDurations.removeAt(_selectedFrameIndex);
+
+      if (_selectedFrameIndex < _frameIds.length) {
+        _frameIds.removeAt(_selectedFrameIndex);
+      }
 
       if (_selectedFrameIndex < _referenceFrameTimesMs.length) {
         _referenceFrameTimesMs.removeAt(_selectedFrameIndex);
@@ -4832,6 +4859,12 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
 
       final duration = _frameDurations.removeAt(oldIndex);
       _frameDurations.insert(newIndex, duration);
+
+      if (oldIndex < _frameIds.length) {
+        final frameId = _frameIds.removeAt(oldIndex);
+        final safeNewIndex = newIndex.clamp(0, _frameIds.length);
+        _frameIds.insert(safeNewIndex, frameId);
+      }
 
       if (oldIndex < _referenceFrameTimesMs.length) {
         final referenceTime = _referenceFrameTimesMs.removeAt(oldIndex);
