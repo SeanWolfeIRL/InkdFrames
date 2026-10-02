@@ -5863,6 +5863,24 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     return _layers.indexWhere((layer) => layer.id == layerId);
   }
 
+  int _transformArtworkFrameIndex() {
+    final groupId = _transformTargetGroupId;
+
+    if (groupId == null) {
+      return _selectedFrameIndex;
+    }
+
+    final frameId = _currentFrameId;
+
+    if (frameId == null) {
+      return _selectedFrameIndex;
+    }
+
+    final resolvedSource = _tweenArtworkSourceFrameIndex(frameId, groupId);
+
+    return resolvedSource ?? _selectedFrameIndex;
+  }
+
   void _enterTransformForLayerIndices(
     List<int> layerIndices, {
     String? groupId,
@@ -5877,12 +5895,23 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
 
       final layer = _layers[layerIndex];
 
-      if (_selectedFrameIndex < 0 ||
-          _selectedFrameIndex >= layer.frames.length) {
+      var artworkFrameIndex = _selectedFrameIndex;
+
+      if (groupId != null) {
+        final frameId = _currentFrameId;
+
+        if (frameId != null) {
+          artworkFrameIndex =
+              _tweenArtworkSourceFrameIndex(frameId, groupId) ??
+              _selectedFrameIndex;
+        }
+      }
+
+      if (artworkFrameIndex < 0 || artworkFrameIndex >= layer.frames.length) {
         continue;
       }
 
-      final strokes = layer.frames[_selectedFrameIndex];
+      final strokes = layer.frames[artworkFrameIndex];
 
       if (strokes.isEmpty) {
         continue;
@@ -5991,6 +6020,84 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     return _transformKeyframeForFrame(frameId, groupId);
   }
 
+  bool _groupHasDrawingArtworkAtFrame(
+    String groupId,
+    int frameIndex, {
+    Set<String>? visitedGroups,
+    Set<String>? visitedVariants,
+  }) {
+    if (frameIndex < 0) {
+      return false;
+    }
+
+    final seenGroups = visitedGroups ?? <String>{};
+    final seenVariants = visitedVariants ?? <String>{};
+
+    if (!seenGroups.add(groupId)) {
+      return false;
+    }
+
+    final groupIndex = _layerGroups.indexWhere((group) => group.id == groupId);
+
+    if (groupIndex == -1) {
+      return false;
+    }
+
+    bool entryHasArtwork(String entry) {
+      if (entry.startsWith('layer:')) {
+        final layerId = entry.substring(6);
+        final layerIndex = _layers.indexWhere((layer) => layer.id == layerId);
+
+        if (layerIndex == -1) {
+          return false;
+        }
+
+        final layer = _layers[layerIndex];
+
+        return frameIndex < layer.frames.length &&
+            layer.frames[frameIndex].isNotEmpty;
+      }
+
+      if (entry.startsWith('group:')) {
+        return _groupHasDrawingArtworkAtFrame(
+          entry.substring(6),
+          frameIndex,
+          visitedGroups: seenGroups,
+          visitedVariants: seenVariants,
+        );
+      }
+
+      if (entry.startsWith('variant:')) {
+        final slotId = entry.substring(8);
+
+        if (!seenVariants.add(slotId)) {
+          return false;
+        }
+
+        final slot = _variantSlotForId(slotId);
+        final activeEntry = slot?.activeEntry;
+
+        if (activeEntry == null) {
+          return false;
+        }
+
+        return entryHasArtwork(activeEntry);
+      }
+
+      // References are not drawing artwork and therefore do not establish
+      // ownership of a drawing frame for semantic pose animation.
+      return false;
+    }
+
+    for (final entry in _layerGroups[groupIndex].childOrder) {
+      if (entryHasArtwork(entry)) {
+        return true;
+      }
+    }
+
+    return false;
+  }
+
   int? _tweenArtworkSourceFrameIndex(String frameId, String groupId) {
     final frameIndex = _frameIds.indexOf(frameId);
 
@@ -5998,8 +6105,18 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
       return null;
     }
 
-    // A real authored key uses its own frame artwork.
-    if (_transformKeyframeForFrame(frameId, groupId) != null) {
+    final exactKey = _transformKeyframeForFrame(frameId, groupId);
+
+    // Pose keys and artwork keys are independent.
+    //
+    // An exact semantic pose key owns this frame's artwork only when the
+    // target group actually contains authored drawing strokes here.
+    //
+    // A pose-only key on an otherwise blank animation frame continues using
+    // the previous keyed artwork instead of treating the empty frame slot as
+    // a replacement drawing.
+    if (exactKey != null &&
+        _groupHasDrawingArtworkAtFrame(groupId, frameIndex)) {
       return frameIndex;
     }
 
@@ -6020,7 +6137,15 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
       }
     }
 
-    // Borrow artwork only while genuinely between two authored keys.
+    // An exact pose-only key may still hold the artwork from its preceding
+    // authored pose key. This is what allows a later key to reposition or
+    // rotate existing artwork without duplicating strokes into that frame.
+    if (exactKey != null) {
+      return previousKeyIndex;
+    }
+
+    // Ordinary tween frames borrow artwork only while genuinely between two
+    // authored pose keys.
     if (previousKeyIndex == null || nextKeyIndex == null) {
       return null;
     }
@@ -6349,6 +6474,29 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
 
     final selected = <String, Set<int>>{};
 
+    // Manual lasso points are authored in visible canvas/scene space.
+    //
+    // Drawing strokes remain stored in their original authored coordinates,
+    // while animation poses are applied non-destructively by the renderer.
+    // Hit-testing therefore has to project candidate stroke points through
+    // the same group hierarchy before comparing them with the lasso.
+    final activeGroupId = _activeLayerGroup?.id;
+    final frameId = _currentFrameId;
+
+    Matrix4? sceneMatrix;
+
+    if (activeGroupId != null && frameId != null) {
+      sceneMatrix = _sceneTransformMatrixForGroup(activeGroupId, frameId);
+    }
+
+    var artworkFrameIndex = _selectedFrameIndex;
+
+    if (activeGroupId != null && frameId != null) {
+      artworkFrameIndex =
+          _tweenArtworkSourceFrameIndex(frameId, activeGroupId) ??
+          _selectedFrameIndex;
+    }
+
     for (final layerIndex in _transformLayerIndices()) {
       if (layerIndex < 0 || layerIndex >= _layers.length) {
         continue;
@@ -6356,20 +6504,25 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
 
       final layer = _layers[layerIndex];
 
-      if (_selectedFrameIndex >= layer.frames.length) {
+      if (artworkFrameIndex < 0 || artworkFrameIndex >= layer.frames.length) {
         continue;
       }
 
-      final strokes = layer.frames[_selectedFrameIndex];
+      final strokes = layer.frames[artworkFrameIndex];
       final strokeIndices = <int>{};
 
       for (var strokeIndex = 0; strokeIndex < strokes.length; strokeIndex++) {
         final stroke = strokes[strokeIndex];
 
-        if (stroke.points.any(
-          (point) =>
-              _pointInsidePolygon(Offset(point.dx, point.dy), _lassoPoints),
-        )) {
+        if (stroke.points.any((point) {
+          final authoredPoint = Offset(point.dx, point.dy);
+
+          final visiblePoint = sceneMatrix == null
+              ? authoredPoint
+              : MatrixUtils.transformPoint(sceneMatrix, authoredPoint);
+
+          return _pointInsidePolygon(visiblePoint, _lassoPoints);
+        })) {
           strokeIndices.add(strokeIndex);
         }
       }
@@ -6380,6 +6533,14 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     }
 
     _selectedTransformStrokes = selected;
+
+    // Preserve the semantic group identity for subsequent keyed Transform
+    // operations. The expanded stroke selection is only transient editor
+    // state; animation continues to belong to the LayerGroup itself.
+    if (selected.isNotEmpty && activeGroupId != null) {
+      _transformTargetGroupId = activeGroupId;
+    }
+
     _lassoPoints = const <VectorPoint>[];
   }
 
@@ -6399,12 +6560,13 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
       if (layerIndex == -1) continue;
 
       final layer = _layers[layerIndex];
+      final artworkFrameIndex = _transformArtworkFrameIndex();
 
-      if (_selectedFrameIndex >= layer.frames.length) {
+      if (artworkFrameIndex < 0 || artworkFrameIndex >= layer.frames.length) {
         continue;
       }
 
-      final strokes = layer.frames[_selectedFrameIndex];
+      final strokes = layer.frames[artworkFrameIndex];
 
       for (final strokeIndex in entry.value) {
         if (strokeIndex < 0 || strokeIndex >= strokes.length) {
@@ -6570,6 +6732,87 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     return pixels / _transformViewScale;
   }
 
+  Matrix4 _ancestorTransformMatrixForGroup(String groupId, String frameId) {
+    final ancestors = <String>[];
+    final visited = <String>{};
+    var currentGroupId = groupId;
+
+    while (visited.add(currentGroupId)) {
+      final parent = _groupContainingGroup(currentGroupId);
+
+      if (parent == null) {
+        break;
+      }
+
+      ancestors.add(parent.id);
+      currentGroupId = parent.id;
+    }
+
+    final matrix = Matrix4.identity();
+
+    // Nearest parent acts first on the already-transformed child.
+    // Matrix4 multiplication here mirrors the actual nested Flutter
+    // Transform widget hierarchy.
+    for (final ancestorId in ancestors) {
+      final pose = _resolvedTransformPoseForFrame(frameId, ancestorId);
+
+      if (pose != null) {
+        matrix.multiply(_transformKeyframeMatrix(pose));
+      }
+    }
+
+    return matrix;
+  }
+
+  Matrix4 _sceneTransformMatrixForGroup(String groupId, String frameId) {
+    final ownPose = _resolvedTransformPoseForFrame(frameId, groupId);
+    final matrix = ownPose == null
+        ? Matrix4.identity()
+        : _transformKeyframeMatrix(ownPose);
+
+    final ancestorMatrix = _ancestorTransformMatrixForGroup(groupId, frameId);
+
+    // Render order is own pose first, then ancestor hierarchy.
+    return ancestorMatrix..multiply(matrix);
+  }
+
+  Offset _canvasPointToGroupParentSpace(
+    Offset canvasPoint,
+    String groupId,
+    String frameId,
+  ) {
+    final ancestorMatrix = _ancestorTransformMatrixForGroup(groupId, frameId);
+    final inverse = Matrix4.copy(ancestorMatrix);
+
+    final determinant = inverse.invert();
+
+    if (determinant == 0) {
+      return canvasPoint;
+    }
+
+    return MatrixUtils.transformPoint(inverse, canvasPoint);
+  }
+
+  Offset _canvasDeltaToGroupParentSpace(
+    Offset canvasDelta,
+    String groupId,
+    String frameId,
+  ) {
+    final ancestorMatrix = _ancestorTransformMatrixForGroup(groupId, frameId);
+    final inverse = Matrix4.copy(ancestorMatrix);
+
+    final determinant = inverse.invert();
+
+    if (determinant == 0) {
+      return canvasDelta;
+    }
+
+    final origin = MatrixUtils.transformPoint(inverse, Offset.zero);
+    final endpoint = MatrixUtils.transformPoint(inverse, canvasDelta);
+
+    return endpoint - origin;
+  }
+
   List<Offset>? _keyedTransformCageCorners(Rect bounds) {
     if (!_editingKeyedTransformGroupPose) {
       return null;
@@ -6588,7 +6831,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
       return null;
     }
 
-    final matrix = _transformKeyframeMatrix(keyframe);
+    final matrix = _sceneTransformMatrixForGroup(groupId, frameId);
 
     Offset transformPoint(Offset point) {
       return MatrixUtils.transformPoint(matrix, point);
@@ -6660,10 +6903,24 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
             keyframe.pivotY ?? (_canvasHeight / 2),
           );
 
-          // Translation happens before the pivoted rotation/scale in the
-          // renderer, so the visible pivot follows the keyed translation.
-          return authoredPivot +
-              Offset(keyframe.translateX, keyframe.translateY);
+          // The keyed pivot lives in this group's parent coordinate space.
+          // Its own translation moves it first; every ancestor pose then
+          // carries that visible pivot through the hierarchy.
+          final translatedPivot =
+              authoredPivot + Offset(keyframe.translateX, keyframe.translateY);
+
+          final frameId = _currentFrameId;
+
+          if (frameId == null) {
+            return translatedPivot;
+          }
+
+          final ancestorMatrix = _ancestorTransformMatrixForGroup(
+            groupId,
+            frameId,
+          );
+
+          return MatrixUtils.transformPoint(ancestorMatrix, translatedPivot);
         }
       }
     }
@@ -9077,8 +9334,27 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
             _setReferenceTransformPivot(canvasPosition);
           } else if (_editingKeyedTransformGroupPose) {
             // Animation pose lane:
-            // the visible pivot is part of the authored key itself.
-            _setCurrentTransformKeyframePivot(canvasPosition);
+            // pointer coordinates are canvas-space, while this group's
+            // authored pivot lives inside its parent coordinate space.
+            final groupId = _transformTargetGroupId;
+            final frameId = _currentFrameId;
+
+            if (groupId != null && frameId != null) {
+              final parentSpacePivot = _canvasPointToGroupParentSpace(
+                canvasPosition,
+                groupId,
+                frameId,
+              );
+
+              final keyframe = _transformKeyframeForFrame(frameId, groupId);
+
+              if (keyframe != null) {
+                _setCurrentTransformKeyframePivot(
+                  parentSpacePivot -
+                      Offset(keyframe.translateX, keyframe.translateY),
+                );
+              }
+            }
           }
         });
 
@@ -9227,9 +9503,20 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
             _moveReferenceTransform(delta);
           } else if (_editingKeyedTransformGroupPose) {
             // Animation pose lane:
-            // move the semantic group at render time without rewriting any
-            // descendant strokes or reference-layer transforms.
-            _translateCurrentTransformKeyframe(delta);
+            // the pointer moves in canvas space, but this group's keyed
+            // translation lives in its parent's coordinate space.
+            final groupId = _transformTargetGroupId;
+            final frameId = _currentFrameId;
+
+            if (groupId != null && frameId != null) {
+              final localDelta = _canvasDeltaToGroupParentSpace(
+                delta,
+                groupId,
+                frameId,
+              );
+
+              _translateCurrentTransformKeyframe(localDelta);
+            }
           } else {
             // Authored artwork lane:
             // preserve the existing destructive Transform behaviour.
@@ -13659,8 +13946,20 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
             ? _tweenArtworkSourceFrameIndex(frameId, group.id)
             : null;
 
-        final effectiveDrawingFrameIndex =
-            groupDrawingFrameIndex ?? drawingFrameIndexOverride;
+        // A semantic child group with its own transform-key track owns its
+        // artwork timing while that track is active.
+        //
+        // Otherwise it inherits the artwork frame chosen by its parent. This
+        // lets nested animated groups such as Eyes Move tween independently
+        // inside an already-keyed parent asset without breaking ordinary
+        // unkeyed descendants.
+        final groupHasResolvedPose = frameId != null
+            ? _resolvedTransformPoseForFrame(frameId, group.id) != null
+            : false;
+
+        final effectiveDrawingFrameIndex = groupHasResolvedPose
+            ? groupDrawingFrameIndex
+            : (groupDrawingFrameIndex ?? drawingFrameIndexOverride);
 
         // Layer panel order is top-to-bottom.
         // Flutter Stack paints first-to-last, so walk children bottom-to-top.
