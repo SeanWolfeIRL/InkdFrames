@@ -307,6 +307,14 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
 
   Offset? _transformPivot;
 
+  // Animation-pose gesture snapshots.
+  //
+  // Rotation and scale gestures report values relative to the beginning of
+  // the drag. Keep the authored key as it existed at gesture start so pose
+  // edits compose correctly instead of repeatedly accumulating each update.
+  TransformKeyframe? _transformKeyframeRotationSnapshot;
+  TransformKeyframe? _transformKeyframeScaleSnapshot;
+
   List<VectorPoint> _lassoPoints = const <VectorPoint>[];
   Map<String, Set<int>> _selectedTransformStrokes = <String, Set<int>>{};
 
@@ -5333,26 +5341,13 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
           : bounds.expandToInclude(referenceBounds);
     }
 
-    // A keyed whole-group pose is rendered non-destructively, so the
-    // transform overlay must follow that displayed pose rather than remain
-    // attached to the authored descendant geometry.
+    // Always return the authoritative authored/base geometry here.
     //
-    // Translation is handled first. Rotation/scale-aware posed bounds will
-    // extend this same boundary once their live keyframe gestures are wired.
-    if (bounds != null && _editingKeyedTransformGroupPose) {
-      final groupId = _transformTargetGroupId;
-
-      if (groupId != null) {
-        final keyframe = _transformKeyframeForCurrentFrame(groupId);
-
-        if (keyframe != null) {
-          bounds = bounds.shift(
-            Offset(keyframe.translateX, keyframe.translateY),
-          );
-        }
-      }
-    }
-
+    // Keyed whole-group poses are non-destructive. Their translation,
+    // rotation and scale are applied to these base bounds by
+    // _keyedTransformCageCorners() using the exact same Matrix4 as the
+    // renderer. Keeping the base bounds unposed prevents keyed translation
+    // from being applied twice.
     return bounds;
   }
 
@@ -5996,6 +5991,127 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     return _transformKeyframeForFrame(frameId, groupId);
   }
 
+  int? _tweenArtworkSourceFrameIndex(String frameId, String groupId) {
+    final frameIndex = _frameIds.indexOf(frameId);
+
+    if (frameIndex == -1) {
+      return null;
+    }
+
+    // A real authored key uses its own frame artwork.
+    if (_transformKeyframeForFrame(frameId, groupId) != null) {
+      return frameIndex;
+    }
+
+    int? previousKeyIndex;
+    int? nextKeyIndex;
+
+    for (var i = frameIndex - 1; i >= 0; i--) {
+      if (_transformKeyframeForFrame(_frameIds[i], groupId) != null) {
+        previousKeyIndex = i;
+        break;
+      }
+    }
+
+    for (var i = frameIndex + 1; i < _frameIds.length; i++) {
+      if (_transformKeyframeForFrame(_frameIds[i], groupId) != null) {
+        nextKeyIndex = i;
+        break;
+      }
+    }
+
+    // Borrow artwork only while genuinely between two authored keys.
+    if (previousKeyIndex == null || nextKeyIndex == null) {
+      return null;
+    }
+
+    return previousKeyIndex;
+  }
+
+  TransformKeyframe? _resolvedTransformPoseForFrame(
+    String frameId,
+    String groupId,
+  ) {
+    // An authored key always wins exactly.
+    final exact = _transformKeyframeForFrame(frameId, groupId);
+
+    if (exact != null) {
+      return exact;
+    }
+
+    final frameIndex = _frameIds.indexOf(frameId);
+
+    if (frameIndex == -1) {
+      return null;
+    }
+
+    TransformKeyframe? previous;
+    TransformKeyframe? next;
+    int? previousIndex;
+    int? nextIndex;
+
+    // Find the nearest enabled authored key before this frame.
+    for (var i = frameIndex - 1; i >= 0; i--) {
+      final candidate = _transformKeyframeForFrame(_frameIds[i], groupId);
+
+      if (candidate != null) {
+        previous = candidate;
+        previousIndex = i;
+        break;
+      }
+    }
+
+    // Find the nearest enabled authored key after this frame.
+    for (var i = frameIndex + 1; i < _frameIds.length; i++) {
+      final candidate = _transformKeyframeForFrame(_frameIds[i], groupId);
+
+      if (candidate != null) {
+        next = candidate;
+        nextIndex = i;
+        break;
+      }
+    }
+
+    // Tweening only exists between two authored keys.
+    // Outside that span, preserve the authored/base pose.
+    if (previous == null ||
+        next == null ||
+        previousIndex == null ||
+        nextIndex == null ||
+        nextIndex <= previousIndex) {
+      return null;
+    }
+
+    final t = (frameIndex - previousIndex) / (nextIndex - previousIndex);
+
+    double lerp(double a, double b) => a + ((b - a) * t);
+
+    double? lerpNullable(double? a, double? b) {
+      if (a == null && b == null) {
+        return null;
+      }
+
+      final resolvedA = a ?? b!;
+      final resolvedB = b ?? a!;
+
+      return lerp(resolvedA, resolvedB);
+    }
+
+    return TransformKeyframe(
+      id: 'resolved_tween_${previous.id}_${next.id}_$frameId',
+      frameId: frameId,
+      targetGroupId: groupId,
+      translateX: lerp(previous.translateX, next.translateX),
+      translateY: lerp(previous.translateY, next.translateY),
+      rotation: lerp(previous.rotation, next.rotation),
+      scaleX: lerp(previous.scaleX, next.scaleX),
+      scaleY: lerp(previous.scaleY, next.scaleY),
+      pivotX: lerpNullable(previous.pivotX, next.pivotX),
+      pivotY: lerpNullable(previous.pivotY, next.pivotY),
+      enabled: true,
+    );
+  }
+
   bool get _editingKeyedTransformGroupPose {
     final groupId = _transformTargetGroupId;
 
@@ -6026,6 +6142,81 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     _transformKeyframes[index] = keyframe.copyWith(
       translateX: keyframe.translateX + delta.dx,
       translateY: keyframe.translateY + delta.dy,
+    );
+  }
+
+  void _setCurrentTransformKeyframePivot(Offset pivot) {
+    final frameId = _currentFrameId;
+    final groupId = _transformTargetGroupId;
+
+    if (frameId == null || groupId == null) {
+      return;
+    }
+
+    final index = _transformKeyframeIndexFor(
+      frameId: frameId,
+      targetGroupId: groupId,
+    );
+
+    if (index == -1) {
+      return;
+    }
+
+    _transformKeyframes[index] = _transformKeyframes[index].copyWith(
+      pivotX: pivot.dx,
+      pivotY: pivot.dy,
+    );
+  }
+
+  void _rotateCurrentTransformKeyframe(
+    double angle,
+    TransformKeyframe snapshot,
+  ) {
+    final frameId = _currentFrameId;
+    final groupId = _transformTargetGroupId;
+
+    if (frameId == null || groupId == null) {
+      return;
+    }
+
+    final index = _transformKeyframeIndexFor(
+      frameId: frameId,
+      targetGroupId: groupId,
+    );
+
+    if (index == -1) {
+      return;
+    }
+
+    _transformKeyframes[index] = _transformKeyframes[index].copyWith(
+      rotation: snapshot.rotation + angle,
+    );
+  }
+
+  void _scaleCurrentTransformKeyframe(
+    double scaleX,
+    double scaleY,
+    TransformKeyframe snapshot,
+  ) {
+    final frameId = _currentFrameId;
+    final groupId = _transformTargetGroupId;
+
+    if (frameId == null || groupId == null) {
+      return;
+    }
+
+    final index = _transformKeyframeIndexFor(
+      frameId: frameId,
+      targetGroupId: groupId,
+    );
+
+    if (index == -1) {
+      return;
+    }
+
+    _transformKeyframes[index] = _transformKeyframes[index].copyWith(
+      scaleX: snapshot.scaleX * scaleX,
+      scaleY: snapshot.scaleY * scaleY,
     );
   }
 
@@ -6379,17 +6570,104 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     return pixels / _transformViewScale;
   }
 
+  List<Offset>? _keyedTransformCageCorners(Rect bounds) {
+    if (!_editingKeyedTransformGroupPose) {
+      return null;
+    }
+
+    final groupId = _transformTargetGroupId;
+    final frameId = _currentFrameId;
+
+    if (groupId == null || frameId == null) {
+      return null;
+    }
+
+    final keyframe = _transformKeyframeForFrame(frameId, groupId);
+
+    if (keyframe == null) {
+      return null;
+    }
+
+    final matrix = _transformKeyframeMatrix(keyframe);
+
+    Offset transformPoint(Offset point) {
+      return MatrixUtils.transformPoint(matrix, point);
+    }
+
+    return <Offset>[
+      transformPoint(bounds.topLeft),
+      transformPoint(bounds.topRight),
+      transformPoint(bounds.bottomRight),
+      transformPoint(bounds.bottomLeft),
+    ];
+  }
+
+  Offset _transformCageMidpoint(Offset a, Offset b) {
+    return Offset((a.dx + b.dx) / 2, (a.dy + b.dy) / 2);
+  }
+
+  Offset _transformCageCenter(List<Offset> corners) {
+    return Offset(
+      corners.map((point) => point.dx).reduce((a, b) => a + b) / 4,
+      corners.map((point) => point.dy).reduce((a, b) => a + b) / 4,
+    );
+  }
+
+  Offset _keyedTransformRotationHandle(Rect bounds, List<Offset> corners) {
+    final topCenter = _transformCageMidpoint(corners[0], corners[1]);
+    final center = _transformCageCenter(corners);
+
+    var outward = topCenter - center;
+    final distance = outward.distance;
+
+    if (distance < 0.001) {
+      outward = const Offset(0, -1);
+    } else {
+      outward = outward / distance;
+    }
+
+    return topCenter + outward * _transformScreenPixels(42);
+  }
+
   Offset _transformRotationHandle(Rect bounds) {
     return bounds.topCenter + Offset(0, -_transformScreenPixels(34));
   }
 
   bool _transformRotationHandleHit(Offset position, Rect bounds) {
-    final hitRadius = _transformScreenPixels(24);
+    final keyedCorners = _keyedTransformCageCorners(bounds);
 
-    return (position - _transformRotationHandle(bounds)).distance <= hitRadius;
+    final handle = keyedCorners != null
+        ? _keyedTransformRotationHandle(bounds, keyedCorners)
+        : _transformRotationHandle(bounds);
+
+    // Deliberately larger than the painted knob. This makes the rotation
+    // control much easier to catch with either a finger or S Pen.
+    final hitRadius = _transformScreenPixels(keyedCorners != null ? 32 : 24);
+
+    return (position - handle).distance <= hitRadius;
   }
 
   Offset _effectiveTransformPivot(Rect bounds) {
+    if (_editingKeyedTransformGroupPose) {
+      final groupId = _transformTargetGroupId;
+
+      if (groupId != null) {
+        final keyframe = _transformKeyframeForCurrentFrame(groupId);
+
+        if (keyframe != null) {
+          final authoredPivot = Offset(
+            keyframe.pivotX ?? (_canvasWidth / 2),
+            keyframe.pivotY ?? (_canvasHeight / 2),
+          );
+
+          // Translation happens before the pivoted rotation/scale in the
+          // renderer, so the visible pivot follows the keyed translation.
+          return authoredPivot +
+              Offset(keyframe.translateX, keyframe.translateY);
+        }
+      }
+    }
+
     return _transformPivot ?? bounds.center;
   }
 
@@ -6467,13 +6745,18 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
 
   Offset? _transformCornerHit(Offset position, Rect bounds) {
     final hitRadius = _transformScreenPixels(22);
+    final keyedCorners = _keyedTransformCageCorners(bounds);
 
-    for (final corner in <Offset>[
-      bounds.topLeft,
-      bounds.topRight,
-      bounds.bottomLeft,
-      bounds.bottomRight,
-    ]) {
+    final corners =
+        keyedCorners ??
+        <Offset>[
+          bounds.topLeft,
+          bounds.topRight,
+          bounds.bottomLeft,
+          bounds.bottomRight,
+        ];
+
+    for (final corner in corners) {
       if ((position - corner).distance <= hitRadius) {
         return corner;
       }
@@ -6483,6 +6766,24 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
   }
 
   Offset _oppositeTransformCorner(Offset corner, Rect bounds) {
+    final keyedCorners = _keyedTransformCageCorners(bounds);
+
+    if (keyedCorners != null) {
+      if (corner == keyedCorners[0]) {
+        return keyedCorners[2];
+      }
+
+      if (corner == keyedCorners[1]) {
+        return keyedCorners[3];
+      }
+
+      if (corner == keyedCorners[2]) {
+        return keyedCorners[0];
+      }
+
+      return keyedCorners[1];
+    }
+
     if (corner == bounds.topLeft) {
       return bounds.bottomRight;
     }
@@ -6500,13 +6801,23 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
 
   Offset? _transformEdgeHandleHit(Offset position, Rect bounds) {
     final hitRadius = _transformScreenPixels(22);
+    final keyedCorners = _keyedTransformCageCorners(bounds);
 
-    for (final handle in <Offset>[
-      bounds.centerLeft,
-      bounds.centerRight,
-      bounds.topCenter,
-      bounds.bottomCenter,
-    ]) {
+    final handles = keyedCorners != null
+        ? <Offset>[
+            _transformCageMidpoint(keyedCorners[0], keyedCorners[3]),
+            _transformCageMidpoint(keyedCorners[1], keyedCorners[2]),
+            _transformCageMidpoint(keyedCorners[0], keyedCorners[1]),
+            _transformCageMidpoint(keyedCorners[3], keyedCorners[2]),
+          ]
+        : <Offset>[
+            bounds.centerLeft,
+            bounds.centerRight,
+            bounds.topCenter,
+            bounds.bottomCenter,
+          ];
+
+    for (final handle in handles) {
       if ((position - handle).distance <= hitRadius) {
         return handle;
       }
@@ -6516,10 +6827,42 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
   }
 
   bool _transformHandleIsHorizontal(Offset handle, Rect bounds) {
+    final keyedCorners = _keyedTransformCageCorners(bounds);
+
+    if (keyedCorners != null) {
+      final left = _transformCageMidpoint(keyedCorners[0], keyedCorners[3]);
+      final right = _transformCageMidpoint(keyedCorners[1], keyedCorners[2]);
+
+      return handle == left || handle == right;
+    }
+
     return handle == bounds.centerLeft || handle == bounds.centerRight;
   }
 
   Offset _oppositeTransformEdge(Offset handle, Rect bounds) {
+    final keyedCorners = _keyedTransformCageCorners(bounds);
+
+    if (keyedCorners != null) {
+      final left = _transformCageMidpoint(keyedCorners[0], keyedCorners[3]);
+      final right = _transformCageMidpoint(keyedCorners[1], keyedCorners[2]);
+      final top = _transformCageMidpoint(keyedCorners[0], keyedCorners[1]);
+      final bottom = _transformCageMidpoint(keyedCorners[3], keyedCorners[2]);
+
+      if (handle == left) {
+        return right;
+      }
+
+      if (handle == right) {
+        return left;
+      }
+
+      if (handle == top) {
+        return bottom;
+      }
+
+      return top;
+    }
+
     if (handle == bounds.centerLeft) {
       return bounds.centerRight;
     }
@@ -8444,11 +8787,19 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
               _referenceTransformSnapshot = _referenceTransformTarget;
               _transformGroupReferenceSnapshot = null;
               _transformRotationSnapshot = null;
+              _transformKeyframeRotationSnapshot = null;
+            } else if (_editingKeyedTransformGroupPose) {
+              _referenceTransformSnapshot = null;
+              _transformGroupReferenceSnapshot = null;
+              _transformRotationSnapshot = null;
+              _transformKeyframeRotationSnapshot =
+                  _transformKeyframeForCurrentFrame(_transformTargetGroupId!);
             } else {
               _referenceTransformSnapshot = null;
               _transformGroupReferenceSnapshot =
                   _selectedGroupReferenceSnapshot();
               _transformRotationSnapshot = _selectedTransformSnapshot();
+              _transformKeyframeRotationSnapshot = null;
             }
           });
 
@@ -8484,11 +8835,19 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
               _referenceTransformSnapshot = _referenceTransformTarget;
               _transformGroupReferenceSnapshot = null;
               _transformScaleSnapshot = null;
+              _transformKeyframeScaleSnapshot = null;
+            } else if (_editingKeyedTransformGroupPose) {
+              _referenceTransformSnapshot = null;
+              _transformGroupReferenceSnapshot = null;
+              _transformScaleSnapshot = null;
+              _transformKeyframeScaleSnapshot =
+                  _transformKeyframeForCurrentFrame(_transformTargetGroupId!);
             } else {
               _referenceTransformSnapshot = null;
               _transformGroupReferenceSnapshot =
                   _selectedGroupReferenceSnapshot();
               _transformScaleSnapshot = _selectedTransformSnapshot();
+              _transformKeyframeScaleSnapshot = null;
             }
           });
 
@@ -8530,11 +8889,19 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
               _referenceTransformSnapshot = _referenceTransformTarget;
               _transformGroupReferenceSnapshot = null;
               _transformScaleSnapshot = null;
+              _transformKeyframeScaleSnapshot = null;
+            } else if (_editingKeyedTransformGroupPose) {
+              _referenceTransformSnapshot = null;
+              _transformGroupReferenceSnapshot = null;
+              _transformScaleSnapshot = null;
+              _transformKeyframeScaleSnapshot =
+                  _transformKeyframeForCurrentFrame(_transformTargetGroupId!);
             } else {
               _referenceTransformSnapshot = null;
               _transformGroupReferenceSnapshot =
                   _selectedGroupReferenceSnapshot();
               _transformScaleSnapshot = _selectedTransformSnapshot();
+              _transformKeyframeScaleSnapshot = null;
             }
           });
 
@@ -8542,8 +8909,28 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
         }
       }
 
-      if (bounds != null &&
-          bounds.inflate(_transformScreenPixels(16)).contains(canvasPosition)) {
+      bool transformSelectionContains(Offset position) {
+        if (bounds == null) {
+          return false;
+        }
+
+        final keyedCorners = _keyedTransformCageCorners(bounds);
+
+        if (keyedCorners != null && keyedCorners.length == 4) {
+          final cagePath = Path()
+            ..moveTo(keyedCorners[0].dx, keyedCorners[0].dy)
+            ..lineTo(keyedCorners[1].dx, keyedCorners[1].dy)
+            ..lineTo(keyedCorners[2].dx, keyedCorners[2].dy)
+            ..lineTo(keyedCorners[3].dx, keyedCorners[3].dy)
+            ..close();
+
+          return cagePath.contains(position);
+        }
+
+        return bounds.inflate(_transformScreenPixels(16)).contains(position);
+      }
+
+      if (transformSelectionContains(canvasPosition)) {
         if (_activeLayerGroup == null) {
           _saveUndoState();
         } else {
@@ -8688,6 +9075,10 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
 
           if (_transformReferenceLayerId != null) {
             _setReferenceTransformPivot(canvasPosition);
+          } else if (_editingKeyedTransformGroupPose) {
+            // Animation pose lane:
+            // the visible pivot is part of the authored key itself.
+            _setCurrentTransformKeyframePivot(canvasPosition);
           }
         });
 
@@ -8699,7 +9090,8 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
           _transformRotationStartAngle != null &&
           (_transformRotationSnapshot != null ||
               _referenceTransformSnapshot != null ||
-              _transformGroupReferenceSnapshot != null)) {
+              _transformGroupReferenceSnapshot != null ||
+              _transformKeyframeRotationSnapshot != null)) {
         final currentAngle = _angleFromCenter(
           canvasPosition,
           _transformRotationCenter!,
@@ -8715,6 +9107,16 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
               angle,
               _transformRotationCenter!,
               referenceSnapshot,
+            );
+          } else if (_editingKeyedTransformGroupPose &&
+              _transformKeyframeRotationSnapshot != null) {
+            // Animation pose lane.
+            //
+            // Rotate the semantic key itself. Descendant artwork stays in its
+            // authored coordinates and the renderer applies this pose later.
+            _rotateCurrentTransformKeyframe(
+              angle,
+              _transformKeyframeRotationSnapshot!,
             );
           } else {
             if (_transformRotationSnapshot != null) {
@@ -8745,7 +9147,8 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
           _transformScaleStartDistance != null &&
           (_transformScaleSnapshot != null ||
               _referenceTransformSnapshot != null ||
-              _transformGroupReferenceSnapshot != null)) {
+              _transformGroupReferenceSnapshot != null ||
+              _transformKeyframeScaleSnapshot != null)) {
         double scaleX = 1.0;
         double scaleY = 1.0;
 
@@ -8778,6 +9181,17 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
               scaleY,
               _transformScaleAnchor!,
               referenceSnapshot,
+            );
+          } else if (_editingKeyedTransformGroupPose &&
+              _transformKeyframeScaleSnapshot != null) {
+            // Animation pose lane.
+            //
+            // Scale the semantic key rather than permanently scaling every
+            // descendant stroke/reference in the group.
+            _scaleCurrentTransformKeyframe(
+              scaleX,
+              scaleY,
+              _transformKeyframeScaleSnapshot!,
             );
           } else {
             if (_transformScaleSnapshot != null) {
@@ -9086,6 +9500,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
           _transformRotationSnapshot = null;
           _referenceTransformSnapshot = null;
           _transformGroupReferenceSnapshot = null;
+          _transformKeyframeRotationSnapshot = null;
         } else if (_isTransformScaling) {
           _isTransformScaling = false;
           _transformScaleAnchor = null;
@@ -9093,6 +9508,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
           _transformScaleSnapshot = null;
           _referenceTransformSnapshot = null;
           _transformGroupReferenceSnapshot = null;
+          _transformKeyframeScaleSnapshot = null;
           _transformScaleHorizontalOnly = false;
           _transformScaleVerticalOnly = false;
         } else if (_isTransformDragging) {
@@ -13005,6 +13421,20 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     );
   }
 
+  Matrix4 _transformKeyframeMatrix(TransformKeyframe keyframe) {
+    final pivot = Offset(
+      keyframe.pivotX ?? (_canvasWidth / 2),
+      keyframe.pivotY ?? (_canvasHeight / 2),
+    );
+
+    return Matrix4.identity()
+      ..translateByDouble(keyframe.translateX, keyframe.translateY, 0.0, 1.0)
+      ..translateByDouble(pivot.dx, pivot.dy, 0.0, 1.0)
+      ..rotateZ(keyframe.rotation)
+      ..scaleByDouble(keyframe.scaleX, keyframe.scaleY, 1.0, 1.0)
+      ..translateByDouble(-pivot.dx, -pivot.dy, 0.0, 1.0);
+  }
+
   Widget _applyTransformKeyframeToGroup(
     String groupId,
     Widget child, {
@@ -13016,23 +13446,13 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
       return child;
     }
 
-    final keyframe = _transformKeyframeForFrame(resolvedFrameId, groupId);
+    final keyframe = _resolvedTransformPoseForFrame(resolvedFrameId, groupId);
 
     if (keyframe == null) {
       return child;
     }
 
-    final pivot = Offset(
-      keyframe.pivotX ?? (_canvasWidth / 2),
-      keyframe.pivotY ?? (_canvasHeight / 2),
-    );
-
-    final matrix = Matrix4.identity()
-      ..translateByDouble(keyframe.translateX, keyframe.translateY, 0.0, 1.0)
-      ..translateByDouble(pivot.dx, pivot.dy, 0.0, 1.0)
-      ..rotateZ(keyframe.rotation)
-      ..scaleByDouble(keyframe.scaleX, keyframe.scaleY, 1.0, 1.0)
-      ..translateByDouble(-pivot.dx, -pivot.dy, 0.0, 1.0);
+    final matrix = _transformKeyframeMatrix(keyframe);
 
     return Transform(
       transform: matrix,
@@ -13100,7 +13520,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
       }
     }
 
-    void addEntry(String entry) {
+    void addEntry(String entry, {int? drawingFrameIndexOverride}) {
       if (entry.startsWith('layer:')) {
         final layerId = entry.substring(6);
 
@@ -13121,7 +13541,10 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
         }
 
         widgets.add(
-          _buildDrawingLayerSceneWidget(layer, frameIndex: frameIndex),
+          _buildDrawingLayerSceneWidget(
+            layer,
+            frameIndex: drawingFrameIndexOverride ?? frameIndex,
+          ),
         );
         return;
       }
@@ -13187,7 +13610,10 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
         }
 
         if (activeEntry != null) {
-          addEntry(activeEntry);
+          addEntry(
+            activeEntry,
+            drawingFrameIndexOverride: drawingFrameIndexOverride,
+          );
         }
 
         return;
@@ -13224,12 +13650,27 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
 
         final outerWidgets = widgets;
 
+        // When this semantic group is on an unkeyed frame between two pose
+        // keys, borrow its drawing artwork from the preceding authored key.
+        //
+        // The borrowed artwork exists only for rendering. The tween frame
+        // remains empty and the authored layer data is never modified.
+        final groupDrawingFrameIndex = frameId != null
+            ? _tweenArtworkSourceFrameIndex(frameId, group.id)
+            : null;
+
+        final effectiveDrawingFrameIndex =
+            groupDrawingFrameIndex ?? drawingFrameIndexOverride;
+
         // Layer panel order is top-to-bottom.
         // Flutter Stack paints first-to-last, so walk children bottom-to-top.
         for (final childEntry in group.childOrder.reversed) {
           final beforeCount = outerWidgets.length;
 
-          addEntry(childEntry);
+          addEntry(
+            childEntry,
+            drawingFrameIndexOverride: effectiveDrawingFrameIndex,
+          );
 
           if (outerWidgets.length > beforeCount) {
             groupWidgets.addAll(outerWidgets.sublist(beforeCount));
@@ -13649,6 +14090,17 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                                                 color: _canvasBackgroundColor,
                                               ),
                                             ..._buildMixedHierarchySceneWidgets(
+                                              // Give the live scene its stable
+                                              // animation-frame identity so
+                                              // semantic groups can resolve
+                                              // tween poses and inherited
+                                              // artwork on blank inbetweens.
+                                              //
+                                              // Deliberately leave frameIndex
+                                              // null: that still marks this as
+                                              // the actively editable scene.
+                                              frameId: _currentFrameId,
+
                                               // Normal Workspace rendering
                                               // always traverses the complete
                                               // authoritative scene hierarchy.
@@ -13779,7 +14231,20 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                                                     lassoPoints: _lassoPoints,
                                                     selectionBounds:
                                                         _transformSelectionBounds(),
-                                                    pivot: _transformPivot,
+                                                    posedCorners:
+                                                        _transformSelectionBounds() ==
+                                                            null
+                                                        ? null
+                                                        : _keyedTransformCageCorners(
+                                                            _transformSelectionBounds()!,
+                                                          ),
+                                                    pivot:
+                                                        _transformSelectionBounds() ==
+                                                            null
+                                                        ? _transformPivot
+                                                        : _effectiveTransformPivot(
+                                                            _transformSelectionBounds()!,
+                                                          ),
                                                     viewScale:
                                                         _transformViewScale,
                                                   ),
@@ -16988,12 +17453,14 @@ class _TransformOverlayPainter extends CustomPainter {
   const _TransformOverlayPainter({
     required this.lassoPoints,
     required this.selectionBounds,
+    required this.posedCorners,
     required this.pivot,
     required this.viewScale,
   });
 
   final List<VectorPoint> lassoPoints;
   final Rect? selectionBounds;
+  final List<Offset>? posedCorners;
   final Offset? pivot;
   final double viewScale;
 
@@ -17029,26 +17496,74 @@ class _TransformOverlayPainter extends CustomPainter {
       ..strokeWidth = _screen(2)
       ..style = PaintingStyle.stroke;
 
-    final selectionPadding = _screen(6);
-    canvas.drawRect(bounds.inflate(selectionPadding), boxPaint);
+    final corners = posedCorners;
 
-    final rotationHandle = bounds.topCenter + Offset(0, -_screen(34));
+    late final List<Offset> cageCorners;
 
-    final effectivePivot = pivot ?? bounds.center;
+    if (corners != null && corners.length == 4) {
+      cageCorners = corners;
+
+      final cagePath = Path()
+        ..moveTo(cageCorners[0].dx, cageCorners[0].dy)
+        ..lineTo(cageCorners[1].dx, cageCorners[1].dy)
+        ..lineTo(cageCorners[2].dx, cageCorners[2].dy)
+        ..lineTo(cageCorners[3].dx, cageCorners[3].dy)
+        ..close();
+
+      canvas.drawPath(cagePath, boxPaint);
+    } else {
+      final selectionPadding = _screen(6);
+      canvas.drawRect(bounds.inflate(selectionPadding), boxPaint);
+
+      cageCorners = <Offset>[
+        bounds.topLeft,
+        bounds.topRight,
+        bounds.bottomRight,
+        bounds.bottomLeft,
+      ];
+    }
+
+    final topCenter = Offset(
+      (cageCorners[0].dx + cageCorners[1].dx) / 2,
+      (cageCorners[0].dy + cageCorners[1].dy) / 2,
+    );
+
+    final cageCenter = Offset(
+      cageCorners.map((point) => point.dx).reduce((a, b) => a + b) / 4,
+      cageCorners.map((point) => point.dy).reduce((a, b) => a + b) / 4,
+    );
+
+    var outward = topCenter - cageCenter;
+
+    if (outward.distance < 0.001) {
+      outward = const Offset(0, -1);
+    } else {
+      outward = outward / outward.distance;
+    }
+
+    final rotationHandle =
+        topCenter + outward * _screen(corners != null ? 42 : 34);
+
+    final effectivePivot = pivot ?? cageCenter;
 
     final guidePaint = Paint()
       ..color = Colors.cyanAccent.withValues(alpha: 0.45)
       ..strokeWidth = _screen(1.5)
       ..style = PaintingStyle.stroke;
 
-    canvas.drawLine(bounds.topCenter, rotationHandle, boxPaint);
+    canvas.drawLine(topCenter, rotationHandle, boxPaint);
     canvas.drawLine(rotationHandle, effectivePivot, guidePaint);
 
     final rotationHandlePaint = Paint()
-      ..color = Colors.cyanAccent
+      // InkdFrames signature purple.
+      ..color = const Color(0xFF7C4DFF)
       ..style = PaintingStyle.fill;
 
-    canvas.drawCircle(rotationHandle, _screen(7), rotationHandlePaint);
+    canvas.drawCircle(
+      rotationHandle,
+      _screen(corners != null ? 11 : 9),
+      rotationHandlePaint,
+    );
 
     final pivotOuterPaint = Paint()
       ..color = Colors.black
@@ -17083,23 +17598,29 @@ class _TransformOverlayPainter extends CustomPainter {
 
     final cornerRadius = _screen(6);
 
-    for (final point in <Offset>[
-      bounds.topLeft,
-      bounds.topRight,
-      bounds.bottomLeft,
-      bounds.bottomRight,
-    ]) {
+    for (final point in cageCorners) {
       canvas.drawCircle(point, cornerRadius, handlePaint);
     }
 
     final edgeSize = _screen(12);
 
-    for (final point in <Offset>[
-      bounds.centerLeft,
-      bounds.centerRight,
-      bounds.topCenter,
-      bounds.bottomCenter,
-    ]) {
+    final edgeHandles = <Offset>[
+      Offset(
+        (cageCorners[0].dx + cageCorners[3].dx) / 2,
+        (cageCorners[0].dy + cageCorners[3].dy) / 2,
+      ),
+      Offset(
+        (cageCorners[1].dx + cageCorners[2].dx) / 2,
+        (cageCorners[1].dy + cageCorners[2].dy) / 2,
+      ),
+      topCenter,
+      Offset(
+        (cageCorners[3].dx + cageCorners[2].dx) / 2,
+        (cageCorners[3].dy + cageCorners[2].dy) / 2,
+      ),
+    ];
+
+    for (final point in edgeHandles) {
       canvas.drawRect(
         Rect.fromCenter(center: point, width: edgeSize, height: edgeSize),
         handlePaint,
@@ -17111,6 +17632,7 @@ class _TransformOverlayPainter extends CustomPainter {
   bool shouldRepaint(covariant _TransformOverlayPainter oldDelegate) {
     return oldDelegate.lassoPoints != lassoPoints ||
         oldDelegate.selectionBounds != selectionBounds ||
+        oldDelegate.posedCorners != posedCorners ||
         oldDelegate.pivot != pivot ||
         oldDelegate.viewScale != viewScale;
   }
