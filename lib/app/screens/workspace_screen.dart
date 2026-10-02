@@ -3748,6 +3748,10 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
       context: context,
       builder: (dialogContext) {
         return AlertDialog(
+          // Landscape keyboards can leave less vertical room than the
+          // dialog's intrinsic height. Allow Material to adapt the dialog
+          // instead of overflowing at the bottom.
+          scrollable: true,
           title: const Text('Rename group'),
           content: TextFormField(
             initialValue: name,
@@ -4012,6 +4016,295 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     });
 
     _scheduleAutosave();
+  }
+
+  void _duplicateLayerGroup(String sourceGroupId) {
+    final sourceGroupIndex = _layerGroups.indexWhere(
+      (group) => group.id == sourceGroupId,
+    );
+
+    if (sourceGroupIndex == -1) {
+      return;
+    }
+
+    final sourceRoot = _layerGroups[sourceGroupIndex];
+    final stamp = DateTime.now().microsecondsSinceEpoch;
+    var serial = 0;
+
+    String freshId(String kind) {
+      return '${kind}_duplicate_${stamp}_${serial++}';
+    }
+
+    final duplicatedLayers = <DrawingLayer>[];
+    final duplicatedReferences = <ReferenceLayer>[];
+    final duplicatedGroups = <LayerGroup>[];
+    final duplicatedVariants = <VariantSlot>[];
+
+    String? duplicateEntry(String entry) {
+      if (entry.startsWith('layer:')) {
+        final sourceId = entry.substring('layer:'.length);
+        final sourceIndex = _layers.indexWhere((layer) => layer.id == sourceId);
+
+        if (sourceIndex == -1) {
+          return null;
+        }
+
+        final source = _layers[sourceIndex];
+        final newId = freshId('layer');
+
+        final copiedFrames = source.frames
+            .map(
+              (frame) => frame
+                  .map(
+                    (stroke) => VectorStroke.fromJson(
+                      Map<String, dynamic>.from(stroke.toJson()),
+                    ),
+                  )
+                  .toList(),
+            )
+            .toList();
+
+        duplicatedLayers.add(
+          DrawingLayer(
+            id: newId,
+            name: source.name,
+            frames: copiedFrames,
+            visible: source.visible,
+            opacity: source.opacity,
+            alphaLocked: source.alphaLocked,
+          ),
+        );
+
+        return 'layer:$newId';
+      }
+
+      if (entry.startsWith('reference:')) {
+        final sourceId = entry.substring('reference:'.length);
+        final sourceIndex = _referenceLayers.indexWhere(
+          (reference) => reference.id == sourceId,
+        );
+
+        if (sourceIndex == -1) {
+          return null;
+        }
+
+        final source = _referenceLayers[sourceIndex];
+        final newId = freshId('reference');
+
+        duplicatedReferences.add(
+          ReferenceLayer(
+            id: newId,
+            name: source.name,
+            mediaPath: source.mediaPath,
+            mediaType: source.mediaType,
+            visible: source.visible,
+            opacity: source.opacity,
+            offsetX: source.offsetX,
+            offsetY: source.offsetY,
+            rotation: source.rotation,
+            scaleX: source.scaleX,
+            scaleY: source.scaleY,
+            pivotX: source.pivotX,
+            pivotY: source.pivotY,
+            frameTimesMs: List<int>.from(source.frameTimesMs),
+          ),
+        );
+
+        return 'reference:$newId';
+      }
+
+      if (entry.startsWith('variant:')) {
+        final sourceId = entry.substring('variant:'.length);
+        final sourceIndex = _variantSlots.indexWhere(
+          (slot) => slot.id == sourceId,
+        );
+
+        if (sourceIndex == -1) {
+          return null;
+        }
+
+        final source = _variantSlots[sourceIndex];
+        final newId = freshId('variant');
+        final childOrder = <String>[];
+
+        for (final childEntry in source.childOrder) {
+          final duplicatedEntry = duplicateEntry(childEntry);
+
+          if (duplicatedEntry != null) {
+            childOrder.add(duplicatedEntry);
+          }
+        }
+
+        duplicatedVariants.add(
+          VariantSlot(
+            id: newId,
+            name: source.name,
+            childOrder: childOrder,
+            activeIndex: childOrder.isEmpty
+                ? 0
+                : source.activeIndex.clamp(0, childOrder.length - 1),
+            expanded: source.expanded,
+          ),
+        );
+
+        return 'variant:$newId';
+      }
+
+      if (entry.startsWith('group:')) {
+        final sourceId = entry.substring('group:'.length);
+        final sourceIndex = _layerGroups.indexWhere(
+          (group) => group.id == sourceId,
+        );
+
+        if (sourceIndex == -1) {
+          return null;
+        }
+
+        final source = _layerGroups[sourceIndex];
+        final newId = freshId('group');
+
+        final childOrder = <String>[];
+        final childLayerIds = <String>[];
+        final childGroupIds = <String>[];
+
+        for (final childEntry in source.childOrder) {
+          final duplicatedEntry = duplicateEntry(childEntry);
+
+          if (duplicatedEntry == null) {
+            continue;
+          }
+
+          childOrder.add(duplicatedEntry);
+
+          if (duplicatedEntry.startsWith('layer:')) {
+            childLayerIds.add(duplicatedEntry.substring('layer:'.length));
+          } else if (duplicatedEntry.startsWith('group:')) {
+            childGroupIds.add(duplicatedEntry.substring('group:'.length));
+          }
+        }
+
+        duplicatedGroups.add(
+          LayerGroup(
+            id: newId,
+            name: source.name,
+            childLayerIds: childLayerIds,
+            childGroupIds: childGroupIds,
+            childOrder: childOrder,
+            visible: source.visible,
+            expanded: source.expanded,
+            brightness: source.brightness,
+
+            // Gameplay/environment identity belongs to the authored object,
+            // not automatically to a structural duplicate.
+            environmentRole: null,
+          ),
+        );
+
+        return 'group:$newId';
+      }
+
+      return null;
+    }
+
+    final duplicatedRootEntry = duplicateEntry('group:$sourceGroupId');
+
+    if (duplicatedRootEntry == null ||
+        !duplicatedRootEntry.startsWith('group:')) {
+      return;
+    }
+
+    final duplicatedRootId = duplicatedRootEntry.substring('group:'.length);
+
+    // Give only the duplicated root a useful visual distinction.
+    final duplicatedRootIndex = duplicatedGroups.indexWhere(
+      (group) => group.id == duplicatedRootId,
+    );
+
+    if (duplicatedRootIndex != -1) {
+      final root = duplicatedGroups[duplicatedRootIndex];
+
+      duplicatedGroups[duplicatedRootIndex] = root.copyWith(
+        name: '${sourceRoot.name} copy',
+      );
+    }
+
+    final parent = _groupContainingGroup(sourceGroupId);
+    final sourceEntry = 'group:$sourceGroupId';
+
+    setState(() {
+      _layers.addAll(duplicatedLayers);
+      _referenceLayers.addAll(duplicatedReferences);
+      _variantSlots.addAll(duplicatedVariants);
+      _layerGroups.addAll(duplicatedGroups);
+
+      if (parent != null) {
+        final parentIndex = _layerGroups.indexWhere(
+          (group) => group.id == parent.id,
+        );
+
+        if (parentIndex != -1) {
+          final currentParent = _layerGroups[parentIndex];
+
+          final childOrder = List<String>.from(currentParent.childOrder);
+
+          final childGroupIds = List<String>.from(currentParent.childGroupIds);
+
+          final orderIndex = childOrder.indexOf(sourceEntry);
+
+          if (orderIndex == -1) {
+            childOrder.add(duplicatedRootEntry);
+          } else {
+            childOrder.insert(orderIndex + 1, duplicatedRootEntry);
+          }
+
+          final groupIndex = childGroupIds.indexOf(sourceGroupId);
+
+          if (groupIndex == -1) {
+            childGroupIds.add(duplicatedRootId);
+          } else {
+            childGroupIds.insert(groupIndex + 1, duplicatedRootId);
+          }
+
+          _layerGroups[parentIndex] = currentParent.copyWith(
+            childOrder: childOrder,
+            childGroupIds: childGroupIds,
+            expanded: true,
+          );
+        }
+      } else {
+        final rootIndex = _rootLayerOrder.indexOf(sourceEntry);
+
+        if (rootIndex == -1) {
+          _rootLayerOrder.add(duplicatedRootEntry);
+        } else {
+          _rootLayerOrder.insert(rootIndex + 1, duplicatedRootEntry);
+        }
+      }
+
+      _activeLayerGroupId = duplicatedRootId;
+      _layerInsertionGroupId = duplicatedRootId;
+      _activeReferenceLayerId = null;
+      _mergeSelectedLayerIds.clear();
+
+      _draftStroke = const <VectorPoint>[];
+      _draftTextureStrokes = <VectorStroke>[];
+      _draftStampStrokes = <VectorStroke>[];
+
+      _clearFillLasso();
+      _clearShapeDraft();
+      _clearTransformSelection();
+
+      _rebuildCompositeFrames();
+    });
+
+    _scheduleAutosave();
+
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text('${sourceRoot.name} duplicated'),
+        duration: const Duration(seconds: 1),
+      ),
+    );
   }
 
   Future<void> _showMoveGroupDialog(String groupId) async {
@@ -4282,6 +4575,9 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
       context: context,
       builder: (dialogContext) {
         return AlertDialog(
+          // Keep rename usable when the landscape software keyboard reduces
+          // the available vertical viewport.
+          scrollable: true,
           title: const Text('Rename layer'),
           content: TextFormField(
             initialValue: name,
@@ -13157,6 +13453,8 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                       _addLayerGroupToBag(group.id);
                     } else if (value == 'png') {
                       _exportLayerGroupPng(group.id);
+                    } else if (value == 'duplicate-group') {
+                      _duplicateLayerGroup(group.id);
                     } else if (value == 'move-group') {
                       _showMoveGroupDialog(group.id);
                     } else if (value == 'variant-slot') {
@@ -13212,6 +13510,13 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                       child: ListTile(
                         leading: Icon(Icons.tune),
                         title: Text('Create Variant Slot'),
+                      ),
+                    ),
+                    PopupMenuItem(
+                      value: 'duplicate-group',
+                      child: ListTile(
+                        leading: Icon(Icons.content_copy_outlined),
+                        title: Text('Duplicate Group'),
                       ),
                     ),
                     PopupMenuItem(
@@ -13606,14 +13911,24 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     return _isGroupEffectivelyVisible(group.id);
   }
 
-  Widget _buildDrawingLayerSceneWidget(DrawingLayer layer, {int? frameIndex}) {
+  Widget _buildDrawingLayerSceneWidget(
+    DrawingLayer layer, {
+    int? frameIndex,
+    bool includeLiveDraft = false,
+  }) {
     final resolvedFrameIndex = frameIndex ?? _selectedFrameIndex;
     final layerIndex = _layers.indexWhere((item) => item.id == layer.id);
 
-    // Draft artwork belongs only to the actively edited frame.
-    // Historical/future frame renders such as onion skins must contain only
-    // committed artwork from that requested frame.
-    final isActiveLayer = frameIndex == null && layerIndex == _activeLayerIndex;
+    // Live draft ownership is explicit.
+    //
+    // Animation tween rendering may borrow authored artwork from another
+    // frame by supplying frameIndex even while this is still the live,
+    // editable scene. Therefore frameIndex == null is no longer sufficient
+    // to identify whether the current S Pen stroke should be rendered.
+    //
+    // Onion skins, exports, previews, and historical renders leave
+    // includeLiveDraft false and can never capture an unfinished stroke.
+    final isActiveLayer = includeLiveDraft && layerIndex == _activeLayerIndex;
 
     final frameStrokes = <VectorStroke>[];
     final savedFrameStrokes = <VectorStroke>[];
@@ -13753,6 +14068,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     int? frameIndex,
     String? frameId,
     bool drawingOnly = false,
+    bool includeLiveDraft = false,
   }) {
     final widgets = <Widget>[];
 
@@ -13831,6 +14147,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
           _buildDrawingLayerSceneWidget(
             layer,
             frameIndex: drawingFrameIndexOverride ?? frameIndex,
+            includeLiveDraft: includeLiveDraft,
           ),
         );
         return;
@@ -14041,7 +14358,11 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
       }
 
       fallbackWidgets.add(
-        _buildDrawingLayerSceneWidget(layer, frameIndex: frameIndex),
+        _buildDrawingLayerSceneWidget(
+          layer,
+          frameIndex: frameIndex,
+          includeLiveDraft: includeLiveDraft,
+        ),
       );
     }
 
@@ -14399,6 +14720,14 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                                               // null: that still marks this as
                                               // the actively editable scene.
                                               frameId: _currentFrameId,
+
+                                              // This is the one authoritative
+                                              // editable scene. Keep the live
+                                              // S Pen draft visible even when
+                                              // animation tweening borrows
+                                              // artwork from another frame.
+                                              includeLiveDraft:
+                                                  !_isCompositePngCapture,
 
                                               // Normal Workspace rendering
                                               // always traverses the complete
