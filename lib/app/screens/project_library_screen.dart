@@ -199,6 +199,9 @@ class _ProjectLibraryScreenState extends State<ProjectLibraryScreen> {
         return SafeArea(
           child: Container(
             margin: const EdgeInsets.all(16),
+            constraints: BoxConstraints(
+              maxHeight: MediaQuery.sizeOf(sheetContext).height - 32,
+            ),
             padding: const EdgeInsets.fromLTRB(20, 14, 20, 20),
             decoration: BoxDecoration(
               color: const Color(0xF21A1817),
@@ -214,107 +217,109 @@ class _ProjectLibraryScreenState extends State<ProjectLibraryScreen> {
                 ),
               ],
             ),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Container(
-                  width: 36,
-                  height: 4,
-                  decoration: BoxDecoration(
-                    color: Colors.white38,
-                    borderRadius: BorderRadius.circular(20),
+            child: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Container(
+                    width: 36,
+                    height: 4,
+                    decoration: BoxDecoration(
+                      color: Colors.white38,
+                      borderRadius: BorderRadius.circular(20),
+                    ),
                   ),
-                ),
-                const SizedBox(height: 18),
-                Row(
-                  children: [
-                    const Icon(
-                      Icons.auto_stories_outlined,
+                  const SizedBox(height: 18),
+                  Row(
+                    children: [
+                      const Icon(
+                        Icons.auto_stories_outlined,
+                        color: Color(0xFFD8B47A),
+                      ),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              project.name,
+                              style: const TextStyle(
+                                color: Color(0xFFF6E8D2),
+                                fontSize: 20,
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
+                            const SizedBox(height: 3),
+                            Text(
+                              '${project.frames.length} ${project.frames.length == 1 ? 'frame' : 'frames'} • ${project.fps} FPS',
+                              style: const TextStyle(color: Color(0xFFBDAE9A)),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 18),
+                  ListTile(
+                    leading: const Icon(
+                      Icons.play_arrow_rounded,
                       color: Color(0xFFD8B47A),
                     ),
-                    const SizedBox(width: 12),
-                    Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(
-                            project.name,
-                            style: const TextStyle(
-                              color: Color(0xFFF6E8D2),
-                              fontSize: 20,
-                              fontWeight: FontWeight.w600,
-                            ),
-                          ),
-                          const SizedBox(height: 3),
-                          Text(
-                            '${project.frames.length} ${project.frames.length == 1 ? 'frame' : 'frames'} • ${project.fps} FPS',
-                            style: const TextStyle(color: Color(0xFFBDAE9A)),
-                          ),
-                        ],
-                      ),
+                    title: const Text(
+                      'Continue creating',
+                      style: TextStyle(color: Colors.white),
                     ),
-                  ],
-                ),
-                const SizedBox(height: 18),
-                ListTile(
-                  leading: const Icon(
-                    Icons.play_arrow_rounded,
-                    color: Color(0xFFD8B47A),
+                    onTap: () {
+                      Navigator.pop(sheetContext);
+                      _openProject(project);
+                    },
                   ),
-                  title: const Text(
-                    'Continue creating',
-                    style: TextStyle(color: Colors.white),
+                  ListTile(
+                    leading: const Icon(
+                      Icons.edit_outlined,
+                      color: Color(0xFFD8B47A),
+                    ),
+                    title: const Text(
+                      'Rename',
+                      style: TextStyle(color: Colors.white),
+                    ),
+                    onTap: () async {
+                      Navigator.pop(sheetContext);
+
+                      // Allow the modal bottom sheet to finish tearing down
+                      // before mounting the rename dialog.
+                      await Future<void>.delayed(
+                        const Duration(milliseconds: 250),
+                      );
+
+                      if (!mounted) return;
+
+                      await _renameProject(project, index);
+                    },
                   ),
-                  onTap: () {
-                    Navigator.pop(sheetContext);
-                    _openProject(project);
-                  },
-                ),
-                ListTile(
-                  leading: const Icon(
-                    Icons.edit_outlined,
-                    color: Color(0xFFD8B47A),
+                  ListTile(
+                    leading: const Icon(
+                      Icons.delete_outline,
+                      color: Color(0xFFE3A29A),
+                    ),
+                    title: const Text(
+                      'Delete',
+                      style: TextStyle(color: Color(0xFFE3A29A)),
+                    ),
+                    onTap: () async {
+                      Navigator.pop(sheetContext);
+
+                      await Future<void>.delayed(
+                        const Duration(milliseconds: 250),
+                      );
+
+                      if (!mounted) return;
+
+                      await _deleteProject(project, index);
+                    },
                   ),
-                  title: const Text(
-                    'Rename',
-                    style: TextStyle(color: Colors.white),
-                  ),
-                  onTap: () async {
-                    Navigator.pop(sheetContext);
-
-                    // Allow the modal bottom sheet to finish tearing down
-                    // before mounting the rename dialog.
-                    await Future<void>.delayed(
-                      const Duration(milliseconds: 250),
-                    );
-
-                    if (!mounted) return;
-
-                    await _renameProject(project, index);
-                  },
-                ),
-                ListTile(
-                  leading: const Icon(
-                    Icons.delete_outline,
-                    color: Color(0xFFE3A29A),
-                  ),
-                  title: const Text(
-                    'Delete',
-                    style: TextStyle(color: Color(0xFFE3A29A)),
-                  ),
-                  onTap: () async {
-                    Navigator.pop(sheetContext);
-
-                    await Future<void>.delayed(
-                      const Duration(milliseconds: 250),
-                    );
-
-                    if (!mounted) return;
-
-                    await _deleteProject(project, index);
-                  },
-                ),
-              ],
+                ],
+              ),
             ),
           ),
         );

@@ -9410,6 +9410,42 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     }
   }
 
+  Offset _canvasPointToActiveLayerAuthoredSpace(Offset canvasPoint) {
+    if (_activeLayerIndex < 0 || _activeLayerIndex >= _layers.length) {
+      return canvasPoint;
+    }
+
+    final frameId = _currentFrameId;
+
+    if (frameId == null) {
+      return canvasPoint;
+    }
+
+    final layer = _activeLayer;
+    final owningGroup = _groupContainingLayer(layer.id);
+
+    if (owningGroup == null) {
+      return canvasPoint;
+    }
+
+    // Drawing tools receive pointer positions in visible canvas/scene space,
+    // while DrawingLayer stroke geometry is stored in authored coordinates.
+    //
+    // A layer may now live beneath one or more non-destructive animation
+    // transforms. Undo the complete rendered group hierarchy before writing
+    // or hit-testing authored layer geometry.
+    final sceneMatrix = _sceneTransformMatrixForGroup(owningGroup.id, frameId);
+
+    final inverse = Matrix4.copy(sceneMatrix);
+    final determinant = inverse.invert();
+
+    if (determinant == 0) {
+      return canvasPoint;
+    }
+
+    return MatrixUtils.transformPoint(inverse, canvasPoint);
+  }
+
   void _handlePointerDown(PointerDownEvent event, BuildContext canvasContext) {
     _updateCanvasRotationPointerDown(event);
     _activePointerCount += 1;
@@ -9431,6 +9467,9 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
 
     final renderBox = canvasContext.findRenderObject() as RenderBox;
     final canvasPosition = renderBox.globalToLocal(event.position);
+    final authoredPosition = _canvasPointToActiveLayerAuthoredSpace(
+      canvasPosition,
+    );
 
     if (_brushEyedropperArmed) {
       unawaited(_sampleBrushColour(canvasPosition));
@@ -9448,8 +9487,8 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     if (_drawingMode && _stampBrushActive && _stampBrushItem != null) {
       setState(() {
         _draftStampStrokes = <VectorStroke>[];
-        _stampBrushLastPosition = canvasPosition;
-        _addBagStampToDraft(canvasPosition, event.pressure);
+        _stampBrushLastPosition = authoredPosition;
+        _addBagStampToDraft(authoredPosition, event.pressure);
       });
 
       return;
@@ -9459,7 +9498,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
       _draftTextureStrokes = <VectorStroke>[];
 
       setState(() {
-        _addTextureStamp(canvasPosition, event.pressure);
+        _addTextureStamp(authoredPosition, event.pressure);
       });
 
       return;
@@ -9688,13 +9727,13 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     }
 
     if (_isFillToolActive) {
-      _fillStabilizerTrailingPosition = canvasPosition;
+      _fillStabilizerTrailingPosition = authoredPosition;
 
       setState(() {
         _fillLassoPoints = <VectorPoint>[
           VectorPoint(
-            dx: canvasPosition.dx,
-            dy: canvasPosition.dy,
+            dx: authoredPosition.dx,
+            dy: authoredPosition.dy,
             pressure: 1,
           ),
         ];
@@ -9724,8 +9763,8 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
       }
 
       setState(() {
-        _shapeStartPosition = canvasPosition;
-        _draftShapeStrokes = _shapeStrokes(canvasPosition, canvasPosition);
+        _shapeStartPosition = authoredPosition;
+        _draftShapeStrokes = _shapeStrokes(authoredPosition, authoredPosition);
       });
 
       return;
@@ -9736,25 +9775,25 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
       _tintGestureChanged = false;
       _tintGestureUndoCaptured = false;
 
-      _applyTintAt(canvasPosition, event.pressure);
+      _applyTintAt(authoredPosition, event.pressure);
       return;
     }
 
     if (_isEraserActive) {
       _saveUndoState();
       setState(() {
-        _eraseAt(canvasPosition);
+        _eraseAt(authoredPosition);
       });
       return;
     }
 
-    _stabilizerTrailingPosition = canvasPosition;
+    _stabilizerTrailingPosition = authoredPosition;
 
     setState(() {
       _draftStroke = <VectorPoint>[
         VectorPoint(
-          dx: canvasPosition.dx,
-          dy: canvasPosition.dy,
+          dx: authoredPosition.dx,
+          dy: authoredPosition.dy,
           pressure: event.pressure,
         ),
       ];
@@ -9775,10 +9814,13 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
 
     final renderBox = canvasContext.findRenderObject() as RenderBox;
     final canvasPosition = renderBox.globalToLocal(event.position);
+    final authoredPosition = _canvasPointToActiveLayerAuthoredSpace(
+      canvasPosition,
+    );
 
     if (_drawingMode && _stampBrushActive && _stampBrushItem != null) {
       setState(() {
-        _addBagStampsAlongPath(canvasPosition, event.pressure);
+        _addBagStampsAlongPath(authoredPosition, event.pressure);
       });
 
       return;
@@ -9786,7 +9828,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
 
     if (_drawingMode && _textureActive) {
       setState(() {
-        _addTextureStamp(canvasPosition, event.pressure);
+        _addTextureStamp(authoredPosition, event.pressure);
       });
 
       return;
@@ -10053,7 +10095,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     }
 
     if (_isFillToolActive && _fillLassoPoints.isNotEmpty) {
-      final stabilizedPosition = _stabilizeFillPosition(canvasPosition);
+      final stabilizedPosition = _stabilizeFillPosition(authoredPosition);
 
       final last = _fillLassoPoints.last;
       final dx = stabilizedPosition.dx - last.dx;
@@ -10094,20 +10136,20 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
 
     if (_isShapeToolActive && _shapeStartPosition != null) {
       setState(() {
-        _updateShapePreview(canvasPosition);
+        _updateShapePreview(authoredPosition);
       });
 
       return;
     }
 
     if (_isTintToolActive) {
-      _applyTintAt(canvasPosition, event.pressure);
+      _applyTintAt(authoredPosition, event.pressure);
       return;
     }
 
     if (_isEraserActive) {
       setState(() {
-        _eraseAt(canvasPosition);
+        _eraseAt(authoredPosition);
       });
       return;
     }
@@ -10116,7 +10158,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
       return;
     }
 
-    final stabilizedPosition = _stabilizePosition(canvasPosition);
+    final stabilizedPosition = _stabilizePosition(authoredPosition);
 
     final lastPoint = _draftStroke.last;
     final dx = stabilizedPosition.dx - lastPoint.dx;
@@ -16778,18 +16820,30 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                                       // the top workspace controls so the
                                       // Add Reference / Group / Layer buttons
                                       // always remain reachable.
-                                      maxHeight: math.min(
-                                        constraints.maxHeight * 0.68,
-                                        math.max(
-                                          180.0,
-                                          constraints.maxHeight -
-                                              MediaQuery.of(
-                                                context,
-                                              ).viewPadding.top -
-                                              kToolbarHeight -
-                                              128.0,
-                                        ),
-                                      ),
+                                      maxHeight:
+                                          constraints.maxWidth >
+                                              constraints.maxHeight
+                                          ? math.max(
+                                              80.0,
+                                              constraints.maxHeight -
+                                                  MediaQuery.of(
+                                                    context,
+                                                  ).viewPadding.top -
+                                                  kToolbarHeight -
+                                                  196.0,
+                                            )
+                                          : math.max(
+                                              80.0,
+                                              math.min(
+                                                constraints.maxHeight * 0.68,
+                                                constraints.maxHeight -
+                                                    MediaQuery.of(
+                                                      context,
+                                                    ).viewPadding.top -
+                                                    kToolbarHeight -
+                                                    128.0,
+                                              ),
+                                            ),
                                     ),
                                     child: SingleChildScrollView(
                                       key: _layersScrollViewportKey,
