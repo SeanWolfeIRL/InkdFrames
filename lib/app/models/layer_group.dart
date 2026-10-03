@@ -9,6 +9,8 @@ class LayerGroup {
     this.expanded = true,
     this.brightness = 1.0,
     this.environmentRole,
+    this.pivotX,
+    this.pivotY,
   }) : childLayerIds = childLayerIds,
        childGroupIds = childGroupIds,
        childOrder =
@@ -27,6 +29,8 @@ class LayerGroup {
       brightness:
           (json['brightness'] as num?)?.toDouble().clamp(0.0, 1.0) ?? 1.0,
       environmentRole: json['environmentRole'] as String?,
+      pivotX: (json['pivotX'] as num?)?.toDouble(),
+      pivotY: (json['pivotY'] as num?)?.toDouble(),
       childLayerIds: (json['childLayerIds'] as List? ?? const [])
           .map((id) => id.toString())
           .toList(),
@@ -63,6 +67,16 @@ class LayerGroup {
   /// Null means this is an ordinary hierarchy group.
   final String? environmentRole;
 
+  /// Authored rest pivot for this semantic group.
+  ///
+  /// When both values are present the group behaves like a rigged bone whose
+  /// joint has been deliberately authored. Null preserves legacy behaviour
+  /// and lets Transform use the current selection centre.
+  final double? pivotX;
+  final double? pivotY;
+
+  bool get hasAuthoredPivot => pivotX != null && pivotY != null;
+
   /// Drawing layers directly owned by this group.
   final List<String> childLayerIds;
 
@@ -92,6 +106,9 @@ class LayerGroup {
     double? brightness,
     String? environmentRole,
     bool clearEnvironmentRole = false,
+    double? pivotX,
+    double? pivotY,
+    bool clearPivot = false,
     List<String>? childLayerIds,
     List<String>? childGroupIds,
     List<String>? childOrder,
@@ -105,6 +122,8 @@ class LayerGroup {
       environmentRole: clearEnvironmentRole
           ? null
           : environmentRole ?? this.environmentRole,
+      pivotX: clearPivot ? null : pivotX ?? this.pivotX,
+      pivotY: clearPivot ? null : pivotY ?? this.pivotY,
       childLayerIds: childLayerIds ?? this.childLayerIds,
       childGroupIds: childGroupIds ?? this.childGroupIds,
       childOrder: childOrder ?? this.childOrder,
@@ -119,6 +138,8 @@ class LayerGroup {
       'expanded': expanded,
       'brightness': brightness,
       'environmentRole': environmentRole,
+      'pivotX': pivotX,
+      'pivotY': pivotY,
       'childLayerIds': childLayerIds,
       'childGroupIds': childGroupIds,
       'childOrder': childOrder,

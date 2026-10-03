@@ -302,6 +302,15 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
   bool _isTransformScaling = false;
   bool _isTransformRotating = false;
   bool _isTransformPivotDragging = false;
+
+  // Pivot authoring.
+  //
+  // A normal pivot drag remains temporary editor state. Holding the pivot
+  // still for three seconds promotes its current position into the selected
+  // LayerGroup's authored rest joint.
+  Timer? _transformPivotLockTimer;
+  Offset? _transformPivotHoldStart;
+
   bool _transformScaleHorizontalOnly = false;
   bool _transformScaleVerticalOnly = false;
 
@@ -1478,6 +1487,8 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
               1.0,
             ).clamp(0.0, 1.0),
             environmentRole: node.payload['environmentRole'] as String?,
+            pivotX: (node.payload['pivotX'] as num?)?.toDouble(),
+            pivotY: (node.payload['pivotY'] as num?)?.toDouble(),
           ),
         );
 
@@ -4193,6 +4204,8 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
             visible: source.visible,
             expanded: source.expanded,
             brightness: source.brightness,
+            pivotX: source.pivotX,
+            pivotY: source.pivotY,
 
             // Gameplay/environment identity belongs to the authored object,
             // not automatically to a structural duplicate.
@@ -4668,6 +4681,8 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
               expanded: group.expanded,
               brightness: group.brightness,
               environmentRole: group.environmentRole,
+              pivotX: group.pivotX,
+              pivotY: group.pivotY,
               childLayerIds: List<String>.from(group.childLayerIds),
               childGroupIds: List<String>.from(group.childGroupIds),
               childOrder: List<String>.from(group.childOrder),
@@ -6263,7 +6278,17 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
       _transformTargetGroupId = groupId;
 
       final bounds = _transformSelectionBounds();
-      _transformPivot = bounds?.center;
+      final targetGroupIndex = groupId == null
+          ? -1
+          : _layerGroups.indexWhere((group) => group.id == groupId);
+
+      final targetGroup = targetGroupIndex == -1
+          ? null
+          : _layerGroups[targetGroupIndex];
+
+      _transformPivot = targetGroup?.hasAuthoredPivot == true
+          ? Offset(targetGroup!.pivotX!, targetGroup.pivotY!)
+          : bounds?.center;
     });
 
     HapticFeedback.mediumImpact();
@@ -7186,6 +7211,85 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     return (position - handle).distance <= hitRadius;
   }
 
+  LayerGroup? get _transformTargetGroup {
+    final groupId = _transformTargetGroupId;
+
+    if (groupId == null) {
+      return null;
+    }
+
+    final index = _layerGroups.indexWhere((group) => group.id == groupId);
+
+    return index == -1 ? null : _layerGroups[index];
+  }
+
+  bool get _transformPivotIsAuthored =>
+      !_editingKeyedTransformGroupPose &&
+      _transformReferenceLayerId == null &&
+      (_transformTargetGroup?.hasAuthoredPivot ?? false);
+
+  void _cancelTransformPivotLockHold() {
+    _transformPivotLockTimer?.cancel();
+    _transformPivotLockTimer = null;
+    _transformPivotHoldStart = null;
+  }
+
+  void _beginTransformPivotLockHold(Offset pivot) {
+    _cancelTransformPivotLockHold();
+
+    final groupId = _transformTargetGroupId;
+
+    // Reference pivots and animation-key pivots keep their existing semantics.
+    // Only semantic LayerGroups own authored skeleton joints.
+    if (groupId == null ||
+        _transformReferenceLayerId != null ||
+        _editingKeyedTransformGroupPose) {
+      return;
+    }
+
+    _transformPivotHoldStart = pivot;
+
+    _transformPivotLockTimer = Timer(const Duration(seconds: 3), () {
+      if (!mounted ||
+          !_isTransformPivotDragging ||
+          _transformTargetGroupId != groupId) {
+        return;
+      }
+
+      final currentPivot = _transformPivot;
+
+      if (currentPivot == null) {
+        return;
+      }
+
+      final index = _layerGroups.indexWhere((group) => group.id == groupId);
+
+      if (index == -1) {
+        return;
+      }
+
+      setState(() {
+        _layerGroups[index] = _layerGroups[index].copyWith(
+          pivotX: currentPivot.dx,
+          pivotY: currentPivot.dy,
+        );
+      });
+
+      _transformPivotLockTimer = null;
+      _transformPivotHoldStart = null;
+
+      _scheduleAutosave();
+      HapticFeedback.heavyImpact();
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Pivot locked to asset ✨'),
+          duration: Duration(milliseconds: 1200),
+        ),
+      );
+    });
+  }
+
   Offset _effectiveTransformPivot(Rect bounds) {
     if (_editingKeyedTransformGroupPose) {
       final groupId = _transformTargetGroupId;
@@ -7219,6 +7323,14 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
           return MatrixUtils.transformPoint(ancestorMatrix, translatedPivot);
         }
       }
+    }
+
+    final group = _transformTargetGroup;
+
+    if (_transformReferenceLayerId == null &&
+        group != null &&
+        group.hasAuthoredPivot) {
+      return Offset(group.pivotX!, group.pivotY!);
     }
 
     return _transformPivot ?? bounds.center;
@@ -9303,13 +9415,17 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
 
       if (bounds != null) {
         if (_transformPivotHit(canvasPosition, bounds)) {
+          final pivot = _effectiveTransformPivot(bounds);
+
           setState(() {
-            _transformPivot = _effectiveTransformPivot(bounds);
+            _transformPivot = pivot;
             _isTransformPivotDragging = true;
             _isTransformRotating = false;
             _isTransformScaling = false;
             _isTransformDragging = false;
           });
+
+          _beginTransformPivotLockHold(pivot);
 
           return;
         }
@@ -9623,6 +9739,13 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
 
     if (_isTransformActive) {
       if (_isTransformPivotDragging) {
+        final holdStart = _transformPivotHoldStart;
+
+        if (holdStart != null &&
+            (canvasPosition - holdStart).distance > _transformScreenPixels(8)) {
+          _cancelTransformPivotLockHold();
+        }
+
         setState(() {
           _transformPivot = canvasPosition;
 
@@ -10075,6 +10198,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     if (_isTransformActive) {
       setState(() {
         if (_isTransformPivotDragging) {
+          _cancelTransformPivotLockHold();
           _isTransformPivotDragging = false;
         } else if (_isTransformRotating) {
           _isTransformRotating = false;
@@ -10141,6 +10265,11 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
 
   void _handlePointerCancel(PointerCancelEvent event) {
     _updateCanvasRotationPointerEnd(event);
+    _cancelTransformPivotLockHold();
+
+    if (_isTransformPivotDragging) {
+      _isTransformPivotDragging = false;
+    }
 
     if (_canvasAssetLongPressPointer == event.pointer) {
       _cancelCanvasAssetLongPress();
@@ -14875,6 +15004,8 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                                                           ),
                                                     viewScale:
                                                         _transformViewScale,
+                                                    pivotLocked:
+                                                        _transformPivotIsAuthored,
                                                   ),
                                                   child:
                                                       const SizedBox.expand(),
@@ -18084,6 +18215,7 @@ class _TransformOverlayPainter extends CustomPainter {
     required this.posedCorners,
     required this.pivot,
     required this.viewScale,
+    required this.pivotLocked,
   });
 
   final List<VectorPoint> lassoPoints;
@@ -18091,6 +18223,7 @@ class _TransformOverlayPainter extends CustomPainter {
   final List<Offset>? posedCorners;
   final Offset? pivot;
   final double viewScale;
+  final bool pivotLocked;
 
   double _screen(double pixels) {
     return pixels / math.max(0.1, viewScale);
@@ -18198,7 +18331,7 @@ class _TransformOverlayPainter extends CustomPainter {
       ..style = PaintingStyle.fill;
 
     final pivotInnerPaint = Paint()
-      ..color = Colors.cyanAccent
+      ..color = pivotLocked ? const Color(0xFFFFD54F) : Colors.cyanAccent
       ..style = PaintingStyle.stroke
       ..strokeWidth = _screen(2);
 
@@ -18262,7 +18395,8 @@ class _TransformOverlayPainter extends CustomPainter {
         oldDelegate.selectionBounds != selectionBounds ||
         oldDelegate.posedCorners != posedCorners ||
         oldDelegate.pivot != pivot ||
-        oldDelegate.viewScale != viewScale;
+        oldDelegate.viewScale != viewScale ||
+        oldDelegate.pivotLocked != pivotLocked;
   }
 }
 
