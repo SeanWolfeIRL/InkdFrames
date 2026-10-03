@@ -6681,6 +6681,61 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
         -1;
   }
 
+  void _deleteCurrentTransformGroupPose() {
+    final frameId = _currentFrameId;
+    final groupId = _transformTargetGroupId;
+
+    if (frameId == null || groupId == null) {
+      return;
+    }
+
+    final index = _transformKeyframeIndexFor(
+      frameId: frameId,
+      targetGroupId: groupId,
+    );
+
+    if (index == -1) {
+      return;
+    }
+
+    final groupIndex = _layerGroups.indexWhere((group) => group.id == groupId);
+    final groupName = groupIndex == -1
+        ? 'Group'
+        : _layerGroups[groupIndex].name;
+
+    setState(() {
+      _transformKeyframes.removeAt(index);
+
+      // Any in-progress gesture snapshots belonged to the deleted pose.
+      _transformKeyframeRotationSnapshot = null;
+      _transformKeyframeScaleSnapshot = null;
+      _isTransformRotating = false;
+      _isTransformScaling = false;
+      _transformRotationCenter = null;
+      _transformRotationStartAngle = null;
+      _transformScaleAnchor = null;
+      _transformScaleStartDistance = null;
+
+      // Return the editor handle to the persistent asset joint when one
+      // exists. Otherwise the transform overlay will fall back to bounds.
+      final group = groupIndex == -1 ? null : _layerGroups[groupIndex];
+
+      _transformPivot = group?.hasAuthoredPivot == true
+          ? Offset(group!.pivotX!, group.pivotY!)
+          : null;
+    });
+
+    _scheduleAutosave();
+    HapticFeedback.mediumImpact();
+
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text('$groupName pose key deleted'),
+        duration: const Duration(seconds: 1),
+      ),
+    );
+  }
+
   void _keyCurrentTransformGroupPose() {
     final frameId = _currentFrameId;
     final groupId = _transformTargetGroupId;
@@ -7224,7 +7279,6 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
   }
 
   bool get _transformPivotIsAuthored =>
-      !_editingKeyedTransformGroupPose &&
       _transformReferenceLayerId == null &&
       (_transformTargetGroup?.hasAuthoredPivot ?? false);
 
@@ -7239,11 +7293,12 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
 
     final groupId = _transformTargetGroupId;
 
-    // Reference pivots and animation-key pivots keep their existing semantics.
-    // Only semantic LayerGroups own authored skeleton joints.
-    if (groupId == null ||
-        _transformReferenceLayerId != null ||
-        _editingKeyedTransformGroupPose) {
+    // References keep their existing pivot semantics.
+    //
+    // A semantic LayerGroup may author its permanent skeleton joint even
+    // while the current animation frame contains a pose key. The permanent
+    // joint belongs to the asset; the keyframe belongs only to this frame.
+    if (groupId == null || _transformReferenceLayerId != null) {
       return;
     }
 
@@ -9771,6 +9826,29 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                 _setCurrentTransformKeyframePivot(
                   parentSpacePivot -
                       Offset(keyframe.translateX, keyframe.translateY),
+                );
+              }
+            }
+          } else {
+            // An authored gold pivot is still editable.
+            //
+            // _effectiveTransformPivot() deliberately reads the persistent
+            // LayerGroup pivot once one has been authored, so changing only
+            // _transformPivot would make the handle appear nailed in place.
+            // Keep the authored joint in sync with the pointer while it is
+            // being repositioned.
+            final groupId = _transformTargetGroupId;
+
+            if (groupId != null) {
+              final groupIndex = _layerGroups.indexWhere(
+                (group) => group.id == groupId,
+              );
+
+              if (groupIndex != -1 &&
+                  _layerGroups[groupIndex].hasAuthoredPivot) {
+                _layerGroups[groupIndex] = _layerGroups[groupIndex].copyWith(
+                  pivotX: canvasPosition.dx,
+                  pivotY: canvasPosition.dy,
                 );
               }
             }
@@ -17442,6 +17520,21 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                                         : Icons.key_outlined,
                                     color: _currentTransformGroupHasKeyframe
                                         ? Colors.amberAccent
+                                        : null,
+                                  ),
+                                ),
+                                IconButton(
+                                  tooltip: 'Delete Key Pose',
+                                  visualDensity: VisualDensity.compact,
+                                  onPressed:
+                                      _isPlaying ||
+                                          !_currentTransformGroupHasKeyframe
+                                      ? null
+                                      : _deleteCurrentTransformGroupPose,
+                                  icon: Icon(
+                                    Icons.key_off,
+                                    color: _currentTransformGroupHasKeyframe
+                                        ? Colors.redAccent
                                         : null,
                                   ),
                                 ),
