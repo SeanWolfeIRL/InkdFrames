@@ -17907,7 +17907,24 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                                             _draftStroke =
                                                 const <VectorPoint>[];
 
-                                            if (!_isTransformActive) {
+                                            if (_isTransformActive) {
+                                              // Transform owns canvas input
+                                              // while its lasso is active.
+                                              _drawingExpanded = false;
+                                              _blendExpanded = false;
+                                              _blendSamplingArmed = false;
+
+                                              _textureExpanded = false;
+                                              _textureActive = false;
+                                              _draftTextureStrokes =
+                                                  <VectorStroke>[];
+
+                                              _stampBrushPanelExpanded = false;
+                                              _stampBrushActive = false;
+                                              _stampBrushItem = null;
+                                              _draftStampStrokes =
+                                                  <VectorStroke>[];
+                                            } else {
                                               _clearTransformSelection();
                                             }
                                           });
