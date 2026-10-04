@@ -28,6 +28,8 @@ import '../services/project_storage_service.dart';
 import 'bag_screen.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+enum _DrawingSymmetryMode { off, vertical, horizontal, quad }
+
 enum _ShapeToolType {
   line,
   rectangle,
@@ -415,6 +417,20 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
   double _stabilizerStrength = 0.55;
   double _stabilizerPullDistance = 14.0;
   Offset? _stabilizerTrailingPosition;
+
+  // View-only drawing grid.
+  //
+  // The grid lives in authored canvas coordinates but is never stored as
+  // artwork, so it follows canvas zoom/rotation without affecting exports.
+  bool _showDrawingGrid = false;
+  double _drawingGridSpacing = 80.0;
+
+  // Non-destructive drawing symmetry.
+  //
+  // The authored S Pen gesture remains the authoritative draft. Mirrored
+  // siblings are derived from its stabilised points for preview and commit.
+  _DrawingSymmetryMode _drawingSymmetryMode = _DrawingSymmetryMode.off;
+
   double _canvasWidth = 1920;
   double _canvasHeight = 1080;
   Color _brushColor = Colors.white;
@@ -10294,6 +10310,53 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     _scheduleAutosave();
   }
 
+  List<VectorPoint> _mirrorDrawingPoints(
+    List<VectorPoint> points, {
+    required bool horizontal,
+    required bool vertical,
+  }) {
+    return points
+        .map((point) {
+          return VectorPoint(
+            dx: vertical ? _canvasWidth - point.dx : point.dx,
+            dy: horizontal ? _canvasHeight - point.dy : point.dy,
+            pressure: point.pressure,
+          );
+        })
+        .toList(growable: false);
+  }
+
+  List<List<VectorPoint>> _symmetryPointSets(List<VectorPoint> source) {
+    if (source.isEmpty) {
+      return const <List<VectorPoint>>[];
+    }
+
+    switch (_drawingSymmetryMode) {
+      case _DrawingSymmetryMode.off:
+        return <List<VectorPoint>>[List<VectorPoint>.from(source)];
+
+      case _DrawingSymmetryMode.vertical:
+        return <List<VectorPoint>>[
+          List<VectorPoint>.from(source),
+          _mirrorDrawingPoints(source, horizontal: false, vertical: true),
+        ];
+
+      case _DrawingSymmetryMode.horizontal:
+        return <List<VectorPoint>>[
+          List<VectorPoint>.from(source),
+          _mirrorDrawingPoints(source, horizontal: true, vertical: false),
+        ];
+
+      case _DrawingSymmetryMode.quad:
+        return <List<VectorPoint>>[
+          List<VectorPoint>.from(source),
+          _mirrorDrawingPoints(source, horizontal: false, vertical: true),
+          _mirrorDrawingPoints(source, horizontal: true, vertical: false),
+          _mirrorDrawingPoints(source, horizontal: true, vertical: true),
+        ];
+    }
+  }
+
   void _handlePointerUp(PointerUpEvent event) {
     _updateCanvasRotationPointerEnd(event);
 
@@ -10418,20 +10481,24 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
 
     final layer = _activeLayer;
 
-    final stroke = VectorStroke(
-      points: List<VectorPoint>.from(_draftStroke),
-      strokeWidth: _brushSize,
-      color: _brushColor.withValues(alpha: _brushOpacity),
-      brushType: _brushType,
-      alphaLocked: layer.alphaLocked,
-    );
+    final symmetryStrokes = _symmetryPointSets(_draftStroke)
+        .map(
+          (points) => VectorStroke(
+            points: points,
+            strokeWidth: _brushSize,
+            color: _brushColor.withValues(alpha: _brushOpacity),
+            brushType: _brushType,
+            alphaLocked: layer.alphaLocked,
+          ),
+        )
+        .toList(growable: false);
 
     setState(() {
       final frames = _copyLayerFrames(layer.frames);
 
       frames[_selectedFrameIndex] = <VectorStroke>[
         ...frames[_selectedFrameIndex],
-        stroke,
+        ...symmetryStrokes,
       ];
 
       _layers[_activeLayerIndex] = layer.copyWith(frames: frames);
@@ -14275,6 +14342,9 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
           currentStroke: isActiveLayer && _draftStroke.isNotEmpty
               ? _draftStroke
               : null,
+          symmetryCurrentStrokes: isActiveLayer && _draftStroke.isNotEmpty
+              ? _symmetryPointSets(_draftStroke).skip(1).toList()
+              : const <List<VectorPoint>>[],
           previousOnionSkinStrokes: const <VectorStroke>[],
           nextOnionSkinStrokes: const <VectorStroke>[],
           strokeColor: _brushColor.withValues(
@@ -14571,13 +14641,6 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
         final groupDrawingFrameIndex = frameId != null
             ? _tweenArtworkSourceFrameIndex(frameId, group.id)
             : null;
-
-        // Resolve this group's transform pose independently from its drawing
-        // artwork source. A nested group can therefore animate its pose while
-        // continuing to inherit artwork authored by an ancestor.
-        final groupHasResolvedPose = frameId != null
-            ? _resolvedTransformPoseForFrame(frameId, group.id) != null
-            : false;
 
         // Transform-pose ownership and drawing-artwork ownership are
         // independent.
@@ -15025,6 +15088,39 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                                               ColoredBox(
                                                 color: _canvasBackgroundColor,
                                               ),
+
+                                            // View-only authored-coordinate
+                                            // drawing grid. It sits behind
+                                            // artwork and is excluded from
+                                            // Composite PNG capture.
+                                            if (_showDrawingGrid &&
+                                                !_isCompositePngCapture)
+                                              IgnorePointer(
+                                                child: CustomPaint(
+                                                  painter: _DrawingGridPainter(
+                                                    spacing:
+                                                        _drawingGridSpacing,
+                                                  ),
+                                                  child:
+                                                      const SizedBox.expand(),
+                                                ),
+                                              ),
+
+                                            if (_drawingSymmetryMode !=
+                                                    _DrawingSymmetryMode.off &&
+                                                !_isCompositePngCapture)
+                                              IgnorePointer(
+                                                child: CustomPaint(
+                                                  painter:
+                                                      _DrawingSymmetryGuidePainter(
+                                                        mode:
+                                                            _drawingSymmetryMode,
+                                                      ),
+                                                  child:
+                                                      const SizedBox.expand(),
+                                                ),
+                                              ),
+
                                             ..._buildMixedHierarchySceneWidgets(
                                               // Give the live scene its stable
                                               // animation-frame identity so
@@ -16458,6 +16554,145 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                                                       ),
                                                     ],
                                                   ),
+
+                                                  const SizedBox(height: 8),
+
+                                                  // Drawing symmetry.
+                                                  Row(
+                                                    children: [
+                                                      const SizedBox(
+                                                        width: 70,
+                                                        child: Text('Symmetry'),
+                                                      ),
+                                                      Expanded(
+                                                        child: DropdownButton<_DrawingSymmetryMode>(
+                                                          value:
+                                                              _drawingSymmetryMode,
+                                                          isExpanded: true,
+                                                          onChanged: (value) {
+                                                            if (value == null) {
+                                                              return;
+                                                            }
+
+                                                            setState(() {
+                                                              _drawingSymmetryMode =
+                                                                  value;
+                                                            });
+                                                          },
+                                                          items: const [
+                                                            DropdownMenuItem(
+                                                              value:
+                                                                  _DrawingSymmetryMode
+                                                                      .off,
+                                                              child: Text(
+                                                                'Off',
+                                                              ),
+                                                            ),
+                                                            DropdownMenuItem(
+                                                              value:
+                                                                  _DrawingSymmetryMode
+                                                                      .vertical,
+                                                              child: Text(
+                                                                'Vertical',
+                                                              ),
+                                                            ),
+                                                            DropdownMenuItem(
+                                                              value:
+                                                                  _DrawingSymmetryMode
+                                                                      .horizontal,
+                                                              child: Text(
+                                                                'Horizontal',
+                                                              ),
+                                                            ),
+                                                            DropdownMenuItem(
+                                                              value:
+                                                                  _DrawingSymmetryMode
+                                                                      .quad,
+                                                              child: Text(
+                                                                'Quad',
+                                                              ),
+                                                            ),
+                                                          ],
+                                                        ),
+                                                      ),
+                                                    ],
+                                                  ),
+
+                                                  const SizedBox(height: 6),
+
+                                                  // View-only drawing grid.
+                                                  Row(
+                                                    children: [
+                                                      const SizedBox(
+                                                        width: 70,
+                                                        child: Text('Grid'),
+                                                      ),
+                                                      Expanded(
+                                                        child: Align(
+                                                          alignment: Alignment
+                                                              .centerLeft,
+                                                          child: Switch(
+                                                            value:
+                                                                _showDrawingGrid,
+                                                            onChanged: (value) {
+                                                              setState(() {
+                                                                _showDrawingGrid =
+                                                                    value;
+                                                              });
+                                                            },
+                                                          ),
+                                                        ),
+                                                      ),
+                                                      Text(
+                                                        _showDrawingGrid
+                                                            ? 'On'
+                                                            : 'Off',
+                                                        style: const TextStyle(
+                                                          fontSize: 11,
+                                                          color: Colors.white60,
+                                                        ),
+                                                      ),
+                                                    ],
+                                                  ),
+
+                                                  if (_showDrawingGrid) ...[
+                                                    const SizedBox(height: 2),
+                                                    Row(
+                                                      children: [
+                                                        const SizedBox(
+                                                          width: 70,
+                                                          child: Text(
+                                                            'Spacing',
+                                                          ),
+                                                        ),
+                                                        Expanded(
+                                                          child: Slider(
+                                                            value:
+                                                                _drawingGridSpacing,
+                                                            min: 20,
+                                                            max: 200,
+                                                            divisions: 18,
+                                                            label:
+                                                                '${_drawingGridSpacing.round()} px',
+                                                            onChanged: (value) {
+                                                              setState(() {
+                                                                _drawingGridSpacing =
+                                                                    value;
+                                                              });
+                                                            },
+                                                          ),
+                                                        ),
+                                                        SizedBox(
+                                                          width: 48,
+                                                          child: Text(
+                                                            '${_drawingGridSpacing.round()}',
+                                                            textAlign:
+                                                                TextAlign.right,
+                                                          ),
+                                                        ),
+                                                      ],
+                                                    ),
+                                                  ],
 
                                                   const SizedBox(height: 8),
 
@@ -18419,6 +18654,68 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
         ],
       ),
     );
+  }
+}
+
+class _DrawingSymmetryGuidePainter extends CustomPainter {
+  const _DrawingSymmetryGuidePainter({required this.mode});
+
+  final _DrawingSymmetryMode mode;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final paint = Paint()
+      ..color = Colors.deepPurpleAccent.withValues(alpha: 0.65)
+      ..strokeWidth = 2.0;
+
+    if (mode == _DrawingSymmetryMode.vertical ||
+        mode == _DrawingSymmetryMode.quad) {
+      final x = size.width / 2;
+
+      canvas.drawLine(Offset(x, 0), Offset(x, size.height), paint);
+    }
+
+    if (mode == _DrawingSymmetryMode.horizontal ||
+        mode == _DrawingSymmetryMode.quad) {
+      final y = size.height / 2;
+
+      canvas.drawLine(Offset(0, y), Offset(size.width, y), paint);
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant _DrawingSymmetryGuidePainter oldDelegate) {
+    return oldDelegate.mode != mode;
+  }
+}
+
+class _DrawingGridPainter extends CustomPainter {
+  const _DrawingGridPainter({required this.spacing});
+
+  final double spacing;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    if (spacing <= 0) {
+      return;
+    }
+
+    final paint = Paint()
+      ..color = Colors.white.withValues(alpha: 0.16)
+      ..strokeWidth = 1.0;
+
+    for (double x = spacing; x < size.width; x += spacing) {
+      canvas.drawLine(Offset(x, 0), Offset(x, size.height), paint);
+    }
+
+    for (double y = spacing; y < size.height; y += spacing) {
+      canvas.drawLine(Offset(0, y), Offset(size.width, y), paint);
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant _DrawingGridPainter oldDelegate) {
+    return oldDelegate.spacing != spacing;
   }
 }
 

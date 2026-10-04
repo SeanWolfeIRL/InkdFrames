@@ -10,6 +10,7 @@ class AnimationCanvasPainter extends CustomPainter {
   AnimationCanvasPainter({
     required this.strokes,
     required this.currentStroke,
+    this.symmetryCurrentStrokes = const <List<VectorPoint>>[],
     required this.previousOnionSkinStrokes,
     required this.nextOnionSkinStrokes,
     required this.strokeColor,
@@ -24,6 +25,13 @@ class AnimationCanvasPainter extends CustomPainter {
 
   final List<VectorStroke> strokes;
   final List<VectorPoint>? currentStroke;
+
+  /// View-only live siblings derived from the authoritative drawing gesture.
+  ///
+  /// These use the exact same brush renderer, pressure response, and Alpha
+  /// Lock mask as the source draft. They are committed by Workspace as
+  /// independent VectorStrokes when the gesture ends.
+  final List<List<VectorPoint>> symmetryCurrentStrokes;
 
   final List<VectorStroke> previousOnionSkinStrokes;
   final List<VectorStroke> nextOnionSkinStrokes;
@@ -108,27 +116,41 @@ class AnimationCanvasPainter extends CustomPainter {
       }
     }
 
-    // Current stroke being drawn.
-    if (currentStroke != null && currentStroke!.isNotEmpty) {
-      final liveStroke = VectorStroke(
-        points: currentStroke!,
-        strokeWidth: strokeWidth,
-        brushType: brushType,
-      );
+    // Current stroke being drawn plus any view-only symmetry siblings.
+    //
+    // Every live sibling travels through the same brush renderer and Alpha
+    // Lock mask as the authoritative source gesture, so preview and commit
+    // remain visually identical.
+    final livePointSets = <List<VectorPoint>>[
+      if (currentStroke != null && currentStroke!.isNotEmpty) currentStroke!,
+      ...symmetryCurrentStrokes.where((points) => points.isNotEmpty),
+    ];
 
+    if (livePointSets.isNotEmpty) {
       final liveAlphaLockMask = alphaLockMaskStrokes
           .where((stroke) => !stroke.alphaLocked)
           .toList(growable: false);
 
+      void paintLiveStrokes() {
+        for (final points in livePointSets) {
+          final liveStroke = VectorStroke(
+            points: points,
+            strokeWidth: strokeWidth,
+            brushType: brushType,
+          );
+
+          _paintStroke(canvas, liveStroke, strokeColor);
+        }
+      }
+
       if (liveAlphaLockMask.isEmpty) {
-        _paintStroke(canvas, liveStroke, strokeColor);
+        paintLiveStrokes();
       } else {
-        // Paint the live stroke into an isolated layer, then retain only
-        // pixels covered by the established non-Alpha-Locked artwork.
-        // Locked shading therefore cannot progressively expand its mask.
+        // Composite the complete live symmetry family as one batch, then
+        // retain only pixels covered by established non-Alpha-Locked artwork.
         canvas.saveLayer(Offset.zero & size, Paint());
 
-        _paintStroke(canvas, liveStroke, strokeColor);
+        paintLiveStrokes();
 
         canvas.saveLayer(
           Offset.zero & size,
