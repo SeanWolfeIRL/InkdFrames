@@ -6174,6 +6174,67 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     return _layers.indexWhere((layer) => layer.id == layerId);
   }
 
+  int _effectiveTransformArtworkFrameIndex(String groupId, String frameId) {
+    final chain = <String>[];
+    final visited = <String>{};
+    var currentGroupId = groupId;
+
+    // Build the semantic hierarchy from the selected group upward.
+    while (visited.add(currentGroupId)) {
+      chain.add(currentGroupId);
+
+      final parent = _groupContainingGroup(currentGroupId);
+
+      if (parent == null) {
+        break;
+      }
+
+      currentGroupId = parent.id;
+    }
+
+    int? inheritedArtworkFrameIndex;
+
+    // Reproduce the renderer's parent -> child artwork inheritance.
+    //
+    // A child with its own resolved pose owns its artwork timing.
+    // Otherwise it inherits the effective artwork frame selected by
+    // its parent when it has no source of its own.
+    for (final currentId in chain.reversed) {
+      final ownArtworkFrameIndex = _tweenArtworkSourceFrameIndex(
+        frameId,
+        currentId,
+      );
+
+      final hasResolvedPose =
+          _resolvedTransformPoseForFrame(frameId, currentId) != null;
+
+      // Pose ownership and artwork ownership are independent.
+      //
+      // A nested group may have its own transform pose track while its
+      // visible drawing artwork is still inherited from an ancestor's
+      // authored frame. Do not let a pose-only source replace a valid
+      // inherited artwork source with an empty frame.
+      //
+      // The group owns artwork timing only when the proposed source
+      // actually contains drawing artwork for this semantic group.
+      final ownsArtworkSource =
+          ownArtworkFrameIndex != null &&
+          _groupHasDrawingArtworkAtFrame(currentId, ownArtworkFrameIndex);
+
+      if (ownsArtworkSource) {
+        inheritedArtworkFrameIndex = ownArtworkFrameIndex;
+      } else if (inheritedArtworkFrameIndex == null &&
+          !hasResolvedPose &&
+          ownArtworkFrameIndex != null) {
+        inheritedArtworkFrameIndex = ownArtworkFrameIndex;
+      }
+    }
+
+    final result = inheritedArtworkFrameIndex ?? _selectedFrameIndex;
+
+    return result;
+  }
+
   int _transformArtworkFrameIndex() {
     final groupId = _transformTargetGroupId;
 
@@ -6187,9 +6248,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
       return _selectedFrameIndex;
     }
 
-    final resolvedSource = _tweenArtworkSourceFrameIndex(frameId, groupId);
-
-    return resolvedSource ?? _selectedFrameIndex;
+    return _effectiveTransformArtworkFrameIndex(groupId, frameId);
   }
 
   void _enterTransformForLayerIndices(
@@ -6212,9 +6271,10 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
         final frameId = _currentFrameId;
 
         if (frameId != null) {
-          artworkFrameIndex =
-              _tweenArtworkSourceFrameIndex(frameId, groupId) ??
-              _selectedFrameIndex;
+          artworkFrameIndex = _effectiveTransformArtworkFrameIndex(
+            groupId,
+            frameId,
+          );
         }
       }
 
@@ -14512,20 +14572,27 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
             ? _tweenArtworkSourceFrameIndex(frameId, group.id)
             : null;
 
-        // A semantic child group with its own transform-key track owns its
-        // artwork timing while that track is active.
-        //
-        // Otherwise it inherits the artwork frame chosen by its parent. This
-        // lets nested animated groups such as Eyes Move tween independently
-        // inside an already-keyed parent asset without breaking ordinary
-        // unkeyed descendants.
+        // Resolve this group's transform pose independently from its drawing
+        // artwork source. A nested group can therefore animate its pose while
+        // continuing to inherit artwork authored by an ancestor.
         final groupHasResolvedPose = frameId != null
             ? _resolvedTransformPoseForFrame(frameId, group.id) != null
             : false;
 
-        final effectiveDrawingFrameIndex = groupHasResolvedPose
+        // Transform-pose ownership and drawing-artwork ownership are
+        // independent.
+        //
+        // A group may have its own pose key while its visible artwork still
+        // comes from an ancestor's authored frame. Only replace the inherited
+        // drawing source when this group actually has drawing artwork at its
+        // proposed source frame.
+        final groupOwnsArtworkSource =
+            groupDrawingFrameIndex != null &&
+            _groupHasDrawingArtworkAtFrame(group.id, groupDrawingFrameIndex);
+
+        final effectiveDrawingFrameIndex = groupOwnsArtworkSource
             ? groupDrawingFrameIndex
-            : (groupDrawingFrameIndex ?? drawingFrameIndexOverride);
+            : (drawingFrameIndexOverride ?? groupDrawingFrameIndex);
 
         // Layer panel order is top-to-bottom.
         // Flutter Stack paints first-to-last, so walk children bottom-to-top.
