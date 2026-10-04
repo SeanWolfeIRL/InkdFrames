@@ -15318,268 +15318,330 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                         child: Row(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
-                            Material(
-                              elevation: 8,
-                              color: const Color(0xE61A1720),
-                              borderRadius: BorderRadius.circular(16),
-                              clipBehavior: Clip.antiAlias,
-                              child: Padding(
-                                padding: const EdgeInsets.symmetric(
-                                  horizontal: 4,
-                                  vertical: 6,
+                            ConstrainedBox(
+                              constraints: BoxConstraints(
+                                maxHeight: math.max(
+                                  120.0,
+                                  constraints.maxHeight -
+                                      94 -
+                                      MediaQuery.of(context).viewPadding.bottom,
                                 ),
-                                child: Column(
-                                  mainAxisSize: MainAxisSize.min,
-                                  children: [
-                                    IconButton(
-                                      tooltip: 'Undo',
-                                      visualDensity: VisualDensity.compact,
-                                      onPressed: _undo,
-                                      icon: const Icon(Icons.undo),
+                              ),
+                              child: Material(
+                                elevation: 8,
+                                color: const Color(0xE61A1720),
+                                borderRadius: BorderRadius.circular(16),
+                                clipBehavior: Clip.antiAlias,
+                                child: SingleChildScrollView(
+                                  primary: false,
+                                  child: Padding(
+                                    padding: const EdgeInsets.symmetric(
+                                      horizontal: 4,
+                                      vertical: 6,
                                     ),
-                                    const SizedBox(height: 2),
-                                    IconButton(
-                                      tooltip: 'Redo',
-                                      visualDensity: VisualDensity.compact,
-                                      onPressed: _redo,
-                                      icon: const Icon(Icons.redo),
-                                    ),
-                                    if (_drawingMode) ...[
-                                      const SizedBox(height: 2),
-                                      IconButton(
-                                        tooltip: _isPlaying
-                                            ? 'Pause Animation'
-                                            : 'Play Animation',
-                                        visualDensity: VisualDensity.compact,
-                                        onPressed: _togglePlayback,
-                                        icon: Icon(
-                                          _isPlaying
-                                              ? Icons.pause
-                                              : Icons.play_arrow,
-                                          color: _isPlaying
-                                              ? Colors.deepPurpleAccent
-                                              : Colors.white70,
+                                    child: Column(
+                                      mainAxisSize: MainAxisSize.min,
+                                      children: [
+                                        IconButton(
+                                          tooltip: 'Undo',
+                                          visualDensity: VisualDensity.compact,
+                                          onPressed: _undo,
+                                          icon: const Icon(Icons.undo),
                                         ),
-                                      ),
-                                    ],
-
-                                    const SizedBox(height: 2),
-                                    IconButton(
-                                      tooltip: _drawingExpanded
-                                          ? 'Hide Pen'
-                                          : 'Show Pen',
-                                      visualDensity: VisualDensity.compact,
-                                      onPressed: () {
-                                        setState(() {
-                                          final next = !_drawingExpanded;
-
-                                          if (next) {
-                                            _collapseFloatingPanels(
-                                              keepDrawing: true,
-                                            );
-                                          }
-
-                                          _drawingExpanded = next;
-                                        });
-                                      },
-                                      icon: Icon(
-                                        Icons.edit,
-                                        color: _drawingExpanded
-                                            ? Colors.deepPurpleAccent
-                                            : Colors.white70,
-                                      ),
-                                    ),
-                                    const SizedBox(height: 2),
-                                    IconButton(
-                                      tooltip: editToolbarExpanded
-                                          ? 'Hide Edit Tools'
-                                          : 'Show Edit Tools',
-                                      visualDensity: VisualDensity.compact,
-                                      onPressed: () {
-                                        setState(() {
-                                          final next = !editToolbarExpanded;
-
-                                          if (next) {
-                                            _collapseFloatingPanels(
-                                              keepEdit: true,
-                                            );
-                                          }
-
-                                          _editToolbarExpanded = next;
-                                        });
-                                      },
-                                      icon: Icon(
-                                        editToolbarExpanded
-                                            ? Icons.chevron_right
-                                            : Icons.tune,
-                                        color: editToolbarExpanded
-                                            ? Colors.deepPurpleAccent
-                                            : Colors.white70,
-                                      ),
-                                    ),
-                                    const SizedBox(height: 2),
-                                    if (_drawingMode &&
-                                        _referenceMediaType == 'video' &&
-                                        _videoReady) ...[
-                                      const SizedBox(height: 2),
-                                      IconButton(
-                                        tooltip: 'Find Next Pose',
-                                        visualDensity: VisualDensity.compact,
-                                        onPressed: _findNextReferencePose,
-                                        icon: const Icon(Icons.search),
-                                      ),
-                                    ],
-
-                                    if (_drawingMode) ...[
-                                      const SizedBox(height: 2),
-                                      IconButton(
-                                        tooltip: _blendExpanded
-                                            ? 'Hide Blend'
-                                            : 'Show Blend',
-                                        visualDensity: VisualDensity.compact,
-                                        onPressed: () {
-                                          setState(() {
-                                            if (!_blendExpanded) {
-                                              _collapseFloatingPanels(
-                                                keepDrawing: true,
-                                                keepBlend: true,
-                                              );
-                                              _drawingMode = true;
-                                              _drawingExpanded = true;
-                                              _blendExpanded = true;
-                                              _blendSamplingArmed = true;
-                                              _blendBaseColor = _brushColor;
-                                            } else if (!_blendSamplingArmed) {
-                                              _blendSamplingArmed = true;
-                                              _blendBaseColor = _brushColor;
-                                            } else {
-                                              _blendExpanded = false;
-                                              _blendSamplingArmed = false;
-                                            }
-                                          });
-                                        },
-                                        icon: Icon(
-                                          Icons.blur_on,
-                                          color: _blendExpanded
-                                              ? Colors.deepPurpleAccent
-                                              : Colors.white70,
+                                        const SizedBox(height: 2),
+                                        IconButton(
+                                          tooltip: 'Redo',
+                                          visualDensity: VisualDensity.compact,
+                                          onPressed: _redo,
+                                          icon: const Icon(Icons.redo),
                                         ),
-                                      ),
+                                        if (_drawingMode) ...[
+                                          const SizedBox(height: 2),
+                                          IconButton(
+                                            tooltip: _isPlaying
+                                                ? 'Pause Animation'
+                                                : 'Play Animation',
+                                            visualDensity:
+                                                VisualDensity.compact,
+                                            onPressed: _togglePlayback,
+                                            icon: Icon(
+                                              _isPlaying
+                                                  ? Icons.pause
+                                                  : Icons.play_arrow,
+                                              color: _isPlaying
+                                                  ? Colors.deepPurpleAccent
+                                                  : Colors.white70,
+                                            ),
+                                          ),
+                                        ],
 
-                                      const SizedBox(height: 2),
-                                      IconButton(
-                                        tooltip: _textureExpanded
-                                            ? 'Hide Texture'
-                                            : 'Show Texture',
-                                        visualDensity: VisualDensity.compact,
-                                        onPressed: () {
-                                          setState(() {
-                                            final next = !_textureExpanded;
-
-                                            if (next) {
-                                              _collapseFloatingPanels(
-                                                keepDrawing: true,
-                                                keepTexture: true,
-                                              );
-                                              _drawingMode = true;
-                                              _drawingExpanded = true;
-                                            }
-
-                                            _textureExpanded = next;
-                                            _textureActive = _textureExpanded;
-
-                                            if (_textureExpanded) {
-                                              _stampBrushActive = false;
-                                              _stampBrushItem = null;
-                                              _blendSamplingArmed = false;
-                                            } else {
-                                              _draftTextureStrokes =
-                                                  <VectorStroke>[];
-                                            }
-                                          });
-                                        },
-                                        icon: Icon(
-                                          Icons.grid_on_outlined,
-                                          color: _textureExpanded
-                                              ? Colors.deepPurpleAccent
-                                              : Colors.white70,
-                                        ),
-                                      ),
-
-                                      const SizedBox(height: 2),
-                                      IconButton(
-                                        tooltip: 'Open Bag',
-                                        visualDensity: VisualDensity.compact,
-                                        onPressed: _openBag,
-                                        icon: const Icon(
-                                          Icons.backpack_outlined,
-                                          color: Colors.white70,
-                                        ),
-                                      ),
-
-                                      const SizedBox(height: 2),
-
-                                      IconButton(
-                                        tooltip: _stampBrushActive
-                                            ? 'Stamp Brush: ${_stampBrushItem?.name ?? ''}'
-                                            : 'Stamp Brush',
-                                        visualDensity: VisualDensity.compact,
-                                        onPressed: () {
-                                          if (_stampBrushActive &&
-                                              !_stampBrushPanelExpanded) {
+                                        const SizedBox(height: 2),
+                                        IconButton(
+                                          tooltip: _drawingExpanded
+                                              ? 'Hide Pen'
+                                              : 'Show Pen',
+                                          visualDensity: VisualDensity.compact,
+                                          onPressed: () {
                                             setState(() {
-                                              _collapseFloatingPanels(
-                                                keepDrawing: true,
-                                                keepStamp: true,
-                                              );
-                                              _drawingMode = true;
-                                              _drawingExpanded = true;
-                                              _stampBrushPanelExpanded = true;
-                                            });
-                                            return;
-                                          }
+                                              final next = !_drawingExpanded;
 
-                                          _openStampBrushPicker();
-                                        },
-                                        icon: Icon(
-                                          Icons.content_copy,
-                                          color: _stampBrushActive
-                                              ? Colors.deepPurpleAccent
-                                              : Colors.white70,
+                                              if (next) {
+                                                _collapseFloatingPanels(
+                                                  keepDrawing: true,
+                                                );
+
+                                                // Pen owns canvas input while its
+                                                // drawing controls are active.
+                                                _isTransformActive = false;
+                                                _transformToolbarExpanded =
+                                                    false;
+                                                _isEraserActive = false;
+                                                _isFillToolActive = false;
+                                                _isShapeToolActive = false;
+                                                _isTintToolActive = false;
+
+                                                _draftStroke =
+                                                    const <VectorPoint>[];
+                                                _clearFillLasso();
+                                                _clearShapeDraft();
+                                                _clearTransformSelection();
+                                              }
+
+                                              _drawingExpanded = next;
+                                            });
+                                          },
+                                          icon: Icon(
+                                            Icons.edit,
+                                            color: _drawingExpanded
+                                                ? Colors.deepPurpleAccent
+                                                : Colors.white70,
+                                          ),
                                         ),
-                                      ),
-                                    ],
-                                  ],
+                                        const SizedBox(height: 2),
+                                        IconButton(
+                                          tooltip: editToolbarExpanded
+                                              ? 'Hide Edit Tools'
+                                              : 'Show Edit Tools',
+                                          visualDensity: VisualDensity.compact,
+                                          onPressed: () {
+                                            setState(() {
+                                              final next = !editToolbarExpanded;
+
+                                              if (next) {
+                                                _collapseFloatingPanels(
+                                                  keepEdit: true,
+                                                );
+                                              }
+
+                                              _editToolbarExpanded = next;
+                                            });
+                                          },
+                                          icon: Icon(
+                                            editToolbarExpanded
+                                                ? Icons.chevron_right
+                                                : Icons.tune,
+                                            color: editToolbarExpanded
+                                                ? Colors.deepPurpleAccent
+                                                : Colors.white70,
+                                          ),
+                                        ),
+                                        const SizedBox(height: 2),
+                                        if (_drawingMode &&
+                                            _referenceMediaType == 'video' &&
+                                            _videoReady) ...[
+                                          const SizedBox(height: 2),
+                                          IconButton(
+                                            tooltip: 'Find Next Pose',
+                                            visualDensity:
+                                                VisualDensity.compact,
+                                            onPressed: _findNextReferencePose,
+                                            icon: const Icon(Icons.search),
+                                          ),
+                                        ],
+
+                                        if (_drawingMode) ...[
+                                          const SizedBox(height: 2),
+                                          IconButton(
+                                            tooltip: _blendExpanded
+                                                ? 'Hide Blend'
+                                                : 'Show Blend',
+                                            visualDensity:
+                                                VisualDensity.compact,
+                                            onPressed: () {
+                                              setState(() {
+                                                if (!_blendExpanded) {
+                                                  _collapseFloatingPanels(
+                                                    keepDrawing: true,
+                                                    keepBlend: true,
+                                                  );
+                                                  _drawingMode = true;
+                                                  _drawingExpanded = true;
+                                                  _blendExpanded = true;
+                                                  _blendSamplingArmed = true;
+                                                  _blendBaseColor = _brushColor;
+                                                } else if (!_blendSamplingArmed) {
+                                                  _blendSamplingArmed = true;
+                                                  _blendBaseColor = _brushColor;
+                                                } else {
+                                                  _blendExpanded = false;
+                                                  _blendSamplingArmed = false;
+                                                }
+                                              });
+                                            },
+                                            icon: Icon(
+                                              Icons.blur_on,
+                                              color: _blendExpanded
+                                                  ? Colors.deepPurpleAccent
+                                                  : Colors.white70,
+                                            ),
+                                          ),
+
+                                          const SizedBox(height: 2),
+                                          IconButton(
+                                            tooltip: _textureExpanded
+                                                ? 'Hide Texture'
+                                                : 'Show Texture',
+                                            visualDensity:
+                                                VisualDensity.compact,
+                                            onPressed: () {
+                                              setState(() {
+                                                final next = !_textureExpanded;
+
+                                                if (next) {
+                                                  _collapseFloatingPanels(
+                                                    keepDrawing: true,
+                                                    keepTexture: true,
+                                                  );
+                                                  _drawingMode = true;
+                                                  _drawingExpanded = true;
+                                                }
+
+                                                _textureExpanded = next;
+                                                _textureActive =
+                                                    _textureExpanded;
+
+                                                if (_textureExpanded) {
+                                                  _stampBrushActive = false;
+                                                  _stampBrushItem = null;
+                                                  _blendSamplingArmed = false;
+                                                } else {
+                                                  _draftTextureStrokes =
+                                                      <VectorStroke>[];
+                                                }
+                                              });
+                                            },
+                                            icon: Icon(
+                                              Icons.grid_on_outlined,
+                                              color: _textureExpanded
+                                                  ? Colors.deepPurpleAccent
+                                                  : Colors.white70,
+                                            ),
+                                          ),
+
+                                          const SizedBox(height: 2),
+                                          IconButton(
+                                            tooltip: _stampBrushActive
+                                                ? 'Stamp Brush: ${_stampBrushItem?.name ?? ''}'
+                                                : 'Stamp Brush',
+                                            visualDensity:
+                                                VisualDensity.compact,
+                                            onPressed: () {
+                                              if (_stampBrushActive &&
+                                                  !_stampBrushPanelExpanded) {
+                                                setState(() {
+                                                  _collapseFloatingPanels(
+                                                    keepDrawing: true,
+                                                    keepStamp: true,
+                                                  );
+                                                  _drawingMode = true;
+                                                  _drawingExpanded = true;
+                                                  _stampBrushPanelExpanded =
+                                                      true;
+                                                });
+                                                return;
+                                              }
+
+                                              _openStampBrushPicker();
+                                            },
+                                            icon: Icon(
+                                              Icons.content_copy,
+                                              color: _stampBrushActive
+                                                  ? Colors.deepPurpleAccent
+                                                  : Colors.white70,
+                                            ),
+                                          ),
+                                        ],
+                                      ],
+                                    ),
+                                  ),
                                 ),
                               ),
                             ),
-                            const SizedBox(height: 2),
-                            IconButton(
-                              tooltip: _drawingMode
-                                  ? 'Return to Animation Mode'
-                                  : 'Enter Drawing Mode',
-                              visualDensity: VisualDensity.compact,
-                              onPressed: () {
-                                setState(() {
-                                  _drawingMode = !_drawingMode;
+                            const SizedBox(width: 8),
+                            Material(
+                              elevation: 8,
+                              color: const Color(0xF21A1720),
+                              borderRadius: BorderRadius.circular(14),
+                              clipBehavior: Clip.antiAlias,
+                              child: Tooltip(
+                                message: _drawingMode
+                                    ? 'Switch to Animation Mode'
+                                    : 'Switch to Drawing Mode',
+                                child: InkWell(
+                                  onTap: () {
+                                    setState(() {
+                                      _drawingMode = !_drawingMode;
 
-                                  if (_drawingMode) {
-                                    _timingExpanded = false;
-                                    _timelineExpanded = false;
-                                    _transformToolbarExpanded = false;
-                                  } else {
-                                    _blendExpanded = false;
-                                    _blendSamplingArmed = false;
-                                  }
-                                });
-                              },
-                              icon: Icon(
-                                _drawingMode
-                                    ? Icons.animation
-                                    : Icons.draw_outlined,
-                                color: _drawingMode
-                                    ? Colors.cyanAccent
-                                    : Colors.white70,
+                                      if (_drawingMode) {
+                                        _timingExpanded = false;
+                                        _timelineExpanded = false;
+
+                                        // Drawing owns canvas interaction.
+                                        _isTransformActive = false;
+                                        _transformToolbarExpanded = false;
+                                        _clearTransformSelection();
+                                      } else {
+                                        _blendExpanded = false;
+                                        _blendSamplingArmed = false;
+                                        _textureExpanded = false;
+                                        _textureActive = false;
+                                        _stampBrushPanelExpanded = false;
+                                      }
+                                    });
+                                  },
+                                  child: Padding(
+                                    padding: const EdgeInsets.symmetric(
+                                      horizontal: 10,
+                                      vertical: 9,
+                                    ),
+                                    child: Row(
+                                      mainAxisSize: MainAxisSize.min,
+                                      children: [
+                                        Icon(
+                                          _drawingMode
+                                              ? Icons.draw_outlined
+                                              : Icons.animation,
+                                          size: 18,
+                                          color: _drawingMode
+                                              ? Colors.cyanAccent
+                                              : Colors.amberAccent,
+                                        ),
+                                        const SizedBox(width: 6),
+                                        Text(
+                                          _drawingMode ? 'DRAW' : 'ANIMATE',
+                                          style: TextStyle(
+                                            fontSize: 11,
+                                            fontWeight: FontWeight.w700,
+                                            letterSpacing: 0.7,
+                                            color: _drawingMode
+                                                ? Colors.cyanAccent
+                                                : Colors.amberAccent,
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+                                ),
                               ),
                             ),
 
@@ -17006,6 +17068,17 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                                               style: TextStyle(
                                                 fontWeight: FontWeight.w600,
                                               ),
+                                            ),
+                                          ),
+                                          IconButton(
+                                            tooltip: 'Open Bag',
+                                            visualDensity:
+                                                VisualDensity.compact,
+                                            onPressed: _isPlaying
+                                                ? null
+                                                : _openBag,
+                                            icon: const Icon(
+                                              Icons.backpack_outlined,
                                             ),
                                           ),
                                           IconButton(
