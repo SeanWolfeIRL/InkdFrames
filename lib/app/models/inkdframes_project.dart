@@ -1,4 +1,5 @@
 import 'drawing_layer.dart';
+import 'group_animation_track.dart';
 import 'layer_group.dart';
 import 'reference_layer.dart';
 import 'transform_keyframe.dart';
@@ -24,6 +25,7 @@ class InkdFramesProject {
     List<ReferenceLayer>? referenceLayers,
     List<VariantSlot>? variantSlots,
     List<TransformKeyframe>? transformKeyframes,
+    List<GroupAnimationTrack>? groupAnimationTracks,
     this.activeReferenceLayerId,
     List<int>? referenceFrameTimesMs,
     this.referenceVisible = true,
@@ -38,6 +40,7 @@ class InkdFramesProject {
              layerGroups ?? <LayerGroup>[],
            ),
        variantSlots = variantSlots ?? <VariantSlot>[],
+       groupAnimationTracks = groupAnimationTracks ?? <GroupAnimationTrack>[],
        transformKeyframes = transformKeyframes ?? <TransformKeyframe>[],
        referenceLayers =
            referenceLayers ??
@@ -180,6 +183,20 @@ class InkdFramesProject {
                 'frame_${DateTime.now().microsecondsSinceEpoch}_${index}',
           );
 
+    final rawGroupAnimationTracks = json['groupAnimationTracks'];
+
+    final groupAnimationTracks = rawGroupAnimationTracks is List
+        ? rawGroupAnimationTracks
+              .whereType<Map>()
+              .map(
+                (track) => GroupAnimationTrack.fromJson(
+                  Map<String, dynamic>.from(track),
+                ),
+              )
+              .where((track) => track.targetGroupId.isNotEmpty)
+              .toList()
+        : <GroupAnimationTrack>[];
+
     return InkdFramesProject(
       id: json['id'] as String,
       name: json['name'] as String,
@@ -208,6 +225,7 @@ class InkdFramesProject {
       referenceLayers: referenceLayers,
       variantSlots: variantSlots,
       transformKeyframes: transformKeyframes,
+      groupAnimationTracks: groupAnimationTracks,
       activeReferenceLayerId:
           json['activeReferenceLayerId'] as String? ??
           (referenceLayers.isNotEmpty ? referenceLayers.first.id : null),
@@ -255,6 +273,12 @@ class InkdFramesProject {
   /// Keyframes reference semantic LayerGroup IDs and stable frame IDs rather
   /// than copying or replacing the underlying authored artwork.
   final List<TransformKeyframe> transformKeyframes;
+
+  /// Independent artwork timing tracks attached to semantic groups.
+  ///
+  /// Clips reference stable animation frame IDs rather than duplicating
+  /// drawing data. Rendering support is intentionally layered on separately.
+  final List<GroupAnimationTrack> groupAnimationTracks;
 
   /// Reference currently driving video playback/scrubbing.
   final String? activeReferenceLayerId;
@@ -311,6 +335,9 @@ class InkdFramesProject {
       'variantSlots': variantSlots.map((slot) => slot.toJson()).toList(),
       'transformKeyframes': transformKeyframes
           .map((keyframe) => keyframe.toJson())
+          .toList(),
+      'groupAnimationTracks': groupAnimationTracks
+          .map((track) => track.toJson())
           .toList(),
       'activeReferenceLayerId': activeReferenceLayerId,
 

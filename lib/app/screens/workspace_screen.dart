@@ -12,6 +12,7 @@ import '../models/bag_item.dart';
 import '../models/composite_asset.dart';
 import '../models/brush_preset.dart';
 import '../models/drawing_layer.dart';
+import '../models/group_animation_track.dart';
 import '../models/inkdframes_project.dart';
 import '../models/layer_group.dart';
 import '../models/reference_layer.dart';
@@ -243,8 +244,21 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
   // animation frames. They never replace or rewrite the authored artwork.
   final List<TransformKeyframe> _transformKeyframes = <TransformKeyframe>[];
 
+  final List<GroupAnimationTrack> _groupAnimationTracks =
+      <GroupAnimationTrack>[];
+
   final List<int> _referenceFrameTimesMs = <int>[];
   int _selectedFrameIndex = 0;
+
+  // Base-frame clock position inside the currently selected main timeline
+  // frame during playback.
+  //
+  // A main frame with duration 4x therefore renders at intra-frame units
+  // 0, 1, 2, and 3 before the main timeline advances. Independent semantic
+  // group animation tracks can use these units without manufacturing extra
+  // main timeline frames.
+  int _playbackFrameUnit = 0;
+
   int _activePointerCount = 0;
   List<VectorPoint> _draftStroke = const <VectorPoint>[];
   Timer? _playbackTimer;
@@ -813,6 +827,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
       referenceLayers: _referenceLayers,
       variantSlots: _variantSlots,
       transformKeyframes: _transformKeyframes,
+      groupAnimationTracks: _groupAnimationTracks,
       activeReferenceLayerId: _activeReferenceLayerId,
       frameDurations: _frameDurations,
       frameIds: _frameIds,
@@ -4676,6 +4691,10 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
         ..clear()
         ..addAll(project.transformKeyframes);
 
+      _groupAnimationTracks
+        ..clear()
+        ..addAll(project.groupAnimationTracks);
+
       // loadProject() returns a freshly deserialized project graph.
       // Workspace can take ownership of those immutable stroke/point objects
       // directly instead of deep-copying the entire project a second time.
@@ -5334,6 +5353,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
 
     setState(() {
       _selectedFrameIndex = index;
+      _playbackFrameUnit = 0;
       _draftStroke = const <VectorPoint>[];
       _clearTransformSelection();
     });
@@ -5433,6 +5453,121 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     _redoStacks[_selectedFrameIndex].clear();
   }
 
+  GroupAnimationTrack? _groupAnimationTrackForGroup(String groupId) {
+    for (final track in _groupAnimationTracks) {
+      if (track.targetGroupId == groupId) {
+        return track;
+      }
+    }
+
+    return null;
+  }
+
+  /// Absolute base-frame unit at which [frameIndex] begins.
+  ///
+  /// Main timeline frame durations are expressed in these same units, so a
+  /// frame held for 4x occupies four independent animation-clock positions.
+  int _timelineUnitForFrameIndex(int frameIndex) {
+    if (_frameDurations.isEmpty || frameIndex <= 0) {
+      return 0;
+    }
+
+    final safeIndex = frameIndex.clamp(0, _frameDurations.length);
+
+    var unit = 0;
+
+    for (var i = 0; i < safeIndex; i++) {
+      unit += _frameDurations[i].clamp(1, 1000000);
+    }
+
+    return unit;
+  }
+
+  /// Resolves independent artwork timing for a semantic group.
+  ///
+  /// Tracks reference stable source frame IDs. They do not copy artwork and
+  /// they do not alter the main animation timeline.
+  ///
+  /// Returns null when the group has no usable independent animation track.
+  String? _groupAnimationSourceFrameIdAtTimelineUnit(
+    String groupId,
+    int timelineUnit,
+  ) {
+    final track = _groupAnimationTrackForGroup(groupId);
+
+    if (track == null || !track.enabled || track.clips.isEmpty) {
+      return null;
+    }
+
+    // Ignore clips whose source frame no longer exists. This makes deleting
+    // or migrating animation frames fail safely instead of producing an
+    // invalid drawing-layer index.
+    final validClips = track.clips
+        .where(
+          (clip) =>
+              clip.sourceFrameId.isNotEmpty &&
+              _frameIds.contains(clip.sourceFrameId),
+        )
+        .toList();
+
+    if (validClips.isEmpty) {
+      return null;
+    }
+
+    var totalDuration = 0;
+
+    for (final clip in validClips) {
+      totalDuration += clip.duration.clamp(1, 1000000);
+    }
+
+    if (totalDuration <= 0) {
+      return null;
+    }
+
+    var localUnit = timelineUnit < 0 ? 0 : timelineUnit;
+
+    if (track.loop) {
+      localUnit %= totalDuration;
+    } else if (localUnit >= totalDuration) {
+      // A non-looping track holds its final valid clip after completion.
+      return validClips.last.sourceFrameId;
+    }
+
+    var cursor = 0;
+
+    for (final clip in validClips) {
+      final duration = clip.duration.clamp(1, 1000000);
+      final end = cursor + duration;
+
+      if (localUnit < end) {
+        return clip.sourceFrameId;
+      }
+
+      cursor = end;
+    }
+
+    // Defensive fallback against malformed persisted timing data.
+    return validClips.last.sourceFrameId;
+  }
+
+  int? _groupAnimationSourceFrameIndexAtTimelineUnit(
+    String groupId,
+    int timelineUnit,
+  ) {
+    final sourceFrameId = _groupAnimationSourceFrameIdAtTimelineUnit(
+      groupId,
+      timelineUnit,
+    );
+
+    if (sourceFrameId == null) {
+      return null;
+    }
+
+    final index = _frameIds.indexOf(sourceFrameId);
+
+    return index == -1 ? null : index;
+  }
+
   Duration _videoPositionForFrame(int index) {
     if (index >= 0 && index < _referenceFrameTimesMs.length) {
       return Duration(milliseconds: _referenceFrameTimesMs[index]);
@@ -5494,18 +5629,36 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
   void _startPlaybackTimer() {
     _playbackTimer?.cancel();
 
+    // Playback now ticks once per base FPS unit rather than sleeping for the
+    // complete held-frame duration. This lets independent semantic group
+    // animation continue inside a held main timeline frame.
     final baseFrameMilliseconds = (1000 / _fps).round().clamp(40, 1000);
-    final frameMilliseconds =
-        (baseFrameMilliseconds * _frameDurations[_selectedFrameIndex]).round();
 
-    _playbackTimer = Timer(Duration(milliseconds: frameMilliseconds), () {
-      if (!mounted || !_isPlaying) return;
+    _playbackTimer = Timer(Duration(milliseconds: baseFrameMilliseconds), () {
+      if (!mounted || !_isPlaying || _frameDurations.isEmpty) {
+        return;
+      }
 
       setState(() {
-        if (_selectedFrameIndex < _frameDurations.length - 1) {
-          _selectedFrameIndex += 1;
+        final selectedDuration = _frameDurations[_selectedFrameIndex].clamp(
+          1,
+          1000000,
+        );
+
+        if (_playbackFrameUnit + 1 < selectedDuration) {
+          // Stay on the same main timeline frame, but advance the independent
+          // animation clock by one base-frame unit.
+          _playbackFrameUnit += 1;
         } else {
-          _selectedFrameIndex = 0;
+          // The held main frame has completed. Advance the authoritative
+          // timeline and begin the next frame at intra-frame unit zero.
+          _playbackFrameUnit = 0;
+
+          if (_selectedFrameIndex < _frameDurations.length - 1) {
+            _selectedFrameIndex += 1;
+          } else {
+            _selectedFrameIndex = 0;
+          }
         }
       });
 
@@ -5550,6 +5703,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
 
     setState(() {
       _isPlaying = true;
+      _playbackFrameUnit = 0;
       _draftStroke = const <VectorPoint>[];
     });
 
@@ -6869,6 +7023,292 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
 
   void _enterLayerTransform(int layerIndex) {
     _enterTransformForLayerIndices(<int>[layerIndex]);
+  }
+
+  Future<void> _showGroupAnimationEditor(String groupId) async {
+    final groupIndex = _layerGroups.indexWhere((group) => group.id == groupId);
+
+    if (groupIndex == -1 || !mounted) {
+      return;
+    }
+
+    final groupName = _layerGroups[groupIndex].name;
+
+    await showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      builder: (sheetContext) {
+        return StatefulBuilder(
+          builder: (context, setSheetState) {
+            final trackIndex = _groupAnimationTracks.indexWhere(
+              (track) => track.targetGroupId == groupId,
+            );
+
+            final track = trackIndex == -1
+                ? null
+                : _groupAnimationTracks[trackIndex];
+
+            String frameLabel(String frameId) {
+              final index = _frameIds.indexOf(frameId);
+
+              if (index == -1) {
+                return 'Missing Frame';
+              }
+
+              return 'Frame ${index + 1}';
+            }
+
+            void updateTrack(GroupAnimationTrack updatedTrack) {
+              setState(() {
+                final currentIndex = _groupAnimationTracks.indexWhere(
+                  (candidate) => candidate.targetGroupId == groupId,
+                );
+
+                if (currentIndex == -1) {
+                  _groupAnimationTracks.add(updatedTrack);
+                } else {
+                  _groupAnimationTracks[currentIndex] = updatedTrack;
+                }
+              });
+
+              setSheetState(() {});
+              _scheduleAutosave();
+            }
+
+            final effectiveTrack =
+                track ??
+                GroupAnimationTrack(
+                  targetGroupId: groupId,
+                  clips: const <GroupAnimationClip>[],
+                );
+
+            return SafeArea(
+              child: Padding(
+                padding: EdgeInsets.fromLTRB(
+                  16,
+                  12,
+                  16,
+                  16 + MediaQuery.of(context).viewInsets.bottom,
+                ),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Row(
+                      children: [
+                        const Icon(Icons.animation_outlined),
+                        const SizedBox(width: 10),
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                'Animate $groupName',
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: Theme.of(context).textTheme.titleMedium,
+                              ),
+                              const Text(
+                                'Independent artwork timing',
+                                style: TextStyle(
+                                  fontSize: 11,
+                                  color: Colors.white54,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                        IconButton(
+                          tooltip: 'Close',
+                          onPressed: () => Navigator.of(sheetContext).pop(),
+                          icon: const Icon(Icons.close),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 8),
+                    SwitchListTile(
+                      contentPadding: EdgeInsets.zero,
+                      title: const Text('Enabled'),
+                      subtitle: const Text(
+                        'Play this group on its own animation clock',
+                      ),
+                      value: effectiveTrack.enabled,
+                      onChanged: (value) {
+                        updateTrack(effectiveTrack.copyWith(enabled: value));
+                      },
+                    ),
+                    SwitchListTile(
+                      contentPadding: EdgeInsets.zero,
+                      title: const Text('Loop'),
+                      subtitle: const Text(
+                        'Restart from the first clip after the last',
+                      ),
+                      value: effectiveTrack.loop,
+                      onChanged: (value) {
+                        updateTrack(effectiveTrack.copyWith(loop: value));
+                      },
+                    ),
+                    const Divider(),
+                    Flexible(
+                      child: effectiveTrack.clips.isEmpty
+                          ? const Padding(
+                              padding: EdgeInsets.symmetric(vertical: 24),
+                              child: Text(
+                                'No animation clips yet.\n'
+                                'Choose a timeline frame, then add it here.',
+                                textAlign: TextAlign.center,
+                                style: TextStyle(color: Colors.white60),
+                              ),
+                            )
+                          : ListView.builder(
+                              shrinkWrap: true,
+                              itemCount: effectiveTrack.clips.length,
+                              itemBuilder: (context, clipIndex) {
+                                final clip = effectiveTrack.clips[clipIndex];
+
+                                return Card(
+                                  child: ListTile(
+                                    leading: CircleAvatar(
+                                      child: Text('${clipIndex + 1}'),
+                                    ),
+                                    title: Text(frameLabel(clip.sourceFrameId)),
+                                    subtitle: Text(
+                                      'Duration ${clip.duration}x',
+                                    ),
+                                    trailing: Row(
+                                      mainAxisSize: MainAxisSize.min,
+                                      children: [
+                                        IconButton(
+                                          tooltip: 'Shorter',
+                                          onPressed: clip.duration <= 1
+                                              ? null
+                                              : () {
+                                                  final clips =
+                                                      List<
+                                                        GroupAnimationClip
+                                                      >.from(
+                                                        effectiveTrack.clips,
+                                                      );
+
+                                                  clips[clipIndex] = clip
+                                                      .copyWith(
+                                                        duration:
+                                                            clip.duration - 1,
+                                                      );
+
+                                                  updateTrack(
+                                                    effectiveTrack.copyWith(
+                                                      clips: clips,
+                                                    ),
+                                                  );
+                                                },
+                                          icon: const Icon(Icons.remove),
+                                        ),
+                                        Text('${clip.duration}x'),
+                                        IconButton(
+                                          tooltip: 'Longer',
+                                          onPressed: () {
+                                            final clips =
+                                                List<GroupAnimationClip>.from(
+                                                  effectiveTrack.clips,
+                                                );
+
+                                            clips[clipIndex] = clip.copyWith(
+                                              duration: clip.duration + 1,
+                                            );
+
+                                            updateTrack(
+                                              effectiveTrack.copyWith(
+                                                clips: clips,
+                                              ),
+                                            );
+                                          },
+                                          icon: const Icon(Icons.add),
+                                        ),
+                                        IconButton(
+                                          tooltip: 'Remove Clip',
+                                          onPressed: () {
+                                            final clips =
+                                                List<GroupAnimationClip>.from(
+                                                  effectiveTrack.clips,
+                                                )..removeAt(clipIndex);
+
+                                            updateTrack(
+                                              effectiveTrack.copyWith(
+                                                clips: clips,
+                                              ),
+                                            );
+                                          },
+                                          icon: const Icon(
+                                            Icons.delete_outline,
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+                                );
+                              },
+                            ),
+                    ),
+                    const SizedBox(height: 8),
+                    Row(
+                      children: [
+                        Expanded(
+                          child: FilledButton.icon(
+                            onPressed:
+                                _selectedFrameIndex >= 0 &&
+                                    _selectedFrameIndex < _frameIds.length
+                                ? () {
+                                    final clips =
+                                        List<GroupAnimationClip>.from(
+                                          effectiveTrack.clips,
+                                        )..add(
+                                          GroupAnimationClip(
+                                            sourceFrameId:
+                                                _frameIds[_selectedFrameIndex],
+                                          ),
+                                        );
+
+                                    updateTrack(
+                                      effectiveTrack.copyWith(clips: clips),
+                                    );
+                                  }
+                                : null,
+                            icon: const Icon(Icons.add),
+                            label: Text(
+                              _selectedFrameIndex >= 0 &&
+                                      _selectedFrameIndex < _frameIds.length
+                                  ? 'Add Frame ${_selectedFrameIndex + 1}'
+                                  : 'Add Current Frame',
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                    if (track != null) ...[
+                      const SizedBox(height: 8),
+                      TextButton.icon(
+                        onPressed: () {
+                          setState(() {
+                            _groupAnimationTracks.removeWhere(
+                              (candidate) => candidate.targetGroupId == groupId,
+                            );
+                          });
+
+                          _scheduleAutosave();
+                          Navigator.of(sheetContext).pop();
+                        },
+                        icon: const Icon(Icons.delete_forever_outlined),
+                        label: const Text('Remove Animation Track'),
+                      ),
+                    ],
+                  ],
+                ),
+              ),
+            );
+          },
+        );
+      },
+    );
   }
 
   void _enterLayerGroupTransform(String groupId) {
@@ -13909,6 +14349,8 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                       _duplicateLayerGroup(group.id);
                     } else if (value == 'move-group') {
                       _showMoveGroupDialog(group.id);
+                    } else if (value == 'animate-group') {
+                      _showGroupAnimationEditor(group.id);
                     } else if (value == 'variant-slot') {
                       WidgetsBinding.instance.addPostFrameCallback((_) {
                         if (mounted) {
@@ -13976,6 +14418,13 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                       child: ListTile(
                         leading: Icon(Icons.drive_file_move_outline),
                         title: Text('Move to Group'),
+                      ),
+                    ),
+                    PopupMenuItem(
+                      value: 'animate-group',
+                      child: ListTile(
+                        leading: Icon(Icons.animation_outlined),
+                        title: Text('Animate Group'),
                       ),
                     ),
                     PopupMenuDivider(),
@@ -14524,6 +14973,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     String? frameId,
     bool drawingOnly = false,
     bool includeLiveDraft = false,
+    int intraFrameUnit = 0,
   }) {
     final widgets = <Widget>[];
 
@@ -14709,25 +15159,55 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
 
         final outerWidgets = widgets;
 
-        // When this semantic group is on an unkeyed frame between two pose
-        // keys, borrow its drawing artwork from the preceding authored key.
+        // Independent artwork timing is resolved separately from semantic
+        // transform poses.
         //
-        // The borrowed artwork exists only for rendering. The tween frame
-        // remains empty and the authored layer data is never modified.
-        final groupDrawingFrameIndex = frameId != null
+        // For now this renderer resolves the animation clock at the beginning
+        // of the requested main timeline frame. Playback will later add an
+        // intra-frame unit so held frames can advance nested animation without
+        // advancing the main timeline frame itself.
+        final requestedFrameIndex = frameIndex ?? _selectedFrameIndex;
+
+        // Historical renders normally remain at the beginning of their
+        // requested frame. The live playback scene may additionally supply an
+        // intra-frame unit so independent nested animation can continue while
+        // the main timeline frame is being held.
+        final timelineUnit =
+            _timelineUnitForFrameIndex(requestedFrameIndex) +
+            intraFrameUnit.clamp(0, 1000000);
+
+        final trackedDrawingFrameIndex =
+            _groupAnimationSourceFrameIndexAtTimelineUnit(
+              group.id,
+              timelineUnit,
+            );
+
+        // Existing pose tween artwork borrowing remains the fallback when no
+        // independent artwork track is attached to this semantic group.
+        final tweenDrawingFrameIndex = frameId != null
             ? _tweenArtworkSourceFrameIndex(frameId, group.id)
             : null;
+
+        final groupDrawingFrameIndex =
+            trackedDrawingFrameIndex ?? tweenDrawingFrameIndex;
 
         // Transform-pose ownership and drawing-artwork ownership are
         // independent.
         //
-        // A group may have its own pose key while its visible artwork still
-        // comes from an ancestor's authored frame. Only replace the inherited
-        // drawing source when this group actually has drawing artwork at its
-        // proposed source frame.
+        // An explicit GroupAnimationTrack owns artwork timing whenever it
+        // resolves to a valid persisted source frame. Pose tween borrowing,
+        // however, retains its existing safeguard: it replaces inherited
+        // artwork only when this semantic group actually contains drawing
+        // artwork at the proposed source.
+        final groupOwnsTrackedArtwork = trackedDrawingFrameIndex != null;
+
+        final groupOwnsTweenArtwork =
+            trackedDrawingFrameIndex == null &&
+            tweenDrawingFrameIndex != null &&
+            _groupHasDrawingArtworkAtFrame(group.id, tweenDrawingFrameIndex);
+
         final groupOwnsArtworkSource =
-            groupDrawingFrameIndex != null &&
-            _groupHasDrawingArtworkAtFrame(group.id, groupDrawingFrameIndex);
+            groupOwnsTrackedArtwork || groupOwnsTweenArtwork;
 
         final effectiveDrawingFrameIndex = groupOwnsArtworkSource
             ? groupDrawingFrameIndex
@@ -15214,6 +15694,14 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                                               // artwork from another frame.
                                               includeLiveDraft:
                                                   !_isCompositePngCapture,
+
+                                              // Independent nested animation
+                                              // advances once per base FPS
+                                              // unit while the selected main
+                                              // frame remains held.
+                                              intraFrameUnit: _isPlaying
+                                                  ? _playbackFrameUnit
+                                                  : 0,
 
                                               // Normal Workspace rendering
                                               // always traverses the complete
