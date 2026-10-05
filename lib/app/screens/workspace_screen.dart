@@ -370,7 +370,6 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
   bool _timingExpanded = false;
   bool _drawingExpanded = false;
   bool _timelineExpanded = false;
-  bool? _editToolbarExpanded = false;
   bool _drawingMode = false;
   bool _blendExpanded = false;
   bool _blendSamplingArmed = false;
@@ -479,7 +478,6 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
   bool _referenceVisible = true;
   double _referenceOpacity = 1.0;
   bool _layersPanelExpanded = false;
-  bool _transformToolbarExpanded = false;
 
   @override
   void dispose() {
@@ -1575,7 +1573,6 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
       // Whole-group Transform needs full Variant-descendant participation
       // before we allow an entire structured Room to move as one object.
       _isTransformActive = false;
-      _transformToolbarExpanded = false;
 
       _resetUndoRedo();
       _rebuildCompositeFrames();
@@ -1825,7 +1822,6 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
       _stampBrushItem = null;
 
       _isTransformActive = true;
-      _transformToolbarExpanded = true;
 
       // Automatically select every stroke in the newly unpacked group.
       _selectedTransformStrokes = <String, Set<int>>{
@@ -4911,21 +4907,15 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
 
   void _collapseFloatingPanels({
     bool keepDrawing = false,
-    bool keepEdit = false,
     bool keepBlend = false,
     bool keepTexture = false,
     bool keepStamp = false,
     bool keepLayers = false,
-    bool keepTransform = false,
     bool keepTimeline = false,
     bool keepTiming = false,
   }) {
     if (!keepDrawing) {
       _drawingExpanded = false;
-    }
-
-    if (!keepEdit) {
-      _editToolbarExpanded = false;
     }
 
     if (!keepBlend) {
@@ -4943,10 +4933,6 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
 
     if (!keepLayers) {
       _layersPanelExpanded = false;
-    }
-
-    if (!keepTransform) {
-      _transformToolbarExpanded = false;
     }
 
     if (!keepTimeline) {
@@ -5003,7 +4989,6 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
       _isFillToolActive = false;
       _isShapeToolActive = false;
       _isTransformActive = false;
-      _transformToolbarExpanded = false;
 
       _draftStroke = const <VectorPoint>[];
       _draftTextureStrokes = <VectorStroke>[];
@@ -5976,9 +5961,8 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
       _stampBrushActive = false;
       _stampBrushItem = null;
 
-      _collapseFloatingPanels(keepTransform: true);
+      _collapseFloatingPanels();
       _isTransformActive = true;
-      _transformToolbarExpanded = true;
 
       _transformReferenceLayerId = referenceId;
 
@@ -6342,9 +6326,8 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
       _stampBrushActive = false;
       _stampBrushItem = null;
 
-      _collapseFloatingPanels(keepTransform: true);
+      _collapseFloatingPanels();
       _isTransformActive = true;
-      _transformToolbarExpanded = true;
 
       _transformPivot = null;
       _isTransformPivotDragging = false;
@@ -7674,6 +7657,102 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     return bounds.topCenter;
   }
 
+  void _deleteSelectedTransformStrokes() {
+    if (_selectedTransformStrokes.isEmpty) {
+      return;
+    }
+
+    if (_activeLayerGroup != null) {
+      _saveGroupUndoState();
+    } else {
+      _saveUndoState();
+    }
+
+    setState(() {
+      for (final entry in _selectedTransformStrokes.entries) {
+        final layerIndex = _layerIndexForId(entry.key);
+
+        if (layerIndex == -1) {
+          continue;
+        }
+
+        final layer = _layers[layerIndex];
+
+        if (_selectedFrameIndex < 0 ||
+            _selectedFrameIndex >= layer.frames.length) {
+          continue;
+        }
+
+        final frames = _copyLayerFrames(layer.frames);
+        final strokes = frames[_selectedFrameIndex];
+
+        // Delete backwards so removing one stroke cannot invalidate
+        // the indices of strokes that still need to be removed.
+        final indices =
+            entry.value
+                .where((index) => index >= 0 && index < strokes.length)
+                .toList()
+              ..sort((a, b) => b.compareTo(a));
+
+        for (final strokeIndex in indices) {
+          strokes.removeAt(strokeIndex);
+        }
+
+        _layers[layerIndex] = layer.copyWith(frames: frames);
+      }
+
+      _clearTransformSelection();
+      _rebuildCompositeFrames();
+    });
+
+    _scheduleAutosave();
+  }
+
+  void _invertTransformStrokeSelection() {
+    if (_selectedTransformStrokes.isEmpty ||
+        _transformReferenceLayerId != null ||
+        _transformGroupReferenceIds.isNotEmpty) {
+      return;
+    }
+
+    final inverted = <String, Set<int>>{};
+
+    // Invert only inside drawing layers already participating in the
+    // selection. This prevents a cleanup operation from reaching into
+    // unrelated artwork elsewhere in the project.
+    for (final entry in _selectedTransformStrokes.entries) {
+      final layerIndex = _layerIndexForId(entry.key);
+
+      if (layerIndex == -1) {
+        continue;
+      }
+
+      final layer = _layers[layerIndex];
+
+      if (_selectedFrameIndex < 0 ||
+          _selectedFrameIndex >= layer.frames.length) {
+        continue;
+      }
+
+      final strokes = layer.frames[_selectedFrameIndex];
+
+      final inverse = <int>{
+        for (var index = 0; index < strokes.length; index++)
+          if (!entry.value.contains(index)) index,
+      };
+
+      if (inverse.isNotEmpty) {
+        inverted[layer.id] = inverse;
+      }
+    }
+
+    setState(() {
+      _selectedTransformStrokes = inverted;
+      _lassoPoints = const <VectorPoint>[];
+      _transformPivot = null;
+    });
+  }
+
   void _copySelectedStrokes() {
     if (_selectedTransformStrokes.isEmpty) return;
 
@@ -8757,7 +8836,6 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
       _isFillToolActive = false;
       _isShapeToolActive = false;
       _isTransformActive = false;
-      _transformToolbarExpanded = false;
 
       _activeLayerGroupId = null;
 
@@ -12477,7 +12555,6 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
 
       _clearTransformSelection();
       _isTransformActive = false;
-      _transformToolbarExpanded = false;
       _transformPivot = null;
 
       _rebuildCompositeFrames();
@@ -12797,7 +12874,6 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
       if (transformBelongsToSlot || curtainTransformInvalidated) {
         _clearTransformSelection();
         _isTransformActive = false;
-        _transformToolbarExpanded = false;
         _transformPivot = null;
       }
     });
@@ -13016,7 +13092,6 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
 
       _clearTransformSelection();
       _isTransformActive = false;
-      _transformToolbarExpanded = false;
       _transformPivot = null;
 
       _resetUndoRedo();
@@ -15027,12 +15102,8 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
           Expanded(
             child: LayoutBuilder(
               builder: (context, constraints) {
-                final isNarrowToolbarLayout = constraints.maxWidth < 700;
                 final isPortraitWorkspace =
                     constraints.maxHeight > constraints.maxWidth;
-
-                final editToolbarExpanded =
-                    _editToolbarExpanded ?? !isNarrowToolbarLayout;
 
                 final canvasPadding = isPortraitWorkspace ? 0.0 : 16.0;
 
@@ -15100,6 +15171,8 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                                                   painter: _DrawingGridPainter(
                                                     spacing:
                                                         _drawingGridSpacing,
+                                                    backgroundColor:
+                                                        _canvasBackgroundColor,
                                                   ),
                                                   child:
                                                       const SizedBox.expand(),
@@ -15339,7 +15412,6 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
 
                                         // Drawing owns canvas interaction.
                                         _isTransformActive = false;
-                                        _transformToolbarExpanded = false;
                                         _clearTransformSelection();
                                       } else {
                                         _blendExpanded = false;
@@ -15470,8 +15542,6 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                                                     // Pen owns canvas input while its
                                                     // drawing controls are active.
                                                     _isTransformActive = false;
-                                                    _transformToolbarExpanded =
-                                                        false;
                                                     _isEraserActive = false;
 
                                                     _draftStroke =
@@ -15669,30 +15739,82 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
 
                                             const SizedBox(height: 2),
                                             IconButton(
-                                              tooltip: editToolbarExpanded
-                                                  ? 'Hide Edit Tools'
-                                                  : 'Show Edit Tools',
+                                              tooltip: 'Reset View',
                                               visualDensity:
                                                   VisualDensity.compact,
-                                              onPressed: () {
-                                                setState(() {
-                                                  final next =
-                                                      !editToolbarExpanded;
+                                              onPressed: _resetCanvasView,
+                                              icon: const Icon(
+                                                Icons.center_focus_strong,
+                                              ),
+                                            ),
 
-                                                  if (next) {
-                                                    _collapseFloatingPanels(
-                                                      keepEdit: true,
-                                                    );
-                                                  }
+                                            const SizedBox(height: 2),
+                                            IconButton(
+                                              tooltip: _isTransformActive
+                                                  ? 'Close Edit Tools'
+                                                  : 'Edit / Lasso',
+                                              visualDensity:
+                                                  VisualDensity.compact,
+                                              onPressed: _isPlaying
+                                                  ? null
+                                                  : () {
+                                                      setState(() {
+                                                        final next =
+                                                            !_isTransformActive;
 
-                                                  _editToolbarExpanded = next;
-                                                });
-                                              },
+                                                        if (next) {
+                                                          _collapseFloatingPanels();
+                                                          _isTransformActive =
+                                                              true;
+
+                                                          _isEraserActive =
+                                                              false;
+                                                          _isTintToolActive =
+                                                              false;
+                                                          _isFillToolActive =
+                                                              false;
+                                                          _isShapeToolActive =
+                                                              false;
+
+                                                          _clearFillLasso();
+                                                          _clearShapeDraft();
+                                                          _draftStroke =
+                                                              const <
+                                                                VectorPoint
+                                                              >[];
+
+                                                          _drawingExpanded =
+                                                              false;
+                                                          _blendExpanded =
+                                                              false;
+                                                          _blendSamplingArmed =
+                                                              false;
+
+                                                          _textureExpanded =
+                                                              false;
+                                                          _textureActive =
+                                                              false;
+                                                          _draftTextureStrokes =
+                                                              <VectorStroke>[];
+
+                                                          _stampBrushPanelExpanded =
+                                                              false;
+                                                          _stampBrushActive =
+                                                              false;
+                                                          _stampBrushItem =
+                                                              null;
+                                                          _draftStampStrokes =
+                                                              <VectorStroke>[];
+                                                        } else {
+                                                          _isTransformActive =
+                                                              false;
+                                                          _clearTransformSelection();
+                                                        }
+                                                      });
+                                                    },
                                               icon: Icon(
-                                                editToolbarExpanded
-                                                    ? Icons.chevron_right
-                                                    : Icons.tune,
-                                                color: editToolbarExpanded
+                                                Icons.tune,
+                                                color: _isTransformActive
                                                     ? Colors.deepPurpleAccent
                                                     : Colors.white70,
                                               ),
@@ -17754,13 +17876,13 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                       ),
                     ),
 
-                    if (!_isVideoScrubbing)
+                    if (_isTransformActive && !_isVideoScrubbing)
                       Positioned(
                         top:
                             MediaQuery.of(context).viewPadding.top +
                             kToolbarHeight +
-                            8,
-                        right: 16,
+                            430,
+                        left: 112,
                         child: Material(
                           elevation: 8,
                           color: const Color(0xE61A1720),
@@ -17774,140 +17896,26 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                             child: Row(
                               mainAxisSize: MainAxisSize.min,
                               children: [
-                                if (editToolbarExpanded) ...[
+                                if (_perspectiveShapeEditing) ...[
                                   IconButton(
-                                    tooltip: 'Reset View',
+                                    tooltip: 'Commit Perspective Shape',
                                     visualDensity: VisualDensity.compact,
-                                    onPressed: _resetCanvasView,
-                                    icon: const Icon(Icons.center_focus_strong),
+                                    onPressed: _confirmPerspectiveShape,
+                                    icon: const Icon(
+                                      Icons.check_circle_outline,
+                                      color: Colors.greenAccent,
+                                    ),
                                   ),
                                   IconButton(
-                                    tooltip: _transformToolbarExpanded
-                                        ? 'Hide Transform Tools'
-                                        : 'Show Transform Tools',
+                                    tooltip: 'Cancel Perspective Shape',
                                     visualDensity: VisualDensity.compact,
-                                    onPressed: _isPlaying
-                                        ? null
-                                        : () {
-                                            setState(() {
-                                              final next =
-                                                  !_transformToolbarExpanded;
-
-                                              if (next) {
-                                                _collapseFloatingPanels(
-                                                  keepTransform: true,
-                                                );
-                                              }
-
-                                              _transformToolbarExpanded = next;
-                                            });
-                                          },
-                                    icon: Icon(
-                                      Icons.open_with,
-                                      color:
-                                          _isTransformActive ||
-                                              _transformToolbarExpanded
-                                          ? Colors.deepPurpleAccent
-                                          : Colors.white70,
+                                    onPressed: _cancelPerspectiveShape,
+                                    icon: const Icon(
+                                      Icons.cancel_outlined,
+                                      color: Colors.redAccent,
                                     ),
                                   ),
-                                  if (_perspectiveShapeEditing) ...[
-                                    IconButton(
-                                      tooltip: 'Commit Perspective Shape',
-                                      visualDensity: VisualDensity.compact,
-                                      onPressed: _confirmPerspectiveShape,
-                                      icon: const Icon(
-                                        Icons.check_circle_outline,
-                                        color: Colors.greenAccent,
-                                      ),
-                                    ),
-                                    IconButton(
-                                      tooltip: 'Cancel Perspective Shape',
-                                      visualDensity: VisualDensity.compact,
-                                      onPressed: _cancelPerspectiveShape,
-                                      icon: const Icon(
-                                        Icons.cancel_outlined,
-                                        color: Colors.redAccent,
-                                      ),
-                                    ),
-                                  ],
                                 ],
-                              ],
-                            ),
-                          ),
-                        ),
-                      ),
-                    if (_transformToolbarExpanded && !_isVideoScrubbing)
-                      Positioned(
-                        top:
-                            MediaQuery.of(context).viewPadding.top +
-                            kToolbarHeight +
-                            68,
-                        right: 16,
-                        child: Material(
-                          elevation: 8,
-                          color: const Color(0xE61A1720),
-                          borderRadius: BorderRadius.circular(16),
-                          clipBehavior: Clip.antiAlias,
-                          child: Padding(
-                            padding: const EdgeInsets.symmetric(
-                              horizontal: 6,
-                              vertical: 4,
-                            ),
-                            child: Row(
-                              mainAxisSize: MainAxisSize.min,
-                              children: [
-                                IconButton(
-                                  tooltip: _isTransformActive
-                                      ? 'Exit Transform'
-                                      : 'Transform / Lasso',
-                                  visualDensity: VisualDensity.compact,
-                                  onPressed: _isPlaying
-                                      ? null
-                                      : () {
-                                          setState(() {
-                                            _isTransformActive =
-                                                !_isTransformActive;
-
-                                            _isEraserActive = false;
-                                            _isTintToolActive = false;
-                                            _isFillToolActive = false;
-                                            _isShapeToolActive = false;
-
-                                            _clearFillLasso();
-                                            _clearShapeDraft();
-                                            _draftStroke =
-                                                const <VectorPoint>[];
-
-                                            if (_isTransformActive) {
-                                              // Transform owns canvas input
-                                              // while its lasso is active.
-                                              _drawingExpanded = false;
-                                              _blendExpanded = false;
-                                              _blendSamplingArmed = false;
-
-                                              _textureExpanded = false;
-                                              _textureActive = false;
-                                              _draftTextureStrokes =
-                                                  <VectorStroke>[];
-
-                                              _stampBrushPanelExpanded = false;
-                                              _stampBrushActive = false;
-                                              _stampBrushItem = null;
-                                              _draftStampStrokes =
-                                                  <VectorStroke>[];
-                                            } else {
-                                              _clearTransformSelection();
-                                            }
-                                          });
-                                        },
-                                  icon: Icon(
-                                    Icons.select_all,
-                                    color: _isTransformActive
-                                        ? Colors.deepPurpleAccent
-                                        : Colors.white70,
-                                  ),
-                                ),
                                 IconButton(
                                   tooltip: 'Flip Horizontal',
                                   visualDensity: VisualDensity.compact,
@@ -17923,38 +17931,26 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                                   icon: const Icon(Icons.flip),
                                 ),
                                 IconButton(
-                                  tooltip: _currentTransformGroupHasKeyframe
-                                      ? 'Update Key Pose'
-                                      : 'Key Pose',
+                                  tooltip: 'Invert Selection',
                                   visualDensity: VisualDensity.compact,
                                   onPressed:
                                       _isPlaying ||
-                                          _transformTargetGroupId == null
+                                          _selectedTransformStrokes.isEmpty ||
+                                          _transformReferenceLayerId != null ||
+                                          _transformGroupReferenceIds.isNotEmpty
                                       ? null
-                                      : _keyCurrentTransformGroupPose,
-                                  icon: Icon(
-                                    _currentTransformGroupHasKeyframe
-                                        ? Icons.key
-                                        : Icons.key_outlined,
-                                    color: _currentTransformGroupHasKeyframe
-                                        ? Colors.amberAccent
-                                        : null,
-                                  ),
+                                      : _invertTransformStrokeSelection,
+                                  icon: const Icon(Icons.invert_colors),
                                 ),
                                 IconButton(
-                                  tooltip: 'Delete Key Pose',
+                                  tooltip: 'Delete Selection',
                                   visualDensity: VisualDensity.compact,
                                   onPressed:
                                       _isPlaying ||
-                                          !_currentTransformGroupHasKeyframe
+                                          _selectedTransformStrokes.isEmpty
                                       ? null
-                                      : _deleteCurrentTransformGroupPose,
-                                  icon: Icon(
-                                    Icons.key_off,
-                                    color: _currentTransformGroupHasKeyframe
-                                        ? Colors.redAccent
-                                        : null,
-                                  ),
+                                      : _deleteSelectedTransformStrokes,
+                                  icon: const Icon(Icons.delete_outline),
                                 ),
                                 IconButton(
                                   tooltip: 'Copy Selection',
@@ -17974,17 +17970,6 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                                       ? null
                                       : _pasteCopiedStrokes,
                                   icon: const Icon(Icons.content_paste),
-                                ),
-                                const SizedBox(width: 2),
-                                IconButton(
-                                  tooltip: 'Collapse Transform Tools',
-                                  visualDensity: VisualDensity.compact,
-                                  onPressed: () {
-                                    setState(() {
-                                      _transformToolbarExpanded = false;
-                                    });
-                                  },
-                                  icon: const Icon(Icons.chevron_right),
                                 ),
                               ],
                             ),
@@ -18135,6 +18120,98 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                                                             : Colors.white70,
                                                       ),
                                                     ),
+                                                    if (constraints.maxWidth >=
+                                                        500)
+                                                      const SizedBox(width: 4),
+
+                                                    // Transform pose keyframes
+                                                    // belong to animation rather
+                                                    // than the Transform toolbar.
+                                                    IconButton(
+                                                      tooltip:
+                                                          _currentTransformGroupHasKeyframe
+                                                          ? 'Update Key Pose'
+                                                          : 'Key Pose',
+                                                      visualDensity:
+                                                          VisualDensity.compact,
+                                                      constraints: BoxConstraints(
+                                                        minWidth:
+                                                            constraints
+                                                                    .maxWidth <
+                                                                500
+                                                            ? 32
+                                                            : 40,
+                                                        minHeight:
+                                                            constraints
+                                                                    .maxWidth <
+                                                                500
+                                                            ? 32
+                                                            : 40,
+                                                      ),
+                                                      padding:
+                                                          constraints.maxWidth <
+                                                              500
+                                                          ? EdgeInsets.zero
+                                                          : const EdgeInsets.all(
+                                                              8,
+                                                            ),
+                                                      onPressed:
+                                                          _isPlaying ||
+                                                              _transformTargetGroupId ==
+                                                                  null
+                                                          ? null
+                                                          : _keyCurrentTransformGroupPose,
+                                                      icon: Icon(
+                                                        _currentTransformGroupHasKeyframe
+                                                            ? Icons.key
+                                                            : Icons
+                                                                  .key_outlined,
+                                                        color:
+                                                            _currentTransformGroupHasKeyframe
+                                                            ? Colors.amberAccent
+                                                            : null,
+                                                      ),
+                                                    ),
+                                                    IconButton(
+                                                      tooltip:
+                                                          'Delete Key Pose',
+                                                      visualDensity:
+                                                          VisualDensity.compact,
+                                                      constraints: BoxConstraints(
+                                                        minWidth:
+                                                            constraints
+                                                                    .maxWidth <
+                                                                500
+                                                            ? 32
+                                                            : 40,
+                                                        minHeight:
+                                                            constraints
+                                                                    .maxWidth <
+                                                                500
+                                                            ? 32
+                                                            : 40,
+                                                      ),
+                                                      padding:
+                                                          constraints.maxWidth <
+                                                              500
+                                                          ? EdgeInsets.zero
+                                                          : const EdgeInsets.all(
+                                                              8,
+                                                            ),
+                                                      onPressed:
+                                                          _isPlaying ||
+                                                              !_currentTransformGroupHasKeyframe
+                                                          ? null
+                                                          : _deleteCurrentTransformGroupPose,
+                                                      icon: Icon(
+                                                        Icons.key_off,
+                                                        color:
+                                                            _currentTransformGroupHasKeyframe
+                                                            ? Colors.redAccent
+                                                            : null,
+                                                      ),
+                                                    ),
+
                                                     if (constraints.maxWidth >=
                                                         500)
                                                       const SizedBox(width: 4),
@@ -18752,9 +18829,13 @@ class _DrawingSymmetryGuidePainter extends CustomPainter {
 }
 
 class _DrawingGridPainter extends CustomPainter {
-  const _DrawingGridPainter({required this.spacing});
+  const _DrawingGridPainter({
+    required this.spacing,
+    required this.backgroundColor,
+  });
 
   final double spacing;
+  final Color backgroundColor;
 
   @override
   void paint(Canvas canvas, Size size) {
@@ -18762,8 +18843,13 @@ class _DrawingGridPainter extends CustomPainter {
       return;
     }
 
+    // Keep the grid readable against any authored canvas colour without
+    // introducing another user-facing colour setting.
+    final isLightBackground = backgroundColor.computeLuminance() > 0.5;
+    final gridColor = isLightBackground ? Colors.black : Colors.white;
+
     final paint = Paint()
-      ..color = Colors.white.withValues(alpha: 0.16)
+      ..color = gridColor.withValues(alpha: 0.16)
       ..strokeWidth = 1.0;
 
     for (double x = spacing; x < size.width; x += spacing) {
@@ -18777,7 +18863,8 @@ class _DrawingGridPainter extends CustomPainter {
 
   @override
   bool shouldRepaint(covariant _DrawingGridPainter oldDelegate) {
-    return oldDelegate.spacing != spacing;
+    return oldDelegate.spacing != spacing ||
+        oldDelegate.backgroundColor != backgroundColor;
   }
 }
 
