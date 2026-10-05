@@ -300,6 +300,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
   final GlobalKey _workspaceStackKey = GlobalKey();
 
   bool _isTransformActive = false;
+  Offset? _editToolsPosition;
   bool _isTransformDragging = false;
   bool _isTransformScaling = false;
   bool _isTransformRotating = false;
@@ -17879,10 +17880,28 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                     if (_isTransformActive && !_isVideoScrubbing)
                       Positioned(
                         top:
-                            MediaQuery.of(context).viewPadding.top +
-                            kToolbarHeight +
-                            430,
-                        left: 112,
+                            (_editToolsPosition?.dy ??
+                                    (MediaQuery.of(context).viewPadding.top +
+                                        kToolbarHeight +
+                                        430))
+                                .clamp(
+                                  MediaQuery.of(context).viewPadding.top + 8.0,
+                                  (constraints.maxHeight - 64.0).clamp(
+                                    MediaQuery.of(context).viewPadding.top +
+                                        8.0,
+                                    double.infinity,
+                                  ),
+                                )
+                                .toDouble(),
+                        left: (_editToolsPosition?.dx ?? 112.0)
+                            .clamp(
+                              8.0,
+                              (constraints.maxWidth - 300.0).clamp(
+                                8.0,
+                                double.infinity,
+                              ),
+                            )
+                            .toDouble(),
                         child: Material(
                           elevation: 8,
                           color: const Color(0xE61A1720),
@@ -17896,6 +17915,63 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                             child: Row(
                               mainAxisSize: MainAxisSize.min,
                               children: [
+                                Tooltip(
+                                  message: 'Move Edit Tools',
+                                  child: GestureDetector(
+                                    behavior: HitTestBehavior.opaque,
+                                    onPanUpdate: (details) {
+                                      setState(() {
+                                        final current =
+                                            _editToolsPosition ??
+                                            Offset(
+                                              112.0,
+                                              MediaQuery.of(
+                                                    context,
+                                                  ).viewPadding.top +
+                                                  kToolbarHeight +
+                                                  430,
+                                            );
+
+                                        final next = current + details.delta;
+
+                                        final minTop =
+                                            MediaQuery.of(
+                                              context,
+                                            ).viewPadding.top +
+                                            8.0;
+
+                                        final maxLeft =
+                                            (constraints.maxWidth - 300.0)
+                                                .clamp(8.0, double.infinity)
+                                                .toDouble();
+
+                                        final maxTop =
+                                            (constraints.maxHeight - 64.0)
+                                                .clamp(minTop, double.infinity)
+                                                .toDouble();
+
+                                        _editToolsPosition = Offset(
+                                          next.dx
+                                              .clamp(8.0, maxLeft)
+                                              .toDouble(),
+                                          next.dy
+                                              .clamp(minTop, maxTop)
+                                              .toDouble(),
+                                        );
+                                      });
+                                    },
+                                    child: const Padding(
+                                      padding: EdgeInsets.symmetric(
+                                        horizontal: 8,
+                                        vertical: 12,
+                                      ),
+                                      child: Icon(
+                                        Icons.drag_indicator,
+                                        color: Colors.white54,
+                                      ),
+                                    ),
+                                  ),
+                                ),
                                 if (_perspectiveShapeEditing) ...[
                                   IconButton(
                                     tooltip: 'Commit Perspective Shape',
