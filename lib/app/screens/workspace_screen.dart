@@ -6555,6 +6555,18 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     return _transformKeyframeForFrame(frameId, groupId);
   }
 
+  /// Whether this semantic group participates in the authored main animation.
+  ///
+  /// A group with any enabled transform keyframe belongs to the main timeline
+  /// for the whole shot. Its artwork must therefore remain under main-timeline
+  /// / keyed-pose ownership instead of switching back and forth between that
+  /// system and an autonomous GroupAnimationTrack.
+  bool _groupParticipatesInMainAnimation(String groupId) {
+    return _transformKeyframes.any(
+      (keyframe) => keyframe.enabled && keyframe.targetGroupId == groupId,
+    );
+  }
+
   bool _groupHasDrawingArtworkAtFrame(
     String groupId,
     int frameIndex, {
@@ -7034,6 +7046,11 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
 
     final groupName = _layerGroups[groupIndex].name;
 
+    // Sheet-local editor selection. This deliberately lives outside the
+    // StatefulBuilder so rebuilding the compact editor does not lose which
+    // animation clip the user is editing.
+    int? selectedClipIndex;
+
     await showModalBottomSheet<void>(
       context: context,
       isScrollControlled: true,
@@ -7048,7 +7065,31 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                 ? null
                 : _groupAnimationTracks[trackIndex];
 
+            final effectiveTrack =
+                track ??
+                GroupAnimationTrack(
+                  targetGroupId: groupId,
+                  clips: const <GroupAnimationClip>[],
+                );
+
+            if (selectedClipIndex != null &&
+                selectedClipIndex! >= effectiveTrack.clips.length) {
+              selectedClipIndex = effectiveTrack.clips.isEmpty
+                  ? null
+                  : effectiveTrack.clips.length - 1;
+            }
+
             String frameLabel(String frameId) {
+              final index = _frameIds.indexOf(frameId);
+
+              if (index == -1) {
+                return '?';
+              }
+
+              return 'F${index + 1}';
+            }
+
+            String fullFrameLabel(String frameId) {
               final index = _frameIds.indexOf(frameId);
 
               if (index == -1) {
@@ -7075,218 +7116,289 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
               _scheduleAutosave();
             }
 
-            final effectiveTrack =
-                track ??
-                GroupAnimationTrack(
-                  targetGroupId: groupId,
-                  clips: const <GroupAnimationClip>[],
-                );
+            void removeClip(int clipIndex) {
+              if (clipIndex < 0 || clipIndex >= effectiveTrack.clips.length) {
+                return;
+              }
+
+              final clips = List<GroupAnimationClip>.from(effectiveTrack.clips)
+                ..removeAt(clipIndex);
+
+              if (clips.isEmpty) {
+                selectedClipIndex = null;
+              } else if (clipIndex >= clips.length) {
+                selectedClipIndex = clips.length - 1;
+              } else {
+                selectedClipIndex = clipIndex;
+              }
+
+              updateTrack(effectiveTrack.copyWith(clips: clips));
+            }
+
+            final selectedClip =
+                selectedClipIndex != null &&
+                    selectedClipIndex! >= 0 &&
+                    selectedClipIndex! < effectiveTrack.clips.length
+                ? effectiveTrack.clips[selectedClipIndex!]
+                : null;
 
             return SafeArea(
               child: Padding(
                 padding: EdgeInsets.fromLTRB(
-                  16,
-                  12,
-                  16,
-                  16 + MediaQuery.of(context).viewInsets.bottom,
+                  14,
+                  10,
+                  14,
+                  12 + MediaQuery.of(context).viewInsets.bottom,
                 ),
                 child: Column(
                   mainAxisSize: MainAxisSize.min,
                   children: [
                     Row(
                       children: [
-                        const Icon(Icons.animation_outlined),
-                        const SizedBox(width: 10),
+                        const Icon(Icons.animation_outlined, size: 20),
+                        const SizedBox(width: 8),
                         Expanded(
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Text(
-                                'Animate $groupName',
-                                maxLines: 1,
-                                overflow: TextOverflow.ellipsis,
-                                style: Theme.of(context).textTheme.titleMedium,
-                              ),
-                              const Text(
-                                'Independent artwork timing',
-                                style: TextStyle(
-                                  fontSize: 11,
-                                  color: Colors.white54,
-                                ),
-                              ),
-                            ],
+                          child: Text(
+                            'Animate $groupName',
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: Theme.of(context).textTheme.titleMedium,
+                          ),
+                        ),
+                        const SizedBox(width: 6),
+                        const Text('Enabled', style: TextStyle(fontSize: 11)),
+                        Transform.scale(
+                          scale: 0.78,
+                          child: Switch(
+                            value: effectiveTrack.enabled,
+                            onChanged: (value) {
+                              updateTrack(
+                                effectiveTrack.copyWith(enabled: value),
+                              );
+                            },
+                          ),
+                        ),
+                        const Text('Loop', style: TextStyle(fontSize: 11)),
+                        Transform.scale(
+                          scale: 0.78,
+                          child: Switch(
+                            value: effectiveTrack.loop,
+                            onChanged: (value) {
+                              updateTrack(effectiveTrack.copyWith(loop: value));
+                            },
                           ),
                         ),
                         IconButton(
+                          visualDensity: VisualDensity.compact,
                           tooltip: 'Close',
                           onPressed: () => Navigator.of(sheetContext).pop(),
-                          icon: const Icon(Icons.close),
+                          icon: const Icon(Icons.close, size: 20),
                         ),
                       ],
                     ),
-                    const SizedBox(height: 8),
-                    SwitchListTile(
-                      contentPadding: EdgeInsets.zero,
-                      title: const Text('Enabled'),
-                      subtitle: const Text(
-                        'Play this group on its own animation clock',
-                      ),
-                      value: effectiveTrack.enabled,
-                      onChanged: (value) {
-                        updateTrack(effectiveTrack.copyWith(enabled: value));
-                      },
-                    ),
-                    SwitchListTile(
-                      contentPadding: EdgeInsets.zero,
-                      title: const Text('Loop'),
-                      subtitle: const Text(
-                        'Restart from the first clip after the last',
-                      ),
-                      value: effectiveTrack.loop,
-                      onChanged: (value) {
-                        updateTrack(effectiveTrack.copyWith(loop: value));
-                      },
-                    ),
-                    const Divider(),
-                    Flexible(
-                      child: effectiveTrack.clips.isEmpty
-                          ? const Padding(
-                              padding: EdgeInsets.symmetric(vertical: 24),
-                              child: Text(
-                                'No animation clips yet.\n'
-                                'Choose a timeline frame, then add it here.',
-                                textAlign: TextAlign.center,
-                                style: TextStyle(color: Colors.white60),
-                              ),
-                            )
-                          : ListView.builder(
-                              shrinkWrap: true,
-                              itemCount: effectiveTrack.clips.length,
-                              itemBuilder: (context, clipIndex) {
-                                final clip = effectiveTrack.clips[clipIndex];
-
-                                return Card(
-                                  child: ListTile(
-                                    leading: CircleAvatar(
-                                      child: Text('${clipIndex + 1}'),
-                                    ),
-                                    title: Text(frameLabel(clip.sourceFrameId)),
-                                    subtitle: Text(
-                                      'Duration ${clip.duration}x',
-                                    ),
-                                    trailing: Row(
-                                      mainAxisSize: MainAxisSize.min,
-                                      children: [
-                                        IconButton(
-                                          tooltip: 'Shorter',
-                                          onPressed: clip.duration <= 1
-                                              ? null
-                                              : () {
-                                                  final clips =
-                                                      List<
-                                                        GroupAnimationClip
-                                                      >.from(
-                                                        effectiveTrack.clips,
-                                                      );
-
-                                                  clips[clipIndex] = clip
-                                                      .copyWith(
-                                                        duration:
-                                                            clip.duration - 1,
-                                                      );
-
-                                                  updateTrack(
-                                                    effectiveTrack.copyWith(
-                                                      clips: clips,
-                                                    ),
-                                                  );
-                                                },
-                                          icon: const Icon(Icons.remove),
-                                        ),
-                                        Text('${clip.duration}x'),
-                                        IconButton(
-                                          tooltip: 'Longer',
-                                          onPressed: () {
-                                            final clips =
-                                                List<GroupAnimationClip>.from(
-                                                  effectiveTrack.clips,
-                                                );
-
-                                            clips[clipIndex] = clip.copyWith(
-                                              duration: clip.duration + 1,
-                                            );
-
-                                            updateTrack(
-                                              effectiveTrack.copyWith(
-                                                clips: clips,
-                                              ),
-                                            );
-                                          },
-                                          icon: const Icon(Icons.add),
-                                        ),
-                                        IconButton(
-                                          tooltip: 'Remove Clip',
-                                          onPressed: () {
-                                            final clips =
-                                                List<GroupAnimationClip>.from(
-                                                  effectiveTrack.clips,
-                                                )..removeAt(clipIndex);
-
-                                            updateTrack(
-                                              effectiveTrack.copyWith(
-                                                clips: clips,
-                                              ),
-                                            );
-                                          },
-                                          icon: const Icon(
-                                            Icons.delete_outline,
-                                          ),
-                                        ),
-                                      ],
-                                    ),
-                                  ),
-                                );
-                              },
-                            ),
-                    ),
-                    const SizedBox(height: 8),
-                    Row(
-                      children: [
-                        Expanded(
-                          child: FilledButton.icon(
-                            onPressed:
+                    const Divider(height: 12),
+                    SizedBox(
+                      height: 66,
+                      child: ListView.separated(
+                        scrollDirection: Axis.horizontal,
+                        itemCount: effectiveTrack.clips.length + 1,
+                        separatorBuilder: (context, index) =>
+                            const SizedBox(width: 6),
+                        itemBuilder: (context, index) {
+                          if (index == effectiveTrack.clips.length) {
+                            final canAdd =
                                 _selectedFrameIndex >= 0 &&
-                                    _selectedFrameIndex < _frameIds.length
-                                ? () {
-                                    final clips =
-                                        List<GroupAnimationClip>.from(
-                                          effectiveTrack.clips,
-                                        )..add(
-                                          GroupAnimationClip(
-                                            sourceFrameId:
-                                                _frameIds[_selectedFrameIndex],
-                                          ),
+                                _selectedFrameIndex < _frameIds.length;
+
+                            return Tooltip(
+                              message: canAdd
+                                  ? 'Add Frame ${_selectedFrameIndex + 1}'
+                                  : 'Add Current Frame',
+                              child: InkWell(
+                                borderRadius: BorderRadius.circular(9),
+                                onTap: canAdd
+                                    ? () {
+                                        final clips =
+                                            List<GroupAnimationClip>.from(
+                                              effectiveTrack.clips,
+                                            )..add(
+                                              GroupAnimationClip(
+                                                sourceFrameId:
+                                                    _frameIds[_selectedFrameIndex],
+                                              ),
+                                            );
+
+                                        selectedClipIndex = clips.length - 1;
+
+                                        updateTrack(
+                                          effectiveTrack.copyWith(clips: clips),
+                                        );
+                                      }
+                                    : null,
+                                child: Container(
+                                  width: 58,
+                                  decoration: BoxDecoration(
+                                    borderRadius: BorderRadius.circular(9),
+                                    border: Border.all(color: Colors.white24),
+                                  ),
+                                  child: Column(
+                                    mainAxisAlignment: MainAxisAlignment.center,
+                                    children: [
+                                      const Icon(Icons.add, size: 20),
+                                      Text(
+                                        canAdd
+                                            ? 'F${_selectedFrameIndex + 1}'
+                                            : 'Frame',
+                                        style: const TextStyle(fontSize: 10),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                              ),
+                            );
+                          }
+
+                          final clip = effectiveTrack.clips[index];
+                          final selected = selectedClipIndex == index;
+
+                          return Tooltip(
+                            message: 'Long press to remove',
+                            child: InkWell(
+                              borderRadius: BorderRadius.circular(9),
+                              onTap: () {
+                                setSheetState(() {
+                                  selectedClipIndex = index;
+                                });
+                              },
+                              onLongPress: () => removeClip(index),
+                              child: AnimatedContainer(
+                                duration: const Duration(milliseconds: 120),
+                                width: 58,
+                                decoration: BoxDecoration(
+                                  color: selected
+                                      ? Colors.deepPurpleAccent.withValues(
+                                          alpha: 0.18,
+                                        )
+                                      : Colors.white.withValues(alpha: 0.04),
+                                  borderRadius: BorderRadius.circular(9),
+                                  border: Border.all(
+                                    color: selected
+                                        ? Colors.deepPurpleAccent
+                                        : Colors.white24,
+                                    width: selected ? 2 : 1,
+                                  ),
+                                ),
+                                child: Column(
+                                  mainAxisAlignment: MainAxisAlignment.center,
+                                  children: [
+                                    Text(
+                                      frameLabel(clip.sourceFrameId),
+                                      style: TextStyle(
+                                        fontWeight: selected
+                                            ? FontWeight.w700
+                                            : FontWeight.w500,
+                                      ),
+                                    ),
+                                    const SizedBox(height: 3),
+                                    Text(
+                                      '${clip.duration}x',
+                                      style: const TextStyle(
+                                        fontSize: 10,
+                                        color: Colors.white60,
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            ),
+                          );
+                        },
+                      ),
+                    ),
+                    if (effectiveTrack.clips.isEmpty)
+                      const Padding(
+                        padding: EdgeInsets.only(top: 6),
+                        child: Text(
+                          'Add the current timeline frame to begin',
+                          style: TextStyle(fontSize: 11, color: Colors.white54),
+                        ),
+                      ),
+                    if (selectedClip != null) ...[
+                      const Divider(height: 18),
+                      Row(
+                        children: [
+                          Expanded(
+                            child: Text(
+                              'Selected: ${fullFrameLabel(selectedClip.sourceFrameId)}',
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: const TextStyle(fontSize: 12),
+                            ),
+                          ),
+                          IconButton(
+                            visualDensity: VisualDensity.compact,
+                            tooltip: 'Shorter',
+                            onPressed: selectedClip.duration <= 1
+                                ? null
+                                : () {
+                                    final clips = List<GroupAnimationClip>.from(
+                                      effectiveTrack.clips,
+                                    );
+
+                                    clips[selectedClipIndex!] = selectedClip
+                                        .copyWith(
+                                          duration: selectedClip.duration - 1,
                                         );
 
                                     updateTrack(
                                       effectiveTrack.copyWith(clips: clips),
                                     );
-                                  }
-                                : null,
-                            icon: const Icon(Icons.add),
-                            label: Text(
-                              _selectedFrameIndex >= 0 &&
-                                      _selectedFrameIndex < _frameIds.length
-                                  ? 'Add Frame ${_selectedFrameIndex + 1}'
-                                  : 'Add Current Frame',
+                                  },
+                            icon: const Icon(Icons.remove, size: 19),
+                          ),
+                          SizedBox(
+                            width: 32,
+                            child: Text(
+                              '${selectedClip.duration}x',
+                              textAlign: TextAlign.center,
+                              style: const TextStyle(
+                                fontWeight: FontWeight.w600,
+                              ),
                             ),
                           ),
-                        ),
-                      ],
-                    ),
+                          IconButton(
+                            visualDensity: VisualDensity.compact,
+                            tooltip: 'Longer',
+                            onPressed: () {
+                              final clips = List<GroupAnimationClip>.from(
+                                effectiveTrack.clips,
+                              );
+
+                              clips[selectedClipIndex!] = selectedClip.copyWith(
+                                duration: selectedClip.duration + 1,
+                              );
+
+                              updateTrack(
+                                effectiveTrack.copyWith(clips: clips),
+                              );
+                            },
+                            icon: const Icon(Icons.add, size: 19),
+                          ),
+                          IconButton(
+                            visualDensity: VisualDensity.compact,
+                            tooltip: 'Remove Clip',
+                            onPressed: () => removeClip(selectedClipIndex!),
+                            icon: const Icon(Icons.delete_outline, size: 19),
+                          ),
+                        ],
+                      ),
+                    ],
                     if (track != null) ...[
-                      const SizedBox(height: 8),
+                      const SizedBox(height: 4),
                       TextButton.icon(
+                        style: TextButton.styleFrom(
+                          visualDensity: VisualDensity.compact,
+                        ),
                         onPressed: () {
                           setState(() {
                             _groupAnimationTracks.removeWhere(
@@ -7297,8 +7409,14 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                           _scheduleAutosave();
                           Navigator.of(sheetContext).pop();
                         },
-                        icon: const Icon(Icons.delete_forever_outlined),
-                        label: const Text('Remove Animation Track'),
+                        icon: const Icon(
+                          Icons.delete_forever_outlined,
+                          size: 17,
+                        ),
+                        label: const Text(
+                          'Remove animation',
+                          style: TextStyle(fontSize: 11),
+                        ),
                       ),
                     ],
                   ],
@@ -14350,7 +14468,9 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                     } else if (value == 'move-group') {
                       _showMoveGroupDialog(group.id);
                     } else if (value == 'animate-group') {
-                      _showGroupAnimationEditor(group.id);
+                      if (!_groupParticipatesInMainAnimation(group.id)) {
+                        _showGroupAnimationEditor(group.id);
+                      }
                     } else if (value == 'variant-slot') {
                       WidgetsBinding.instance.addPostFrameCallback((_) {
                         if (mounted) {
@@ -14383,8 +14503,8 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                       _deleteLayerGroup(group.id);
                     }
                   },
-                  itemBuilder: (context) => const [
-                    PopupMenuItem(
+                  itemBuilder: (context) => [
+                    const PopupMenuItem(
                       value: 'bag',
                       child: ListTile(
                         leading: Icon(Icons.backpack_outlined),
@@ -14422,9 +14542,19 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                     ),
                     PopupMenuItem(
                       value: 'animate-group',
+                      enabled: !_groupParticipatesInMainAnimation(group.id),
                       child: ListTile(
-                        leading: Icon(Icons.animation_outlined),
-                        title: Text('Animate Group'),
+                        leading: Icon(
+                          Icons.animation_outlined,
+                          color: _groupParticipatesInMainAnimation(group.id)
+                              ? Colors.white24
+                              : null,
+                        ),
+                        title: Text(
+                          _groupParticipatesInMainAnimation(group.id)
+                              ? 'Animated by Main Timeline'
+                              : 'Animate Group',
+                        ),
                       ),
                     ),
                     PopupMenuDivider(),
@@ -15176,14 +15306,26 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
             _timelineUnitForFrameIndex(requestedFrameIndex) +
             intraFrameUnit.clamp(0, 1000000);
 
-        final trackedDrawingFrameIndex =
-            _groupAnimationSourceFrameIndexAtTimelineUnit(
-              group.id,
-              timelineUnit,
-            );
+        // Main-timeline keyed groups and autonomous Group Animation tracks
+        // are deliberately separate animation lanes.
+        //
+        // Once a semantic group participates in the authored main animation,
+        // the main timeline remains authoritative for that group throughout
+        // the shot. This prevents artwork ownership from switching between
+        // keyed poses and an independent looping track during playback.
+        final participatesInMainAnimation = _groupParticipatesInMainAnimation(
+          group.id,
+        );
+
+        final trackedDrawingFrameIndex = participatesInMainAnimation
+            ? null
+            : _groupAnimationSourceFrameIndexAtTimelineUnit(
+                group.id,
+                timelineUnit,
+              );
 
         // Existing pose tween artwork borrowing remains the fallback when no
-        // independent artwork track is attached to this semantic group.
+        // autonomous artwork track owns this semantic group.
         final tweenDrawingFrameIndex = frameId != null
             ? _tweenArtworkSourceFrameIndex(frameId, group.id)
             : null;
@@ -16308,6 +16450,62 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                                                     : Colors.white70,
                                               ),
                                             ),
+                                            // Fast access to the selected group's
+                                            // independent animation track.
+                                            //
+                                            // This belongs to Animate mode rather than
+                                            // the group's overflow menu because local
+                                            // group timing is part of the normal
+                                            // animation workflow.
+                                            if (!_drawingMode) ...[
+                                              const SizedBox(height: 2),
+                                              Builder(
+                                                builder: (context) {
+                                                  final groupId =
+                                                      _activeLayerGroupId;
+
+                                                  final belongsToMainAnimation =
+                                                      groupId != null &&
+                                                      _groupParticipatesInMainAnimation(
+                                                        groupId,
+                                                      );
+
+                                                  final canAnimateGroup =
+                                                      groupId != null &&
+                                                      !belongsToMainAnimation &&
+                                                      !_isPlaying;
+
+                                                  final tooltip =
+                                                      groupId == null
+                                                      ? 'Select a group to animate'
+                                                      : belongsToMainAnimation
+                                                      ? 'Group is animated by the main timeline'
+                                                      : _isPlaying
+                                                      ? 'Pause playback to edit group animation'
+                                                      : 'Animate ${_activeLayerGroup?.name ?? 'Group'}';
+
+                                                  return IconButton(
+                                                    tooltip: tooltip,
+                                                    visualDensity:
+                                                        VisualDensity.compact,
+                                                    onPressed: canAnimateGroup
+                                                        ? () {
+                                                            _showGroupAnimationEditor(
+                                                              groupId,
+                                                            );
+                                                          }
+                                                        : null,
+                                                    icon: Icon(
+                                                      Icons.animation_outlined,
+                                                      color: canAnimateGroup
+                                                          ? Colors.amberAccent
+                                                          : Colors.white24,
+                                                    ),
+                                                  );
+                                                },
+                                              ),
+                                            ],
+
                                             const SizedBox(height: 2),
                                             if (_drawingMode &&
                                                 _referenceMediaType ==
