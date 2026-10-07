@@ -6700,6 +6700,72 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     return previousKeyIndex;
   }
 
+  int? _echoArtworkSourceFrameIndex(String frameId, String groupId) {
+    final frameIndex = _frameIds.indexOf(frameId);
+
+    if (frameIndex == -1) {
+      return null;
+    }
+
+    // ECHO represents the resolved visual state of a timeline frame, not
+    // merely artwork authored directly on that frame.
+    //
+    // If this frame contains artwork for the semantic group, it is already
+    // the authoritative visual source.
+    if (_groupHasDrawingArtworkAtFrame(groupId, frameIndex)) {
+      return frameIndex;
+    }
+
+    final exactKey = _transformKeyframeForFrame(frameId, groupId);
+
+    // Find the nearest authored pose before this displayed frame.
+    int? previousKeyIndex;
+
+    for (var i = frameIndex - 1; i >= 0; i--) {
+      if (_transformKeyframeForFrame(_frameIds[i], groupId) != null) {
+        previousKeyIndex = i;
+        break;
+      }
+    }
+
+    // A pose-only exact key displays the artwork inherited from the preceding
+    // authored pose. ECHO must show that same resolved visual state.
+    if (exactKey != null && previousKeyIndex != null) {
+      for (var i = previousKeyIndex; i >= 0; i--) {
+        if (_transformKeyframeForFrame(_frameIds[i], groupId) != null &&
+            _groupHasDrawingArtworkAtFrame(groupId, i)) {
+          return i;
+        }
+      }
+    }
+
+    // For an unauthored tween frame, locate the next pose key. If one exists,
+    // this frame belongs to that interpolation span and visually inherits the
+    // artwork from the preceding authored pose.
+    int? nextKeyIndex;
+
+    for (var i = frameIndex + 1; i < _frameIds.length; i++) {
+      if (_transformKeyframeForFrame(_frameIds[i], groupId) != null) {
+        nextKeyIndex = i;
+        break;
+      }
+    }
+
+    if (previousKeyIndex != null && nextKeyIndex != null) {
+      for (var i = previousKeyIndex; i >= 0; i--) {
+        if (_transformKeyframeForFrame(_frameIds[i], groupId) != null &&
+            _groupHasDrawingArtworkAtFrame(groupId, i)) {
+          return i;
+        }
+      }
+    }
+
+    // Outside an authored interpolation span ECHO does not manufacture
+    // animation state. This keeps it observational rather than changing the
+    // project's animation ownership rules.
+    return null;
+  }
+
   TransformKeyframe? _resolvedTransformPoseForFrame(
     String frameId,
     String groupId,
@@ -15022,28 +15088,76 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     return _applySceneBrightness(scene, _effectiveBrightnessForLayer(layer));
   }
 
-  Widget _applyOnionSkinTint(Widget child, Color color) {
-    final red = color.r;
-    final green = color.g;
-    final blue = color.b;
+  /// ECHO temporal overlay.
+  ///
+  /// Unlike a traditional flat onion-skin silhouette, ECHO preserves the
+  /// neighbouring drawing's internal values and detail. A restrained temporal
+  /// tint distinguishes past from future without destroying the information
+  /// needed for precision alignment of eyes, fangs, fingers, etc.
+  /// Restores the keyed ancestor transform chain removed when ECHO focuses
+  /// directly on a nested semantic group.
+  ///
+  /// The isolated hierarchy renderer still applies the focused group's own
+  /// keyed pose. Therefore ECHO must restore ancestors only rather than the
+  /// complete scene transform, otherwise the focused pose would be applied
+  /// twice.
+  Widget _applyEchoAncestorPose(
+    Widget child, {
+    required String? groupId,
+    required String frameId,
+  }) {
+    if (groupId == null) {
+      return child;
+    }
+
+    final matrix = _ancestorTransformMatrixForGroup(groupId, frameId);
+
+    return Transform(
+      transform: matrix,
+      alignment: Alignment.topLeft,
+      child: child,
+    );
+  }
+
+  Widget _applyOnionSkinTint(
+    Widget child,
+    Color color, {
+    double opacity = 0.52,
+    double tintStrength = 0.62,
+  }) {
+    final strength = tintStrength.clamp(0.0, 1.0);
+    final preserve = 1.0 - strength;
+
+    // ECHO keeps part of the source RGB so internal drawing detail survives,
+    // but gives the temporal colour enough weight to remain unmistakable over
+    // dark artwork and coloured canvas backgrounds.
+    //
+    // Past and future should read immediately as coloured temporal traces,
+    // rather than neutral translucent shadows.
+    // Color.r/g/b are normalized 0.0–1.0 channels, while the translation
+    // column of ColorFilter.matrix uses the traditional 0–255 channel scale.
+    // Convert explicitly so the temporal coral/cyan tint is actually visible.
+    final red = color.r * 255.0 * strength;
+    final green = color.g * 255.0 * strength;
+    final blue = color.b * 255.0 * strength;
 
     return Opacity(
-      opacity: 0.40,
+      opacity: opacity.clamp(0.0, 1.0),
       child: ColorFiltered(
         colorFilter: ColorFilter.matrix(<double>[
-          0,
+          preserve,
           0,
           0,
           0,
           red,
           0,
-          0,
+          preserve,
           0,
           0,
           green,
           0,
           0,
-          0,
+          preserve,
           0,
           blue,
           0,
@@ -15103,6 +15217,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     String? frameId,
     bool drawingOnly = false,
     bool includeLiveDraft = false,
+    bool echoHistoricalArtwork = false,
     int intraFrameUnit = 0,
   }) {
     final widgets = <Widget>[];
@@ -15327,7 +15442,9 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
         // Existing pose tween artwork borrowing remains the fallback when no
         // autonomous artwork track owns this semantic group.
         final tweenDrawingFrameIndex = frameId != null
-            ? _tweenArtworkSourceFrameIndex(frameId, group.id)
+            ? (echoHistoricalArtwork
+                  ? _echoArtworkSourceFrameIndex(frameId, group.id)
+                  : _tweenArtworkSourceFrameIndex(frameId, group.id))
             : null;
 
         final groupDrawingFrameIndex =
@@ -15874,19 +15991,30 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                                                     _frameIds.length)
                                               IgnorePointer(
                                                 child: _applyOnionSkinTint(
-                                                  Stack(
-                                                    fit: StackFit.expand,
-                                                    children: _buildMixedHierarchySceneWidgets(
-                                                      frameIndex:
-                                                          _selectedFrameIndex -
-                                                          1,
-                                                      frameId:
-                                                          _frameIds[_selectedFrameIndex -
-                                                              1],
-                                                      drawingOnly: true,
+                                                  _applyEchoAncestorPose(
+                                                    Stack(
+                                                      fit: StackFit.expand,
+                                                      children: _buildMixedHierarchySceneWidgets(
+                                                        frameIndex:
+                                                            _selectedFrameIndex -
+                                                            1,
+                                                        frameId:
+                                                            _frameIds[_selectedFrameIndex -
+                                                                1],
+                                                        drawingOnly: true,
+                                                        echoHistoricalArtwork:
+                                                            true,
+                                                        isolatedGroupId:
+                                                            _activeLayerGroupId,
+                                                      ),
                                                     ),
+                                                    groupId:
+                                                        _activeLayerGroupId,
+                                                    frameId:
+                                                        _frameIds[_selectedFrameIndex -
+                                                            1],
                                                   ),
-                                                  Colors.redAccent,
+                                                  const Color(0xFFFF6B6B),
                                                 ),
                                               ),
                                             if (_showOnionSkin &&
@@ -15897,19 +16025,30 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                                                     _frameIds.length)
                                               IgnorePointer(
                                                 child: _applyOnionSkinTint(
-                                                  Stack(
-                                                    fit: StackFit.expand,
-                                                    children: _buildMixedHierarchySceneWidgets(
-                                                      frameIndex:
-                                                          _selectedFrameIndex +
-                                                          1,
-                                                      frameId:
-                                                          _frameIds[_selectedFrameIndex +
-                                                              1],
-                                                      drawingOnly: true,
+                                                  _applyEchoAncestorPose(
+                                                    Stack(
+                                                      fit: StackFit.expand,
+                                                      children: _buildMixedHierarchySceneWidgets(
+                                                        frameIndex:
+                                                            _selectedFrameIndex +
+                                                            1,
+                                                        frameId:
+                                                            _frameIds[_selectedFrameIndex +
+                                                                1],
+                                                        drawingOnly: true,
+                                                        echoHistoricalArtwork:
+                                                            true,
+                                                        isolatedGroupId:
+                                                            _activeLayerGroupId,
+                                                      ),
                                                     ),
+                                                    groupId:
+                                                        _activeLayerGroupId,
+                                                    frameId:
+                                                        _frameIds[_selectedFrameIndex +
+                                                            1],
                                                   ),
-                                                  Colors.greenAccent,
+                                                  const Color(0xFF62D9FF),
                                                 ),
                                               ),
                                             if (_fillLassoPoints.length > 1 &&
@@ -18848,7 +18987,11 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                                                       ),
                                                     ),
                                                     IconButton(
-                                                      tooltip: 'Onion Skin',
+                                                      tooltip:
+                                                          _activeLayerGroupId ==
+                                                              null
+                                                          ? 'Echo · Scene'
+                                                          : 'Echo · ${_activeLayerGroup?.name ?? 'Group'}',
                                                       visualDensity:
                                                           VisualDensity.compact,
                                                       constraints: BoxConstraints(
