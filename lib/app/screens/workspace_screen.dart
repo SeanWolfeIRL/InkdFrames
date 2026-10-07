@@ -806,7 +806,22 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
   void _scheduleAutosave() {
     _autosaveTimer?.cancel();
 
-    _autosaveTimer = Timer(const Duration(seconds: 2), _saveProject);
+    _autosaveTimer = Timer(const Duration(seconds: 2), () {
+      // Never let project serialization interrupt an active drawing gesture.
+      // If the debounce expires while the pen is down, wait until the canvas
+      // is idle and try again.
+      if (_activePointerCount > 0 ||
+          _draftStroke.isNotEmpty ||
+          _fillLassoPoints.isNotEmpty ||
+          _draftShapeStrokes.isNotEmpty ||
+          _draftStampStrokes.isNotEmpty ||
+          _draftTextureStrokes.isNotEmpty) {
+        _scheduleAutosave();
+        return;
+      }
+
+      unawaited(_saveProject());
+    });
   }
 
   Future<void> _saveProject() async {
@@ -10225,6 +10240,29 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     return MatrixUtils.transformPoint(inverse, canvasPoint);
   }
 
+  Offset _activeLayerAuthoredPointToCanvasSpace(Offset authoredPoint) {
+    if (_activeLayerIndex < 0 || _activeLayerIndex >= _layers.length) {
+      return authoredPoint;
+    }
+
+    final frameId = _currentFrameId;
+
+    if (frameId == null) {
+      return authoredPoint;
+    }
+
+    final layer = _activeLayer;
+    final owningGroup = _groupContainingLayer(layer.id);
+
+    if (owningGroup == null) {
+      return authoredPoint;
+    }
+
+    final sceneMatrix = _sceneTransformMatrixForGroup(owningGroup.id, frameId);
+
+    return MatrixUtils.transformPoint(sceneMatrix, authoredPoint);
+  }
+
   void _handlePointerDown(PointerDownEvent event, BuildContext canvasContext) {
     _updateCanvasRotationPointerDown(event);
     _activePointerCount += 1;
@@ -16056,7 +16094,26 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                                               IgnorePointer(
                                                 child: CustomPaint(
                                                   painter: _FillLassoPainter(
-                                                    points: _fillLassoPoints,
+                                                    points: _fillLassoPoints
+                                                        .map((point) {
+                                                          final visible =
+                                                              _activeLayerAuthoredPointToCanvasSpace(
+                                                                Offset(
+                                                                  point.dx,
+                                                                  point.dy,
+                                                                ),
+                                                              );
+
+                                                          return VectorPoint(
+                                                            dx: visible.dx,
+                                                            dy: visible.dy,
+                                                            pressure:
+                                                                point.pressure,
+                                                          );
+                                                        })
+                                                        .toList(
+                                                          growable: false,
+                                                        ),
                                                     color: _brushColor,
                                                   ),
                                                   child:
