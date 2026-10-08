@@ -7,6 +7,7 @@ import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter/rendering.dart';
+import 'package:flutter/scheduler.dart';
 import 'package:video_player/video_player.dart';
 import '../models/bag_item.dart';
 import '../models/composite_asset.dart';
@@ -261,6 +262,44 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
 
   int _activePointerCount = 0;
   List<VectorPoint> _draftStroke = const <VectorPoint>[];
+
+  // Live freehand ink has its own repaint lane.
+  //
+  // Pointer moves mutate the current growable draft list and notify only the
+  // active layer's CustomPainter. This avoids rebuilding the complete
+  // Workspace hierarchy, animation poses, and ECHO overlays for every S Pen
+  // sample.
+  final ValueNotifier<int> _liveInkRepaint = ValueNotifier<int>(0);
+
+  // Native S Pen packets can arrive much faster than the display can present
+  // frames. Preserve every accepted trajectory sample, but collapse multiple
+  // repaint requests into at most one live-ink repaint per Flutter frame.
+  bool _liveInkRepaintScheduled = false;
+
+  // Native Android S Pen sample stream.
+  //
+  // Ordinary Android stylus freehand uses the complete native MotionEvent
+  // history as its authoritative trajectory source. Flutter continues to own
+  // tool routing, coordinate conversion, the document model, and stroke commit.
+  static const MethodChannel _sPenChannel = MethodChannel(
+    'com.inkdframes.app/spen',
+  );
+
+  int _nativePenBatchCount = 0;
+  int _nativePenSampleCount = 0;
+  int _nativePenAcceptedSampleCount = 0;
+  Offset? _nativePenLastLogicalPosition;
+
+  bool _nativeSPenDown = false;
+  bool _flutterStylusStrokeActive = false;
+
+  // Use Flutter's own RenderBox coordinate conversion for native S Pen
+  // samples. This deliberately mirrors the normal PointerEvent path instead
+  // of approximating globalToLocal() with a cached inverse Matrix4.
+  RenderBox? _nativeStrokeCanvasRenderBox;
+
+  int? _nativePenLastSampleTime;
+
   Timer? _playbackTimer;
   Timer? _autosaveTimer;
   Timer? _groupBrightnessFadeTimer;
@@ -496,6 +535,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
 
   @override
   void dispose() {
+    _sPenChannel.setMethodCallHandler(null);
     _playbackTimer?.cancel();
     _autosaveTimer?.cancel();
     _groupBrightnessFadeTimer?.cancel();
@@ -506,12 +546,15 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     _timelineScrollController.dispose();
     _hierarchyAutoScrollTimer?.cancel();
     _layersScrollController.dispose();
+    _liveInkRepaint.dispose();
     super.dispose();
   }
 
   @override
   void initState() {
     super.initState();
+
+    _sPenChannel.setMethodCallHandler(_handleNativeSPenCall);
 
     if (widget.projectId != null) {
       _projectId = widget.projectId!;
@@ -10263,7 +10306,228 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     return MatrixUtils.transformPoint(sceneMatrix, authoredPoint);
   }
 
+  void _scheduleLiveInkRepaint() {
+    if (_liveInkRepaintScheduled) {
+      return;
+    }
+
+    _liveInkRepaintScheduled = true;
+
+    SchedulerBinding.instance.scheduleFrameCallback((_) {
+      _liveInkRepaintScheduled = false;
+
+      if (!mounted) {
+        return;
+      }
+
+      _liveInkRepaint.value++;
+    });
+  }
+
+  bool get _nativeSPenMayFeedFreehand {
+    return Platform.isAndroid &&
+        _nativeSPenDown &&
+        _flutterStylusStrokeActive &&
+        !_isPlaying &&
+        !_brushEyedropperArmed &&
+        !(_drawingMode && _blendSamplingArmed) &&
+        !(_drawingMode && _stampBrushActive) &&
+        !(_drawingMode && _textureActive) &&
+        !_isTransformActive &&
+        !_isFillToolActive &&
+        !_isShapeToolActive &&
+        !_isTintToolActive &&
+        !_isEraserActive &&
+        _draftStroke.isNotEmpty &&
+        _nativeStrokeCanvasRenderBox != null;
+  }
+
+  Offset? _nativeLogicalGlobalToAuthored(double x, double y, double density) {
+    final renderBox = _nativeStrokeCanvasRenderBox;
+
+    if (renderBox == null || !renderBox.attached || density <= 0) {
+      return null;
+    }
+
+    final globalLogical = Offset(x / density, y / density);
+
+    // IMPORTANT:
+    // This is now exactly the same global -> canvas conversion used by
+    // Flutter PointerEvents in _handlePointerDown/_handlePointerMove.
+    //
+    // RenderBox.globalToLocal() performs Flutter's proper coordinate
+    // unprojection through the complete render transform chain.
+    final canvasPoint = renderBox.globalToLocal(globalLogical);
+
+    return _canvasPointToActiveLayerAuthoredSpace(canvasPoint);
+  }
+
+  bool _appendNativeFreehandSample(Map sample, double density) {
+    final rawX = sample['x'];
+    final rawY = sample['y'];
+    final rawPressure = sample['pressure'];
+    final rawTime = sample['time'];
+
+    if (rawX is! num ||
+        rawY is! num ||
+        rawPressure is! num ||
+        rawTime is! num) {
+      return false;
+    }
+
+    final sampleTime = rawTime.toInt();
+
+    // Historical samples from neighbouring MotionEvents can overlap.
+    // Keep the stream monotonic so the same physical sample is not
+    // appended twice.
+    final previousTime = _nativePenLastSampleTime;
+
+    if (previousTime != null && sampleTime <= previousTime) {
+      return false;
+    }
+
+    final authoredPosition = _nativeLogicalGlobalToAuthored(
+      rawX.toDouble(),
+      rawY.toDouble(),
+      density,
+    );
+
+    if (authoredPosition == null) {
+      return false;
+    }
+
+    final stabilizedPosition = _stabilizePosition(authoredPosition);
+
+    final lastPoint = _draftStroke.last;
+    final dx = stabilizedPosition.dx - lastPoint.dx;
+    final dy = stabilizedPosition.dy - lastPoint.dy;
+    final distanceSquared = (dx * dx) + (dy * dy);
+
+    const minimumDistanceSquared = 0.5625;
+
+    _nativePenLastSampleTime = sampleTime;
+
+    if (distanceSquared < minimumDistanceSquared) {
+      return false;
+    }
+
+    _draftStroke.add(
+      VectorPoint(
+        dx: stabilizedPosition.dx,
+        dy: stabilizedPosition.dy,
+        pressure: rawPressure.toDouble(),
+      ),
+    );
+
+    _nativePenAcceptedSampleCount += 1;
+    return true;
+  }
+
+  Future<void> _handleNativeSPenCall(MethodCall call) async {
+    final arguments = call.arguments;
+
+    if (arguments is! Map) {
+      return;
+    }
+
+    final rawDensity = arguments['density'];
+
+    if (rawDensity is! num || rawDensity <= 0) {
+      return;
+    }
+
+    final density = rawDensity.toDouble();
+
+    if (call.method == 'down') {
+      _nativeSPenDown = true;
+      _nativePenBatchCount = 0;
+      _nativePenSampleCount = 0;
+      _nativePenAcceptedSampleCount = 0;
+      _nativePenLastLogicalPosition = null;
+      _nativePenLastSampleTime = null;
+      return;
+    }
+
+    if (call.method == 'cancel') {
+      _nativeSPenDown = false;
+      _nativePenLastSampleTime = null;
+      return;
+    }
+
+    if (call.method == 'up') {
+      _nativeSPenDown = false;
+      _nativePenLastSampleTime = null;
+      return;
+    }
+
+    if (call.method != 'samples') {
+      return;
+    }
+
+    final rawSamples = arguments['samples'];
+
+    if (rawSamples is! List || rawSamples.isEmpty) {
+      return;
+    }
+
+    _nativePenBatchCount += 1;
+    _nativePenSampleCount += rawSamples.length;
+
+    final last = rawSamples.last;
+
+    if (last is Map) {
+      final lastX = last['x'];
+      final lastY = last['y'];
+
+      if (lastX is num && lastY is num) {
+        _nativePenLastLogicalPosition = Offset(
+          lastX.toDouble() / density,
+          lastY.toDouble() / density,
+        );
+      }
+    }
+
+    if (!_nativeSPenMayFeedFreehand) {
+      return;
+    }
+
+    var appendedAny = false;
+
+    for (final rawSample in rawSamples) {
+      if (rawSample is! Map) {
+        continue;
+      }
+
+      if (_appendNativeFreehandSample(rawSample, density)) {
+        appendedAny = true;
+      }
+    }
+
+    // Samples enter the draft immediately. Rendering is frame-coalesced so
+    // several native packets can be presented together in one live repaint.
+    if (appendedAny) {
+      _scheduleLiveInkRepaint();
+    }
+  }
+
   void _handlePointerDown(PointerDownEvent event, BuildContext canvasContext) {
+    final renderObject = canvasContext.findRenderObject();
+
+    _nativeStrokeCanvasRenderBox = renderObject is RenderBox
+        ? renderObject
+        : null;
+
+    _flutterStylusStrokeActive =
+        event.kind == ui.PointerDeviceKind.stylus ||
+        event.kind == ui.PointerDeviceKind.invertedStylus;
+
+    debugPrint(
+      'INKDFRAMES_SPEN_FLUTTER_DOWN '
+      'stylus=$_flutterStylusStrokeActive '
+      'global=${event.position.dx.toStringAsFixed(1)},'
+      '${event.position.dy.toStringAsFixed(1)}',
+    );
+
     _updateCanvasRotationPointerDown(event);
     _activePointerCount += 1;
     if (_activePointerCount > 1) {
@@ -10975,6 +11239,10 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
       return;
     }
 
+    if (Platform.isAndroid && _flutterStylusStrokeActive && _nativeSPenDown) {
+      return;
+    }
+
     final stabilizedPosition = _stabilizePosition(authoredPosition);
 
     final lastPoint = _draftStroke.last;
@@ -10982,23 +11250,30 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     final dy = stabilizedPosition.dy - lastPoint.dy;
     final distanceSquared = (dx * dx) + (dy * dy);
 
-    const minimumDistanceSquared = 2.25;
+    // Keep freehand sampling dense enough that fast S Pen curves do not
+    // expose straight pressure-mesh segments between widely spaced points.
+    //
+    // 0.75 authored pixels => 0.5625 squared.
+    const minimumDistanceSquared = 0.5625;
 
     if (distanceSquared < minimumDistanceSquared) {
       return;
     }
 
-    setState(() {
-      _draftStroke.add(
-        VectorPoint(
-          dx: stabilizedPosition.dx,
-          dy: stabilizedPosition.dy,
+    _draftStroke.add(
+      VectorPoint(
+        dx: stabilizedPosition.dx,
+        dy: stabilizedPosition.dy,
 
-          // Pressure remains completely untouched by stabilisation.
-          pressure: event.pressure,
-        ),
-      );
-    });
+        // Pressure remains completely untouched by stabilisation.
+        pressure: event.pressure,
+      ),
+    );
+
+    // The painter owns this same growable draft list for the gesture.
+    // Present accumulated samples at display-frame cadence instead of
+    // rebuilding the growing path for every individual pointer event.
+    _scheduleLiveInkRepaint();
   }
 
   void _saveGroupUndoState() {
@@ -11099,6 +11374,23 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
   }
 
   void _handlePointerUp(PointerUpEvent event) {
+    final nativeLast = _nativePenLastLogicalPosition;
+
+    debugPrint(
+      'INKDFRAMES_SPEN_FLUTTER_UP '
+      'global=${event.position.dx.toStringAsFixed(1)},'
+      '${event.position.dy.toStringAsFixed(1)} '
+      'nativeBatches=$_nativePenBatchCount '
+      'nativeSamples=$_nativePenSampleCount '
+      'nativeAccepted=$_nativePenAcceptedSampleCount '
+      'nativeLast='
+      '${nativeLast?.dx.toStringAsFixed(1)},'
+      '${nativeLast?.dy.toStringAsFixed(1)}',
+    );
+
+    _flutterStylusStrokeActive = false;
+    _nativeStrokeCanvasRenderBox = null;
+
     _updateCanvasRotationPointerEnd(event);
 
     if (_canvasAssetLongPressPointer == event.pointer) {
@@ -11218,6 +11510,11 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
       return;
     }
 
+    debugPrint(
+      'INKDFRAMES_PEN_DART strokeEnd '
+      'draftPoints=${_draftStroke.length}',
+    );
+
     _saveUndoState();
 
     final layer = _activeLayer;
@@ -11252,6 +11549,10 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
   }
 
   void _handlePointerCancel(PointerCancelEvent event) {
+    _flutterStylusStrokeActive = false;
+    _nativeStrokeCanvasRenderBox = null;
+    _nativePenLastSampleTime = null;
+
     _updateCanvasRotationPointerEnd(event);
     _cancelTransformPivotLockHold();
 
@@ -15094,32 +15395,68 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
       );
     }
 
+    // Saved artwork and volatile S Pen ink deliberately use separate
+    // painters. The live repaint notifier therefore never asks Flutter to
+    // repaint all previously committed strokes merely because one new pen
+    // sample arrived.
+    //
+    // Both painters remain inside the same layer scene widget, so hierarchy
+    // transforms, group animation and brightness continue to apply equally.
+    final staticArtwork = CustomPaint(
+      painter: AnimationCanvasPainter(
+        strokes: frameStrokes,
+        currentStroke: null,
+        previousOnionSkinStrokes: const <VectorStroke>[],
+        nextOnionSkinStrokes: const <VectorStroke>[],
+        strokeColor: Colors.transparent,
+        previousOnionSkinColor: Colors.transparent,
+        nextOnionSkinColor: Colors.transparent,
+        strokeWidth: _brushSize,
+        brushType: _brushType,
+        backgroundColor: _canvasBackgroundColor,
+        paintBackground: false,
+      ),
+      child: const SizedBox.expand(),
+    );
+
+    final liveInk = isActiveLayer
+        ? CustomPaint(
+            painter: AnimationCanvasPainter(
+              repaint: _liveInkRepaint,
+              strokes: const <VectorStroke>[],
+              currentStroke: _draftStroke.isNotEmpty ? _draftStroke : null,
+              symmetryCurrentStrokes:
+                  _draftStroke.isNotEmpty &&
+                      _drawingSymmetryMode != _DrawingSymmetryMode.off
+                  ? _symmetryPointSets(_draftStroke).skip(1).toList()
+                  : const <List<VectorPoint>>[],
+              previousOnionSkinStrokes: const <VectorStroke>[],
+              nextOnionSkinStrokes: const <VectorStroke>[],
+              strokeColor: _brushColor.withValues(
+                alpha: (_brushOpacity * layer.opacity).clamp(0.0, 1.0),
+              ),
+              previousOnionSkinColor: Colors.transparent,
+              nextOnionSkinColor: Colors.transparent,
+              strokeWidth: _brushSize,
+              brushType: _brushType,
+              backgroundColor: _canvasBackgroundColor,
+              paintBackground: false,
+
+              // Alpha Lock still needs the saved artwork as its clipping
+              // footprint. Ordinary drawing leaves this empty, keeping the
+              // live repaint path extremely small.
+              alphaLockMaskStrokes: layer.alphaLocked
+                  ? savedFrameStrokes
+                  : const <VectorStroke>[],
+            ),
+            child: const SizedBox.expand(),
+          )
+        : const SizedBox.expand();
+
     final scene = IgnorePointer(
-      child: CustomPaint(
-        painter: AnimationCanvasPainter(
-          strokes: frameStrokes,
-          currentStroke: isActiveLayer && _draftStroke.isNotEmpty
-              ? _draftStroke
-              : null,
-          symmetryCurrentStrokes: isActiveLayer && _draftStroke.isNotEmpty
-              ? _symmetryPointSets(_draftStroke).skip(1).toList()
-              : const <List<VectorPoint>>[],
-          previousOnionSkinStrokes: const <VectorStroke>[],
-          nextOnionSkinStrokes: const <VectorStroke>[],
-          strokeColor: _brushColor.withValues(
-            alpha: (_brushOpacity * layer.opacity).clamp(0.0, 1.0),
-          ),
-          strokeWidth: _brushSize,
-          brushType: _brushType,
-          backgroundColor: _canvasBackgroundColor,
-          paintBackground: false,
-          previousOnionSkinColor: Colors.transparent,
-          nextOnionSkinColor: Colors.transparent,
-          alphaLockMaskStrokes: isActiveLayer && layer.alphaLocked
-              ? savedFrameStrokes
-              : const <VectorStroke>[],
-        ),
-        child: const SizedBox.expand(),
+      child: Stack(
+        fit: StackFit.expand,
+        children: [staticArtwork, if (isActiveLayer) liveInk],
       ),
     );
 
@@ -15260,6 +15597,35 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
   }) {
     final widgets = <Widget>[];
 
+    // Render-pass indexes.
+    //
+    // These collections remain authoritative and freely mutable elsewhere in
+    // WorkspaceScreen. Build lightweight lookup tables for this hierarchy
+    // pass only so live S Pen rebuilds do not repeatedly linearly scan the
+    // same layer/group/keyframe collections.
+    final layerIndexById = <String, int>{
+      for (var index = 0; index < _layers.length; index++)
+        _layers[index].id: index,
+    };
+
+    final groupIndexById = <String, int>{
+      for (var index = 0; index < _layerGroups.length; index++)
+        _layerGroups[index].id: index,
+    };
+
+    final mainAnimatedGroupIds = <String>{
+      for (final keyframe in _transformKeyframes)
+        if (keyframe.enabled) keyframe.targetGroupId,
+    };
+
+    // Every semantic group in this render pass observes the same main
+    // timeline position. Resolve it once rather than resumming frame
+    // durations for every group in the hierarchy.
+    final requestedFrameIndex = frameIndex ?? _selectedFrameIndex;
+    final timelineUnit =
+        _timelineUnitForFrameIndex(requestedFrameIndex) +
+        intraFrameUnit.clamp(0, 1000000);
+
     final visitedLayerIds = <String>{};
     final visitedReferenceIds = <String>{};
     final visitedGroupIds = <String>{};
@@ -15282,11 +15648,9 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
           return;
         }
 
-        final groupIndex = _layerGroups.indexWhere(
-          (group) => group.id == groupId,
-        );
+        final groupIndex = groupIndexById[groupId];
 
-        if (groupIndex == -1) {
+        if (groupIndex == null) {
           return;
         }
 
@@ -15319,9 +15683,9 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
           return;
         }
 
-        final layerIndex = _layers.indexWhere((layer) => layer.id == layerId);
+        final layerIndex = layerIndexById[layerId];
 
-        if (layerIndex == -1) {
+        if (layerIndex == null) {
           return;
         }
 
@@ -15418,11 +15782,9 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
           return;
         }
 
-        final groupIndex = _layerGroups.indexWhere(
-          (group) => group.id == groupId,
-        );
+        final groupIndex = groupIndexById[groupId];
 
-        if (groupIndex == -1) {
+        if (groupIndex == null) {
           return;
         }
 
@@ -15442,23 +15804,6 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
 
         final outerWidgets = widgets;
 
-        // Independent artwork timing is resolved separately from semantic
-        // transform poses.
-        //
-        // For now this renderer resolves the animation clock at the beginning
-        // of the requested main timeline frame. Playback will later add an
-        // intra-frame unit so held frames can advance nested animation without
-        // advancing the main timeline frame itself.
-        final requestedFrameIndex = frameIndex ?? _selectedFrameIndex;
-
-        // Historical renders normally remain at the beginning of their
-        // requested frame. The live playback scene may additionally supply an
-        // intra-frame unit so independent nested animation can continue while
-        // the main timeline frame is being held.
-        final timelineUnit =
-            _timelineUnitForFrameIndex(requestedFrameIndex) +
-            intraFrameUnit.clamp(0, 1000000);
-
         // Main-timeline keyed groups and autonomous Group Animation tracks
         // are deliberately separate animation lanes.
         //
@@ -15466,7 +15811,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
         // the main timeline remains authoritative for that group throughout
         // the shot. This prevents artwork ownership from switching between
         // keyed poses and an independent looping track during playback.
-        final participatesInMainAnimation = _groupParticipatesInMainAnimation(
+        final participatesInMainAnimation = mainAnimatedGroupIds.contains(
           group.id,
         );
 

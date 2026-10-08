@@ -8,6 +8,7 @@ import '../models/vector_stroke.dart';
 
 class AnimationCanvasPainter extends CustomPainter {
   AnimationCanvasPainter({
+    super.repaint,
     required this.strokes,
     required this.currentStroke,
     this.symmetryCurrentStrokes = const <List<VectorPoint>>[],
@@ -219,6 +220,53 @@ class AnimationCanvasPainter extends CustomPainter {
     return maximumWidth * factor;
   }
 
+  void _appendSmoothEdge(Path path, List<Offset> points) {
+    if (points.isEmpty) {
+      return;
+    }
+
+    path.moveTo(points.first.dx, points.first.dy);
+
+    if (points.length == 1) {
+      return;
+    }
+
+    if (points.length == 2) {
+      path.lineTo(points.last.dx, points.last.dy);
+      return;
+    }
+
+    // Catmull-Rom style interpolation converted to cubic Bézier segments.
+    //
+    // This is the same curve principle used by the ordinary freehand brush,
+    // but applied to each side of the pressure-sensitive ribbon.
+    for (var i = 0; i < points.length - 1; i++) {
+      final p0 = i == 0 ? points[i] : points[i - 1];
+      final p1 = points[i];
+      final p2 = points[i + 1];
+      final p3 = i + 2 < points.length ? points[i + 2] : p2;
+
+      final control1 = Offset(
+        p1.dx + (p2.dx - p0.dx) / 6,
+        p1.dy + (p2.dy - p0.dy) / 6,
+      );
+
+      final control2 = Offset(
+        p2.dx - (p3.dx - p1.dx) / 6,
+        p2.dy - (p3.dy - p1.dy) / 6,
+      );
+
+      path.cubicTo(
+        control1.dx,
+        control1.dy,
+        control2.dx,
+        control2.dy,
+        p2.dx,
+        p2.dy,
+      );
+    }
+  }
+
   void _paintPressureStroke(
     Canvas canvas,
     List<VectorPoint> points,
@@ -237,18 +285,19 @@ class AnimationCanvasPainter extends CustomPainter {
       final radius = _pressureWidth(point, maximumWidth) / 2;
 
       canvas.drawCircle(Offset(point.dx, point.dy), radius, paint);
-
       return;
     }
 
+    // Resolve the two pressure-sensitive edges around the smoothed centre
+    // line. Pressure and tangent behaviour remain exactly the same as before.
     final left = <Offset>[];
     final right = <Offset>[];
 
     for (var i = 0; i < points.length; i++) {
       final point = points[i];
 
-      final previous = i == 0 ? points[i] : points[i - 1];
-      final next = i == points.length - 1 ? points[i] : points[i + 1];
+      final previous = i == 0 ? point : points[i - 1];
+      final next = i == points.length - 1 ? point : points[i + 1];
 
       var dx = next.dx - previous.dx;
       var dy = next.dy - previous.dy;
@@ -265,7 +314,6 @@ class AnimationCanvasPainter extends CustomPainter {
 
       final normalX = -dy;
       final normalY = dx;
-
       final halfWidth = _pressureWidth(point, maximumWidth) / 2;
 
       left.add(
@@ -283,21 +331,55 @@ class AnimationCanvasPainter extends CustomPainter {
       );
     }
 
-    final path = Path()..moveTo(left.first.dx, left.first.dy);
+    // Curve both ribbon edges rather than joining pressure samples with
+    // straight polygon segments. This keeps fast S Pen gestures visually
+    // smooth even when consecutive samples are farther apart.
+    final ribbon = Path();
 
-    for (var i = 1; i < left.length; i++) {
-      path.lineTo(left[i].dx, left[i].dy);
+    _appendSmoothEdge(ribbon, left);
+
+    final reversedRight = right.reversed.toList(growable: false);
+
+    if (reversedRight.isNotEmpty) {
+      ribbon.lineTo(reversedRight.first.dx, reversedRight.first.dy);
+
+      if (reversedRight.length == 2) {
+        ribbon.lineTo(reversedRight.last.dx, reversedRight.last.dy);
+      } else if (reversedRight.length > 2) {
+        for (var i = 0; i < reversedRight.length - 1; i++) {
+          final p0 = i == 0 ? reversedRight[i] : reversedRight[i - 1];
+
+          final p1 = reversedRight[i];
+          final p2 = reversedRight[i + 1];
+
+          final p3 = i + 2 < reversedRight.length ? reversedRight[i + 2] : p2;
+
+          final control1 = Offset(
+            p1.dx + (p2.dx - p0.dx) / 6,
+            p1.dy + (p2.dy - p0.dy) / 6,
+          );
+
+          final control2 = Offset(
+            p2.dx - (p3.dx - p1.dx) / 6,
+            p2.dy - (p3.dy - p1.dy) / 6,
+          );
+
+          ribbon.cubicTo(
+            control1.dx,
+            control1.dy,
+            control2.dx,
+            control2.dy,
+            p2.dx,
+            p2.dy,
+          );
+        }
+      }
     }
 
-    for (var i = right.length - 1; i >= 0; i--) {
-      path.lineTo(right[i].dx, right[i].dy);
-    }
+    ribbon.close();
+    canvas.drawPath(ribbon, paint);
 
-    path.close();
-
-    canvas.drawPath(path, paint);
-
-    // Rounded pressure-sensitive caps.
+    // Rounded pressure-sensitive caps remain unchanged.
     final first = points.first;
     final last = points.last;
 
