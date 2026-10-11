@@ -673,6 +673,26 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
   // Layers viewport, continuously move the scroll position so long scene
   // hierarchies can be reordered in one uninterrupted drag.
   final ScrollController _layersScrollController = ScrollController();
+  double _layersSavedScrollOffset = 0.0;
+  double? _layersPanelPreferredHeight;
+  double? _layersPanelPreferredWidth;
+
+  void _restoreLayersScroll() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted ||
+          !_layersPanelExpanded ||
+          !_layersScrollController.hasClients)
+        return;
+      final position = _layersScrollController.position;
+      _layersScrollController.jumpTo(
+        _layersSavedScrollOffset.clamp(
+          position.minScrollExtent,
+          position.maxScrollExtent,
+        ),
+      );
+    });
+  }
+
   final GlobalKey _layersScrollViewportKey = GlobalKey();
   Timer? _hierarchyAutoScrollTimer;
   double _hierarchyAutoScrollVelocity = 0.0;
@@ -714,6 +734,12 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
 
   @override
   void initState() {
+    _layersScrollController.addListener(() {
+      if (_layersScrollController.hasClients) {
+        _layersSavedScrollOffset = _layersScrollController.offset;
+      }
+    });
+
     super.initState();
 
     _sPenChannel.setMethodCallHandler(_handleNativeSPenCall);
@@ -19690,7 +19716,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
 
                     Positioned(
                       right: 16,
-                      bottom: 96,
+                      bottom: MediaQuery.of(context).viewPadding.bottom + 4,
                       child: Material(
                         elevation: 8,
                         color: const Color(0xE61A1720),
@@ -19705,11 +19731,19 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                               if (_layersPanelExpanded) ...[
                                 if (!_isVideoScrubbing)
                                   SizedBox(
-                                    width: constraints.maxWidth >= 900
-                                        ? 430
-                                        : constraints.maxWidth >= 700
-                                        ? 380
-                                        : constraints.maxWidth - 32,
+                                    width:
+                                        (_layersPanelPreferredWidth ??
+                                                (constraints.maxWidth >= 900
+                                                    ? 430.0
+                                                    : constraints.maxWidth >=
+                                                          700
+                                                    ? 380.0
+                                                    : constraints.maxWidth -
+                                                          32.0))
+                                            .clamp(
+                                              180.0,
+                                              constraints.maxWidth - 64.0,
+                                            ),
                                     child: Padding(
                                       padding: const EdgeInsets.fromLTRB(
                                         8,
@@ -19840,328 +19874,388 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                                 if (!_isVideoScrubbing)
                                   const Divider(height: 1),
 
-                                SizedBox(
-                                  width: constraints.maxWidth >= 900
-                                      ? 430
-                                      : constraints.maxWidth >= 700
-                                      ? 380
-                                      : constraints.maxWidth - 32,
-                                  child: ConstrainedBox(
-                                    constraints: BoxConstraints(
-                                      // Keep the expanded Layers panel below
-                                      // the top workspace controls so the
-                                      // Add Reference / Group / Layer buttons
-                                      // always remain reachable.
-                                      maxHeight:
-                                          constraints.maxWidth >
-                                              constraints.maxHeight
-                                          ? math.max(
-                                              80.0,
+                                Stack(
+                                  clipBehavior: Clip.none,
+                                  children: [
+                                    SizedBox(
+                                      width:
+                                          (_layersPanelPreferredWidth ??
+                                                  (constraints.maxWidth >= 900
+                                                      ? 430.0
+                                                      : constraints.maxWidth >=
+                                                            700
+                                                      ? 380.0
+                                                      : constraints.maxWidth -
+                                                            32.0))
+                                              .clamp(
+                                                180.0,
+                                                constraints.maxWidth - 64.0,
+                                              ),
+                                      child: ConstrainedBox(
+                                        constraints: BoxConstraints(
+                                          // Keep the expanded Layers panel below
+                                          // the top workspace controls so the
+                                          // Add Reference / Group / Layer buttons
+                                          // always remain reachable.
+                                          maxHeight: math.max(
+                                            80.0,
+                                            math.min(
+                                              _layersPanelPreferredHeight ??
+                                                  (constraints.maxWidth >
+                                                          constraints.maxHeight
+                                                      ? constraints.maxHeight *
+                                                            0.68
+                                                      : constraints.maxHeight *
+                                                            0.60),
                                               constraints.maxHeight -
                                                   MediaQuery.of(
                                                     context,
                                                   ).viewPadding.top -
                                                   kToolbarHeight -
-                                                  196.0,
-                                            )
-                                          : math.max(
-                                              80.0,
-                                              math.min(
-                                                constraints.maxHeight * 0.68,
-                                                constraints.maxHeight -
-                                                    MediaQuery.of(
-                                                      context,
-                                                    ).viewPadding.top -
-                                                    kToolbarHeight -
-                                                    128.0,
-                                              ),
+                                                  132.0,
                                             ),
-                                    ),
-                                    child: SingleChildScrollView(
-                                      key: _layersScrollViewportKey,
-                                      controller: _layersScrollController,
-                                      child: Column(
-                                        mainAxisSize: MainAxisSize.min,
-                                        children: [
-                                          if (!_isVideoScrubbing)
-                                            ..._buildLayerPanelEntries(),
+                                          ),
+                                        ),
+                                        child: SingleChildScrollView(
+                                          key: _layersScrollViewportKey,
 
-                                          if (_referenceMediaType == 'video' &&
-                                              _videoReady &&
-                                              _videoController != null) ...[
-                                            if (!_isVideoScrubbing)
-                                              const Padding(
-                                                padding: EdgeInsets.symmetric(
-                                                  vertical: 5,
-                                                ),
-                                                child: Divider(height: 1),
-                                              ),
-                                            Container(
-                                              margin:
-                                                  const EdgeInsets.symmetric(
-                                                    horizontal: 6,
+                                          padding: const EdgeInsets.only(
+                                            left: 36,
+                                          ),
+                                          controller: _layersScrollController,
+                                          child: Column(
+                                            mainAxisSize: MainAxisSize.min,
+                                            children: [
+                                              if (!_isVideoScrubbing)
+                                                ..._buildLayerPanelEntries(),
+
+                                              if (_referenceMediaType ==
+                                                      'video' &&
+                                                  _videoReady &&
+                                                  _videoController != null) ...[
+                                                if (!_isVideoScrubbing)
+                                                  const Padding(
+                                                    padding:
+                                                        EdgeInsets.symmetric(
+                                                          vertical: 5,
+                                                        ),
+                                                    child: Divider(height: 1),
                                                   ),
-                                              padding:
-                                                  const EdgeInsets.fromLTRB(
-                                                    4,
-                                                    2,
-                                                    4,
-                                                    4,
-                                                  ),
-                                              decoration: BoxDecoration(
-                                                borderRadius:
-                                                    BorderRadius.circular(10),
-                                                border: Border.all(
-                                                  color: Colors.white12,
-                                                ),
-                                              ),
-                                              child: Column(
-                                                mainAxisSize: MainAxisSize.min,
-                                                children: [
-                                                  if (_referenceMediaType ==
-                                                          'video' &&
-                                                      _videoReady &&
-                                                      _videoController != null)
-                                                    ValueListenableBuilder<
-                                                      VideoPlayerValue
-                                                    >(
-                                                      valueListenable:
-                                                          _videoController!,
-                                                      builder:
-                                                          (
-                                                            context,
-                                                            videoValue,
-                                                            child,
-                                                          ) {
-                                                            final durationMs =
-                                                                videoValue
-                                                                    .duration
-                                                                    .inMilliseconds;
-
-                                                            final maxMs = math
-                                                                .max(
-                                                                  1,
-                                                                  durationMs,
-                                                                )
-                                                                .toDouble();
-
-                                                            final livePositionMs =
-                                                                _isVideoScrubbing
-                                                                ? _videoScrubPositionMs
-                                                                : videoValue
-                                                                      .position
-                                                                      .inMilliseconds
-                                                                      .toDouble();
-
-                                                            final sliderValue =
-                                                                livePositionMs
-                                                                    .clamp(
-                                                                      0.0,
-                                                                      maxMs,
-                                                                    );
-
-                                                            return Padding(
-                                                              padding:
-                                                                  const EdgeInsets.fromLTRB(
-                                                                    12,
-                                                                    0,
-                                                                    10,
-                                                                    8,
-                                                                  ),
-                                                              child: Column(
-                                                                mainAxisSize:
-                                                                    MainAxisSize
-                                                                        .min,
-                                                                children: [
-                                                                  Row(
-                                                                    children: [
-                                                                      const SizedBox(
-                                                                        width:
-                                                                            50,
-                                                                        child: Text(
-                                                                          'Video',
-                                                                          style: TextStyle(
-                                                                            fontSize:
-                                                                                11,
-                                                                          ),
-                                                                        ),
-                                                                      ),
-                                                                      IconButton(
-                                                                        tooltip:
-                                                                            'Previous Video Frame',
-                                                                        visualDensity:
-                                                                            VisualDensity.compact,
-                                                                        onPressed: () {
-                                                                          unawaited(
-                                                                            _stepReferenceVideo(
-                                                                              -1,
-                                                                            ),
-                                                                          );
-                                                                        },
-                                                                        icon: const Icon(
-                                                                          Icons
-                                                                              .chevron_left,
-                                                                          size:
-                                                                              18,
-                                                                        ),
-                                                                      ),
-                                                                      Expanded(
-                                                                        child: Slider(
-                                                                          value:
-                                                                              sliderValue,
-                                                                          min:
-                                                                              0,
-                                                                          max:
-                                                                              maxMs,
-                                                                          onChangeStart:
-                                                                              (
-                                                                                value,
-                                                                              ) async {
-                                                                                final controller = _videoController;
-
-                                                                                if (controller !=
-                                                                                        null &&
-                                                                                    controller.value.isPlaying) {
-                                                                                  await controller.pause();
-                                                                                }
-
-                                                                                if (!mounted) {
-                                                                                  return;
-                                                                                }
-
-                                                                                setState(() {
-                                                                                  _isVideoScrubbing = true;
-                                                                                  _videoScrubPositionMs = value;
-                                                                                  _videoScrubDragStartMs = value;
-                                                                                  _videoScrubDragStartSliderMs = value;
-                                                                                });
-                                                                              },
-                                                                          onChanged:
-                                                                              (
-                                                                                value,
-                                                                              ) {
-                                                                                final dampedValue =
-                                                                                    (_videoScrubDragStartMs +
-                                                                                            ((value -
-                                                                                                    _videoScrubDragStartSliderMs) *
-                                                                                                0.75))
-                                                                                        .clamp(
-                                                                                          0.0,
-                                                                                          maxMs,
-                                                                                        );
-
-                                                                                setState(() {
-                                                                                  _videoScrubPositionMs = dampedValue;
-                                                                                });
-
-                                                                                unawaited(
-                                                                                  _seekReferenceVideoToMs(
-                                                                                    dampedValue,
-                                                                                  ),
-                                                                                );
-                                                                              },
-                                                                          onChangeEnd:
-                                                                              (
-                                                                                value,
-                                                                              ) {
-                                                                                setState(() {
-                                                                                  _isVideoScrubbing = false;
-                                                                                  _videoScrubPositionMs = value;
-                                                                                });
-
-                                                                                unawaited(
-                                                                                  _seekReferenceVideoToMs(
-                                                                                    value,
-                                                                                  ),
-                                                                                );
-                                                                              },
-                                                                        ),
-                                                                      ),
-                                                                      IconButton(
-                                                                        tooltip:
-                                                                            'Capture Pose & Draw',
-                                                                        visualDensity:
-                                                                            VisualDensity.compact,
-                                                                        onPressed:
-                                                                            _isPlaying
-                                                                            ? null
-                                                                            : _captureReferencePose,
-                                                                        icon: const Icon(
-                                                                          Icons
-                                                                              .add_a_photo_outlined,
-                                                                          size:
-                                                                              18,
-                                                                        ),
-                                                                      ),
-                                                                      IconButton(
-                                                                        tooltip:
-                                                                            'Next Video Frame',
-                                                                        visualDensity:
-                                                                            VisualDensity.compact,
-                                                                        onPressed: () {
-                                                                          unawaited(
-                                                                            _stepReferenceVideo(
-                                                                              1,
-                                                                            ),
-                                                                          );
-                                                                        },
-                                                                        icon: const Icon(
-                                                                          Icons
-                                                                              .chevron_right,
-                                                                          size:
-                                                                              18,
-                                                                        ),
-                                                                      ),
-                                                                    ],
-                                                                  ),
-                                                                  Row(
-                                                                    children: [
-                                                                      const SizedBox(
-                                                                        width:
-                                                                            50,
-                                                                      ),
-                                                                      Text(
-                                                                        _formatVideoTime(
-                                                                          Duration(
-                                                                            milliseconds:
-                                                                                sliderValue.round(),
-                                                                          ),
-                                                                        ),
-                                                                        style: const TextStyle(
-                                                                          fontSize:
-                                                                              9,
-                                                                          color:
-                                                                              Colors.white60,
-                                                                        ),
-                                                                      ),
-                                                                      const Spacer(),
-                                                                      Text(
-                                                                        _formatVideoTime(
-                                                                          videoValue
-                                                                              .duration,
-                                                                        ),
-                                                                        style: const TextStyle(
-                                                                          fontSize:
-                                                                              9,
-                                                                          color:
-                                                                              Colors.white60,
-                                                                        ),
-                                                                      ),
-                                                                    ],
-                                                                  ),
-                                                                ],
-                                                              ),
-                                                            );
-                                                          },
+                                                Container(
+                                                  margin:
+                                                      const EdgeInsets.symmetric(
+                                                        horizontal: 6,
+                                                      ),
+                                                  padding:
+                                                      const EdgeInsets.fromLTRB(
+                                                        4,
+                                                        2,
+                                                        4,
+                                                        4,
+                                                      ),
+                                                  decoration: BoxDecoration(
+                                                    borderRadius:
+                                                        BorderRadius.circular(
+                                                          10,
+                                                        ),
+                                                    border: Border.all(
+                                                      color: Colors.white12,
                                                     ),
-                                                ],
+                                                  ),
+                                                  child: Column(
+                                                    mainAxisSize:
+                                                        MainAxisSize.min,
+                                                    children: [
+                                                      if (_referenceMediaType ==
+                                                              'video' &&
+                                                          _videoReady &&
+                                                          _videoController !=
+                                                              null)
+                                                        ValueListenableBuilder<
+                                                          VideoPlayerValue
+                                                        >(
+                                                          valueListenable:
+                                                              _videoController!,
+                                                          builder:
+                                                              (
+                                                                context,
+                                                                videoValue,
+                                                                child,
+                                                              ) {
+                                                                final durationMs =
+                                                                    videoValue
+                                                                        .duration
+                                                                        .inMilliseconds;
+
+                                                                final maxMs = math
+                                                                    .max(
+                                                                      1,
+                                                                      durationMs,
+                                                                    )
+                                                                    .toDouble();
+
+                                                                final livePositionMs =
+                                                                    _isVideoScrubbing
+                                                                    ? _videoScrubPositionMs
+                                                                    : videoValue
+                                                                          .position
+                                                                          .inMilliseconds
+                                                                          .toDouble();
+
+                                                                final sliderValue =
+                                                                    livePositionMs
+                                                                        .clamp(
+                                                                          0.0,
+                                                                          maxMs,
+                                                                        );
+
+                                                                return Padding(
+                                                                  padding:
+                                                                      const EdgeInsets.fromLTRB(
+                                                                        12,
+                                                                        0,
+                                                                        10,
+                                                                        8,
+                                                                      ),
+                                                                  child: Column(
+                                                                    mainAxisSize:
+                                                                        MainAxisSize
+                                                                            .min,
+                                                                    children: [
+                                                                      Row(
+                                                                        children: [
+                                                                          const SizedBox(
+                                                                            width:
+                                                                                50,
+                                                                            child: Text(
+                                                                              'Video',
+                                                                              style: TextStyle(
+                                                                                fontSize: 11,
+                                                                              ),
+                                                                            ),
+                                                                          ),
+                                                                          IconButton(
+                                                                            tooltip:
+                                                                                'Previous Video Frame',
+                                                                            visualDensity:
+                                                                                VisualDensity.compact,
+                                                                            onPressed: () {
+                                                                              unawaited(
+                                                                                _stepReferenceVideo(
+                                                                                  -1,
+                                                                                ),
+                                                                              );
+                                                                            },
+                                                                            icon: const Icon(
+                                                                              Icons.chevron_left,
+                                                                              size: 18,
+                                                                            ),
+                                                                          ),
+                                                                          Expanded(
+                                                                            child: Slider(
+                                                                              value: sliderValue,
+                                                                              min: 0,
+                                                                              max: maxMs,
+                                                                              onChangeStart:
+                                                                                  (
+                                                                                    value,
+                                                                                  ) async {
+                                                                                    final controller = _videoController;
+
+                                                                                    if (controller !=
+                                                                                            null &&
+                                                                                        controller.value.isPlaying) {
+                                                                                      await controller.pause();
+                                                                                    }
+
+                                                                                    if (!mounted) {
+                                                                                      return;
+                                                                                    }
+
+                                                                                    setState(() {
+                                                                                      _isVideoScrubbing = true;
+                                                                                      _videoScrubPositionMs = value;
+                                                                                      _videoScrubDragStartMs = value;
+                                                                                      _videoScrubDragStartSliderMs = value;
+                                                                                    });
+                                                                                  },
+                                                                              onChanged:
+                                                                                  (
+                                                                                    value,
+                                                                                  ) {
+                                                                                    final dampedValue =
+                                                                                        (_videoScrubDragStartMs +
+                                                                                                ((value -
+                                                                                                        _videoScrubDragStartSliderMs) *
+                                                                                                    0.75))
+                                                                                            .clamp(
+                                                                                              0.0,
+                                                                                              maxMs,
+                                                                                            );
+
+                                                                                    setState(() {
+                                                                                      _videoScrubPositionMs = dampedValue;
+                                                                                    });
+
+                                                                                    unawaited(
+                                                                                      _seekReferenceVideoToMs(
+                                                                                        dampedValue,
+                                                                                      ),
+                                                                                    );
+                                                                                  },
+                                                                              onChangeEnd:
+                                                                                  (
+                                                                                    value,
+                                                                                  ) {
+                                                                                    setState(() {
+                                                                                      _isVideoScrubbing = false;
+                                                                                      _videoScrubPositionMs = value;
+                                                                                    });
+
+                                                                                    unawaited(
+                                                                                      _seekReferenceVideoToMs(
+                                                                                        value,
+                                                                                      ),
+                                                                                    );
+                                                                                  },
+                                                                            ),
+                                                                          ),
+                                                                          IconButton(
+                                                                            tooltip:
+                                                                                'Capture Pose & Draw',
+                                                                            visualDensity:
+                                                                                VisualDensity.compact,
+                                                                            onPressed:
+                                                                                _isPlaying
+                                                                                ? null
+                                                                                : _captureReferencePose,
+                                                                            icon: const Icon(
+                                                                              Icons.add_a_photo_outlined,
+                                                                              size: 18,
+                                                                            ),
+                                                                          ),
+                                                                          IconButton(
+                                                                            tooltip:
+                                                                                'Next Video Frame',
+                                                                            visualDensity:
+                                                                                VisualDensity.compact,
+                                                                            onPressed: () {
+                                                                              unawaited(
+                                                                                _stepReferenceVideo(
+                                                                                  1,
+                                                                                ),
+                                                                              );
+                                                                            },
+                                                                            icon: const Icon(
+                                                                              Icons.chevron_right,
+                                                                              size: 18,
+                                                                            ),
+                                                                          ),
+                                                                        ],
+                                                                      ),
+                                                                      Row(
+                                                                        children: [
+                                                                          const SizedBox(
+                                                                            width:
+                                                                                50,
+                                                                          ),
+                                                                          Text(
+                                                                            _formatVideoTime(
+                                                                              Duration(
+                                                                                milliseconds: sliderValue.round(),
+                                                                              ),
+                                                                            ),
+                                                                            style: const TextStyle(
+                                                                              fontSize: 9,
+                                                                              color: Colors.white60,
+                                                                            ),
+                                                                          ),
+                                                                          const Spacer(),
+                                                                          Text(
+                                                                            _formatVideoTime(
+                                                                              videoValue.duration,
+                                                                            ),
+                                                                            style: const TextStyle(
+                                                                              fontSize: 9,
+                                                                              color: Colors.white60,
+                                                                            ),
+                                                                          ),
+                                                                        ],
+                                                                      ),
+                                                                    ],
+                                                                  ),
+                                                                );
+                                                              },
+                                                        ),
+                                                    ],
+                                                  ),
+                                                ),
+                                              ],
+                                            ],
+                                          ),
+                                        ),
+                                      ),
+                                    ),
+
+                                    Positioned(
+                                      left: 0,
+                                      top: 8,
+                                      child: Column(
+                                        children: [
+                                          GestureDetector(
+                                            behavior: HitTestBehavior.opaque,
+                                            onHorizontalDragUpdate: (details) {
+                                              setState(() {
+                                                final current =
+                                                    _layersPanelPreferredWidth ??
+                                                    430.0;
+                                                _layersPanelPreferredWidth =
+                                                    (current - details.delta.dx)
+                                                        .clamp(
+                                                          180.0,
+                                                          constraints.maxWidth -
+                                                              64.0,
+                                                        );
+                                              });
+                                            },
+                                            child: const SizedBox(
+                                              width: 32,
+                                              height: 52,
+                                              child: Icon(
+                                                Icons.swap_horiz,
+                                                size: 22,
                                               ),
                                             ),
-                                          ],
+                                          ),
+                                          GestureDetector(
+                                            behavior: HitTestBehavior.opaque,
+                                            onVerticalDragUpdate: (details) {
+                                              setState(() {
+                                                final current =
+                                                    _layersPanelPreferredHeight ??
+                                                    constraints.maxHeight *
+                                                        0.68;
+                                                _layersPanelPreferredHeight =
+                                                    (current - details.delta.dy)
+                                                        .clamp(
+                                                          80.0,
+                                                          constraints.maxHeight,
+                                                        );
+                                              });
+                                            },
+                                            child: const SizedBox(
+                                              width: 32,
+                                              height: 52,
+                                              child: Icon(
+                                                Icons.height,
+                                                size: 22,
+                                              ),
+                                            ),
+                                          ),
                                         ],
                                       ),
                                     ),
-                                  ),
+                                  ],
                                 ),
                               ],
 
@@ -20179,6 +20273,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
 
                                     _layersPanelExpanded = next;
                                   });
+                                  _restoreLayersScroll();
                                 },
                                 icon: Icon(
                                   Icons.layers_outlined,
@@ -21072,6 +21167,14 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                                       );
                                       _timelineExpanded = true;
                                     });
+                                    WidgetsBinding.instance
+                                        .addPostFrameCallback((_) {
+                                          if (mounted && _timelineExpanded) {
+                                            _scrollTimelineToFrame(
+                                              _selectedFrameIndex,
+                                            );
+                                          }
+                                        });
                                   },
                                   icon: const Icon(
                                     Icons.view_timeline_outlined,
