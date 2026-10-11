@@ -12874,6 +12874,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
   Future<void> _showColourStudio() async {
     var selectedTab = 0;
     var selectedPalette = -1;
+    var addingColour = false;
 
     await showDialog<void>(
       context: context,
@@ -12888,78 +12889,181 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
               refresh(() {});
             }
 
-            Future<void> addColor(int paletteIndex) async {
+            void addRecentColor(int paletteIndex, Color color) {
               if (paletteIndex < 0 ||
                   paletteIndex >= _projectColorPalettes.length) {
                 return;
               }
 
-              final chosen = await showDialog<Color>(
+              setState(() {
+                final colors =
+                    _projectColorPalettes[paletteIndex]['colors'] as List<int>;
+                final value = color.toARGB32();
+
+                if (!colors.contains(value)) {
+                  colors.add(value);
+                }
+
+                _rememberRecentColor(color);
+              });
+
+              refresh(() {});
+            }
+
+            Future<void> pickPaletteColor(int paletteIndex) async {
+              final chosen = await _showColourPicker(
+                _brushColor,
+                title: 'Palette Colour',
+              );
+
+              if (chosen == null || !mounted) return;
+
+              addRecentColor(paletteIndex, chosen);
+            }
+
+            void samplePaletteColor(int paletteIndex) {
+              if (paletteIndex < 0 ||
+                  paletteIndex >= _projectColorPalettes.length) {
+                return;
+              }
+
+              setState(() {
+                _paletteEyedropperTarget = paletteIndex;
+                _brushEyedropperArmed = true;
+              });
+
+              Navigator.pop(dialogContext);
+            }
+
+            Future<void> renamePalette(int index) async {
+              if (index < 0 || index >= _projectColorPalettes.length) {
+                return;
+              }
+
+              var name = _projectColorPalettes[index]['name'] as String;
+
+              final result = await showDialog<String>(
                 context: dialogContext,
-                builder: (choiceContext) => AlertDialog(
-                  title: const Text('Add Colour'),
-                  content: const Text(
-                    'Choose an existing recent colour or create a new one.',
+                builder: (nameContext) => AlertDialog(
+                  title: const Text('Rename Palette'),
+                  content: TextFormField(
+                    initialValue: name,
+                    autofocus: true,
+                    onChanged: (value) => name = value,
+                    decoration: const InputDecoration(
+                      labelText: 'Palette name',
+                    ),
                   ),
                   actions: [
                     TextButton(
-                      onPressed: () =>
-                          Navigator.pop(choiceContext, _brushColor),
-                      child: const Text('Current'),
-                    ),
-                    TextButton(
-                      onPressed: () {
-                        if (paletteIndex < 0 ||
-                            paletteIndex >= _projectColorPalettes.length) {
-                          return;
-                        }
-                        setState(() {
-                          _paletteEyedropperTarget = paletteIndex;
-                          _brushEyedropperArmed = true;
-                        });
-                        Navigator.pop(choiceContext);
-                        Navigator.pop(dialogContext);
-                      },
-                      child: const Text('Canvas'),
-                    ),
-
-                    TextButton(
-                      onPressed: () => Navigator.pop(choiceContext),
+                      onPressed: () => Navigator.pop(nameContext),
                       child: const Text('Cancel'),
                     ),
                     FilledButton(
-                      onPressed: () async {
-                        final color = await _showColourPicker(
-                          _brushColor,
-                          title: 'Palette Colour',
-                        );
-                        if (!choiceContext.mounted) return;
-                        Navigator.pop(choiceContext, color);
-                      },
-                      child: const Text('Colour Picker'),
+                      onPressed: () => Navigator.pop(nameContext, name.trim()),
+                      child: const Text('Save'),
                     ),
                   ],
                 ),
               );
 
-              if (chosen == null || !mounted) return;
+              if (result == null || !mounted) return;
+              if (index >= _projectColorPalettes.length) return;
+
+              if (result.isEmpty) return;
 
               setState(() {
-                final colors =
-                    _projectColorPalettes[paletteIndex]['colors'] as List<int>;
-                final value = chosen.toARGB32();
-                if (!colors.contains(value)) {
-                  colors.add(value);
-                }
-                _rememberRecentColor(chosen);
+                _projectColorPalettes[index]['name'] = result;
               });
+
               refresh(() {});
             }
 
-            Widget swatch(Color color, {VoidCallback? onTap}) {
+            Future<void> deletePalette(int index) async {
+              if (index < 0 || index >= _projectColorPalettes.length) {
+                return;
+              }
+
+              final name = _projectColorPalettes[index]['name'] as String;
+
+              final confirmed = await showDialog<bool>(
+                context: dialogContext,
+                builder: (confirmContext) => AlertDialog(
+                  title: const Text('Delete Palette?'),
+                  content: Text(
+                    'Delete "$name" and all its swatches? '
+                    'This cannot be undone.',
+                  ),
+                  actions: [
+                    TextButton(
+                      onPressed: () => Navigator.pop(confirmContext, false),
+                      child: const Text('Cancel'),
+                    ),
+                    FilledButton(
+                      onPressed: () => Navigator.pop(confirmContext, true),
+                      child: const Text('Delete'),
+                    ),
+                  ],
+                ),
+              );
+
+              if (confirmed != true || !mounted) return;
+              if (index >= _projectColorPalettes.length) return;
+
+              setState(() {
+                _projectColorPalettes.removeAt(index);
+              });
+
+              refresh(() {
+                selectedPalette = -1;
+                addingColour = false;
+              });
+            }
+
+            Future<void> removePaletteSwatch(int index, int value) async {
+              if (index < 0 || index >= _projectColorPalettes.length) {
+                return;
+              }
+
+              final confirmed = await showDialog<bool>(
+                context: dialogContext,
+                builder: (confirmContext) => AlertDialog(
+                  title: const Text('Remove Swatch?'),
+                  content: const Text('Remove this colour from the palette?'),
+                  actions: [
+                    TextButton(
+                      onPressed: () => Navigator.pop(confirmContext, false),
+                      child: const Text('Cancel'),
+                    ),
+                    FilledButton(
+                      onPressed: () => Navigator.pop(confirmContext, true),
+                      child: const Text('Remove'),
+                    ),
+                  ],
+                ),
+              );
+
+              if (confirmed != true || !mounted) return;
+              if (index >= _projectColorPalettes.length) return;
+
+              setState(() {
+                final colors =
+                    _projectColorPalettes[index]['colors'] as List<int>;
+                colors.remove(value);
+              });
+
+              refresh(() {});
+            }
+
+            Widget swatch(
+              Color color, {
+              VoidCallback? onTap,
+              VoidCallback? onLongPress,
+            }) {
               final selected = color.toARGB32() == _brushColor.toARGB32();
               return InkWell(
                 onTap: onTap ?? () => chooseColor(color),
+                onLongPress: onLongPress,
                 borderRadius: BorderRadius.circular(10),
                 child: Container(
                   width: 46,
@@ -13010,34 +13114,148 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     TextButton.icon(
-                      onPressed: () => refresh(() => selectedPalette = -1),
+                      onPressed: () => refresh(() {
+                        selectedPalette = -1;
+                        addingColour = false;
+                      }),
                       icon: const Icon(Icons.arrow_back),
                       label: const Text('All Palettes'),
                     ),
-                    Text(
-                      palette['name'] as String,
-                      style: Theme.of(context).textTheme.titleMedium,
+                    Row(
+                      children: [
+                        Expanded(
+                          child: Text(
+                            palette['name'] as String,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: Theme.of(context).textTheme.titleMedium,
+                          ),
+                        ),
+                        PopupMenuButton<String>(
+                          tooltip: 'Palette options',
+                          icon: const Icon(Icons.more_horiz),
+                          onSelected: (action) {
+                            final index = selectedPalette;
+                            if (action == 'rename') {
+                              renamePalette(index);
+                            } else if (action == 'delete') {
+                              deletePalette(index);
+                            }
+                          },
+                          itemBuilder: (menuContext) => const [
+                            PopupMenuItem(
+                              value: 'rename',
+                              child: Text('Rename Palette'),
+                            ),
+                            PopupMenuItem(
+                              value: 'delete',
+                              child: Text('Delete Palette'),
+                            ),
+                          ],
+                        ),
+                      ],
                     ),
                     const SizedBox(height: 12),
                     Expanded(
                       child: SingleChildScrollView(
-                        child: Wrap(
-                          spacing: 10,
-                          runSpacing: 10,
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
-                            for (final value in colors) swatch(Color(value)),
-                            InkWell(
-                              onTap: () => addColor(selectedPalette),
-                              child: Container(
-                                width: 46,
-                                height: 46,
-                                decoration: BoxDecoration(
-                                  border: Border.all(color: Colors.white54),
+                            Wrap(
+                              spacing: 10,
+                              runSpacing: 10,
+                              children: [
+                                for (final value in colors)
+                                  swatch(
+                                    Color(value),
+                                    onLongPress: () => removePaletteSwatch(
+                                      selectedPalette,
+                                      value,
+                                    ),
+                                  ),
+                                InkWell(
+                                  onTap: () => refresh(
+                                    () => addingColour = !addingColour,
+                                  ),
                                   borderRadius: BorderRadius.circular(10),
+                                  child: Container(
+                                    width: 46,
+                                    height: 46,
+                                    decoration: BoxDecoration(
+                                      border: Border.all(
+                                        color: Theme.of(
+                                          context,
+                                        ).colorScheme.primary,
+                                      ),
+                                      borderRadius: BorderRadius.circular(10),
+                                    ),
+                                    child: Icon(
+                                      addingColour ? Icons.close : Icons.add,
+                                    ),
+                                  ),
                                 ),
-                                child: const Icon(Icons.add),
-                              ),
+                              ],
                             ),
+                            if (addingColour) ...[
+                              const SizedBox(height: 18),
+                              Text(
+                                'ADD TO PALETTE',
+                                style: Theme.of(context).textTheme.labelSmall,
+                              ),
+                              const SizedBox(height: 10),
+                              Row(
+                                children: [
+                                  Expanded(
+                                    child: OutlinedButton.icon(
+                                      onPressed: () =>
+                                          pickPaletteColor(selectedPalette),
+                                      icon: const Icon(
+                                        Icons.palette_outlined,
+                                        size: 18,
+                                      ),
+                                      label: const Text('Picker'),
+                                    ),
+                                  ),
+                                  const SizedBox(width: 10),
+                                  Expanded(
+                                    child: FilledButton.icon(
+                                      onPressed: () =>
+                                          samplePaletteColor(selectedPalette),
+                                      icon: const Icon(
+                                        Icons.colorize,
+                                        size: 18,
+                                      ),
+                                      label: const Text('Canvas'),
+                                    ),
+                                  ),
+                                ],
+                              ),
+                              const SizedBox(height: 14),
+                              Text(
+                                'RECENT COLOURS',
+                                style: Theme.of(context).textTheme.labelSmall,
+                              ),
+                              const SizedBox(height: 8),
+                              if (_recentColors.isEmpty)
+                                const Text('Colours you use will appear here.')
+                              else
+                                Wrap(
+                                  spacing: 8,
+                                  runSpacing: 8,
+                                  children: [
+                                    for (final color in List<Color>.of(
+                                      _recentColors,
+                                    ))
+                                      swatch(
+                                        color,
+                                        onTap: () => addRecentColor(
+                                          selectedPalette,
+                                          color,
+                                        ),
+                                      ),
+                                  ],
+                                ),
+                            ],
                           ],
                         ),
                       ),
@@ -13135,19 +13353,59 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                 height: 370,
                 child: Column(
                   children: [
-                    SegmentedButton<int>(
-                      segments: const [
-                        ButtonSegment(value: 0, label: Text('Recent')),
-                        ButtonSegment(value: 1, label: Text('Project')),
-                        ButtonSegment(value: 2, label: Text('Library')),
+                    Row(
+                      children: [
+                        for (final entry in const [
+                          (0, 'Recent', Icons.history),
+                          (1, 'Project', Icons.layers_outlined),
+                          (2, 'Library', Icons.bookmark_outline),
+                        ])
+                          Expanded(
+                            child: Padding(
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 3,
+                              ),
+                              child: InkWell(
+                                onTap: () => refresh(() {
+                                  selectedTab = entry.$1;
+                                  selectedPalette = -1;
+                                  addingColour = false;
+                                }),
+                                borderRadius: BorderRadius.circular(12),
+                                child: AnimatedContainer(
+                                  duration: const Duration(milliseconds: 160),
+                                  padding: const EdgeInsets.symmetric(
+                                    vertical: 10,
+                                    horizontal: 4,
+                                  ),
+                                  decoration: BoxDecoration(
+                                    color: selectedTab == entry.$1
+                                        ? Theme.of(
+                                            context,
+                                          ).colorScheme.primaryContainer
+                                        : Theme.of(
+                                            context,
+                                          ).colorScheme.surfaceContainerHighest,
+                                    borderRadius: BorderRadius.circular(12),
+                                  ),
+                                  child: Column(
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
+                                      Icon(entry.$3, size: 18),
+                                      const SizedBox(height: 4),
+                                      Text(
+                                        entry.$2,
+                                        maxLines: 1,
+                                        softWrap: false,
+                                        style: const TextStyle(fontSize: 11),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                              ),
+                            ),
+                          ),
                       ],
-                      selected: {selectedTab},
-                      onSelectionChanged: (selection) {
-                        refresh(() {
-                          selectedTab = selection.first;
-                          selectedPalette = -1;
-                        });
-                      },
                     ),
                     const SizedBox(height: 16),
                     Expanded(child: content),
