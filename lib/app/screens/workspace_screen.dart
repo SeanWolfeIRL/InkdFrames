@@ -650,6 +650,12 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
   Color _brushColor = Colors.white;
   Color _canvasBackgroundColor = const Color(0xFF1F1B24);
   final List<Color> _recentColors = <Color>[];
+
+  // Colour Studio: palettes owned by the current project.
+  int? _paletteEyedropperTarget;
+
+  final List<Map<String, dynamic>> _projectColorPalettes =
+      <Map<String, dynamic>>[];
   final List<List<FrameHistorySnapshot>> _undoStacks = [[]];
   final List<List<FrameHistorySnapshot>> _redoStacks = [[]];
 
@@ -1081,6 +1087,9 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
       canvasWidth: _canvasWidth,
       canvasHeight: _canvasHeight,
       canvasBackgroundColor: _canvasBackgroundColor.toARGB32(),
+      brushColor: _brushColor.toARGB32(),
+      recentColors: _recentColors.map((color) => color.toARGB32()).toList(),
+      colorPalettes: _projectColorPalettes,
       referenceMediaPath: _referenceMediaPath,
       referenceMediaType: _referenceMediaType,
       referenceVisible: _referenceVisible,
@@ -5471,6 +5480,22 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     _projectPreviewImagePath = project.previewImagePath;
 
     setState(() {
+      _brushColor = Color(project.brushColor);
+      _paletteEyedropperTarget = null;
+      _recentColors
+        ..clear()
+        ..addAll(project.recentColors.map((value) => Color(value)));
+      _projectColorPalettes
+        ..clear()
+        ..addAll(
+          project.colorPalettes.map(
+            (palette) => <String, dynamic>{
+              'name': palette['name'],
+              'colors': List<int>.from(palette['colors'] as List),
+            },
+          ),
+        );
+
       _frameDurations
         ..clear()
         ..addAll(project.frameDurations);
@@ -10557,6 +10582,19 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
           _brushColor = sampled;
           _brushEyedropperArmed = false;
           _rememberRecentColor(sampled);
+
+          final paletteIndex = _paletteEyedropperTarget;
+          _paletteEyedropperTarget = null;
+          if (paletteIndex != null &&
+              paletteIndex >= 0 &&
+              paletteIndex < _projectColorPalettes.length) {
+            final colors =
+                _projectColorPalettes[paletteIndex]['colors'] as List<int>;
+            final value = sampled.toARGB32();
+            if (!colors.contains(value)) {
+              colors.add(value);
+            }
+          }
         });
       } finally {
         image.dispose();
@@ -10566,6 +10604,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
 
       setState(() {
         _brushEyedropperArmed = false;
+        _paletteEyedropperTarget = null;
       });
     }
   }
@@ -12823,6 +12862,302 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                     Navigator.pop(dialogContext, hsv.toColor());
                   },
                   child: const Text('Use Colour'),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
+  }
+
+  Future<void> _showColourStudio() async {
+    var selectedTab = 0;
+    var selectedPalette = -1;
+
+    await showDialog<void>(
+      context: context,
+      builder: (dialogContext) {
+        return StatefulBuilder(
+          builder: (dialogContext, refresh) {
+            void chooseColor(Color color) {
+              setState(() {
+                _brushColor = color;
+                _rememberRecentColor(color);
+              });
+              refresh(() {});
+            }
+
+            Future<void> addColor(int paletteIndex) async {
+              if (paletteIndex < 0 ||
+                  paletteIndex >= _projectColorPalettes.length) {
+                return;
+              }
+
+              final chosen = await showDialog<Color>(
+                context: dialogContext,
+                builder: (choiceContext) => AlertDialog(
+                  title: const Text('Add Colour'),
+                  content: const Text(
+                    'Choose an existing recent colour or create a new one.',
+                  ),
+                  actions: [
+                    TextButton(
+                      onPressed: () =>
+                          Navigator.pop(choiceContext, _brushColor),
+                      child: const Text('Current'),
+                    ),
+                    TextButton(
+                      onPressed: () {
+                        if (paletteIndex < 0 ||
+                            paletteIndex >= _projectColorPalettes.length) {
+                          return;
+                        }
+                        setState(() {
+                          _paletteEyedropperTarget = paletteIndex;
+                          _brushEyedropperArmed = true;
+                        });
+                        Navigator.pop(choiceContext);
+                        Navigator.pop(dialogContext);
+                      },
+                      child: const Text('Canvas'),
+                    ),
+
+                    TextButton(
+                      onPressed: () => Navigator.pop(choiceContext),
+                      child: const Text('Cancel'),
+                    ),
+                    FilledButton(
+                      onPressed: () async {
+                        final color = await _showColourPicker(
+                          _brushColor,
+                          title: 'Palette Colour',
+                        );
+                        if (!choiceContext.mounted) return;
+                        Navigator.pop(choiceContext, color);
+                      },
+                      child: const Text('Colour Picker'),
+                    ),
+                  ],
+                ),
+              );
+
+              if (chosen == null || !mounted) return;
+
+              setState(() {
+                final colors =
+                    _projectColorPalettes[paletteIndex]['colors'] as List<int>;
+                final value = chosen.toARGB32();
+                if (!colors.contains(value)) {
+                  colors.add(value);
+                }
+                _rememberRecentColor(chosen);
+              });
+              refresh(() {});
+            }
+
+            Widget swatch(Color color, {VoidCallback? onTap}) {
+              final selected = color.toARGB32() == _brushColor.toARGB32();
+              return InkWell(
+                onTap: onTap ?? () => chooseColor(color),
+                borderRadius: BorderRadius.circular(10),
+                child: Container(
+                  width: 46,
+                  height: 46,
+                  decoration: BoxDecoration(
+                    color: color,
+                    borderRadius: BorderRadius.circular(10),
+                    border: Border.all(
+                      color: selected
+                          ? Colors.deepPurpleAccent
+                          : Colors.white54,
+                      width: selected ? 3 : 1,
+                    ),
+                  ),
+                  child: selected
+                      ? Icon(
+                          Icons.check,
+                          color: color.computeLuminance() > 0.5
+                              ? Colors.black
+                              : Colors.white,
+                        )
+                      : null,
+                ),
+              );
+            }
+
+            Widget content;
+
+            if (selectedTab == 0) {
+              content = _recentColors.isEmpty
+                  ? const Center(
+                      child: Text('Your recent colours will appear here.'),
+                    )
+                  : Wrap(
+                      spacing: 10,
+                      runSpacing: 10,
+                      children: [
+                        for (final color in _recentColors) swatch(color),
+                      ],
+                    );
+            } else if (selectedTab == 1) {
+              if (selectedPalette >= 0 &&
+                  selectedPalette < _projectColorPalettes.length) {
+                final palette = _projectColorPalettes[selectedPalette];
+                final colors = palette['colors'] as List<int>;
+
+                content = Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    TextButton.icon(
+                      onPressed: () => refresh(() => selectedPalette = -1),
+                      icon: const Icon(Icons.arrow_back),
+                      label: const Text('All Palettes'),
+                    ),
+                    Text(
+                      palette['name'] as String,
+                      style: Theme.of(context).textTheme.titleMedium,
+                    ),
+                    const SizedBox(height: 12),
+                    Expanded(
+                      child: SingleChildScrollView(
+                        child: Wrap(
+                          spacing: 10,
+                          runSpacing: 10,
+                          children: [
+                            for (final value in colors) swatch(Color(value)),
+                            InkWell(
+                              onTap: () => addColor(selectedPalette),
+                              child: Container(
+                                width: 46,
+                                height: 46,
+                                decoration: BoxDecoration(
+                                  border: Border.all(color: Colors.white54),
+                                  borderRadius: BorderRadius.circular(10),
+                                ),
+                                child: const Icon(Icons.add),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ],
+                );
+              } else {
+                content = Column(
+                  children: [
+                    Align(
+                      alignment: Alignment.centerRight,
+                      child: FilledButton.icon(
+                        onPressed: () async {
+                          var paletteName = '';
+                          final name = await showDialog<String>(
+                            context: dialogContext,
+                            builder: (nameContext) => AlertDialog(
+                              title: const Text('New Palette'),
+                              content: TextField(
+                                onChanged: (value) => paletteName = value,
+                                autofocus: true,
+                                decoration: const InputDecoration(
+                                  labelText: 'Palette name',
+                                ),
+                              ),
+                              actions: [
+                                TextButton(
+                                  onPressed: () => Navigator.pop(nameContext),
+                                  child: const Text('Cancel'),
+                                ),
+                                FilledButton(
+                                  onPressed: () => Navigator.pop(
+                                    nameContext,
+                                    paletteName.trim(),
+                                  ),
+                                  child: const Text('Create'),
+                                ),
+                              ],
+                            ),
+                          );
+
+                          if (name == null || !mounted) return;
+
+                          setState(() {
+                            _projectColorPalettes.add({
+                              'name': name.isEmpty ? 'Untitled Palette' : name,
+                              'colors': <int>[],
+                            });
+                          });
+                          refresh(() {
+                            selectedPalette = _projectColorPalettes.length - 1;
+                          });
+                        },
+                        icon: const Icon(Icons.add),
+                        label: const Text('New Palette'),
+                      ),
+                    ),
+                    Expanded(
+                      child: _projectColorPalettes.isEmpty
+                          ? const Center(
+                              child: Text('Create your first project palette.'),
+                            )
+                          : ListView.builder(
+                              itemCount: _projectColorPalettes.length,
+                              itemBuilder: (context, index) {
+                                final palette = _projectColorPalettes[index];
+                                final colors = palette['colors'] as List<int>;
+                                return ListTile(
+                                  leading: const Icon(Icons.palette_outlined),
+                                  title: Text(palette['name'] as String),
+                                  subtitle: Text('${colors.length} colours'),
+                                  trailing: const Icon(Icons.chevron_right),
+                                  onTap: () =>
+                                      refresh(() => selectedPalette = index),
+                                );
+                              },
+                            ),
+                    ),
+                  ],
+                );
+              }
+            } else {
+              content = const Center(
+                child: Text(
+                  'Your reusable palette library is coming next.',
+                  textAlign: TextAlign.center,
+                ),
+              );
+            }
+
+            return AlertDialog(
+              title: const Text('Colour Studio'),
+              content: SizedBox(
+                width: 390,
+                height: 370,
+                child: Column(
+                  children: [
+                    SegmentedButton<int>(
+                      segments: const [
+                        ButtonSegment(value: 0, label: Text('Recent')),
+                        ButtonSegment(value: 1, label: Text('Project')),
+                        ButtonSegment(value: 2, label: Text('Library')),
+                      ],
+                      selected: {selectedTab},
+                      onSelectionChanged: (selection) {
+                        refresh(() {
+                          selectedTab = selection.first;
+                          selectedPalette = -1;
+                        });
+                      },
+                    ),
+                    const SizedBox(height: 16),
+                    Expanded(child: content),
+                  ],
+                ),
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.pop(dialogContext),
+                  child: const Text('Done'),
                 ),
               ],
             );
@@ -17853,7 +18188,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                                               const SizedBox(height: 2),
                                               Tooltip(
                                                 message:
-                                                    'Colour · Tap for wheel · Hold for precise picker',
+                                                    'Colour · Tap for Studio · Hold for precise picker',
                                                 child: GestureDetector(
                                                   onLongPress: () async {
                                                     final color =
@@ -17879,22 +18214,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                                                     visualDensity:
                                                         VisualDensity.compact,
                                                     onPressed: () async {
-                                                      final color =
-                                                          await _showRadialColourPicker(
-                                                            _brushColor,
-                                                          );
-
-                                                      if (color == null ||
-                                                          !mounted) {
-                                                        return;
-                                                      }
-
-                                                      setState(() {
-                                                        _brushColor = color;
-                                                        _rememberRecentColor(
-                                                          color,
-                                                        );
-                                                      });
+                                                      await _showColourStudio();
                                                     },
                                                     icon: Container(
                                                       width: 24,

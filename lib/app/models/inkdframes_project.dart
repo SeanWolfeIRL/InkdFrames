@@ -18,6 +18,9 @@ class InkdFramesProject {
     this.canvasWidth = 1920,
     this.canvasHeight = 1080,
     this.canvasBackgroundColor = 0xFF1F1B24,
+    this.brushColor = 0xFFFFFFFF,
+    List<int>? recentColors,
+    List<Map<String, dynamic>>? colorPalettes,
     this.referenceMediaPath,
     this.referenceMediaType,
     List<DrawingLayer>? layers,
@@ -33,7 +36,18 @@ class InkdFramesProject {
     this.referenceVisible = true,
     this.referenceOpacity = 1.0,
     this.previewImagePath,
-  }) : layers = layers ?? _layersFromLegacyFrames(frames),
+  }) : recentColors = List<int>.from(recentColors ?? const <int>[]),
+       colorPalettes = (colorPalettes ?? const <Map<String, dynamic>>[])
+           .map(
+             (palette) => <String, dynamic>{
+               'name': palette['name']?.toString() ?? 'Untitled Palette',
+               'colors': List<int>.from(
+                 (palette['colors'] as List?) ?? const <int>[],
+               ),
+             },
+           )
+           .toList(),
+       layers = layers ?? _layersFromLegacyFrames(frames),
        layerGroups = layerGroups ?? <LayerGroup>[],
        rootOrder =
            rootOrder ??
@@ -212,6 +226,30 @@ class InkdFramesProject {
         : <GroupAnimationTrack>[];
 
     return InkdFramesProject(
+      brushColor: (json['brushColor'] as num?)?.toInt() ?? 0xFFFFFFFF,
+      recentColors: json['recentColors'] is List
+          ? (json['recentColors'] as List)
+                .whereType<num>()
+                .map((value) => value.toInt())
+                .take(8)
+                .toList()
+          : <int>[],
+      colorPalettes: json['colorPalettes'] is List
+          ? (json['colorPalettes'] as List)
+                .whereType<Map>()
+                .map(
+                  (entry) => <String, dynamic>{
+                    'name': entry['name']?.toString() ?? 'Untitled Palette',
+                    'colors': entry['colors'] is List
+                        ? (entry['colors'] as List)
+                              .whereType<num>()
+                              .map((value) => value.toInt())
+                              .toList()
+                        : <int>[],
+                  },
+                )
+                .toList()
+          : <Map<String, dynamic>>[],
       id: json['id'] as String,
       name: json['name'] as String,
       fps: (json['fps'] as num).toDouble(),
@@ -312,6 +350,15 @@ class InkdFramesProject {
   final double canvasHeight;
   final int canvasBackgroundColor;
 
+  /// Last active drawing colour for this project.
+  final int brushColor;
+
+  /// Most recently used drawing colours, newest first.
+  final List<int> recentColors;
+
+  /// Named project palettes. Each contains a name and ARGB colours.
+  final List<Map<String, dynamic>> colorPalettes;
+
   final String? referenceMediaPath;
   final String? referenceMediaType;
 
@@ -365,6 +412,9 @@ class InkdFramesProject {
       'canvasWidth': canvasWidth,
       'canvasHeight': canvasHeight,
       'canvasBackgroundColor': canvasBackgroundColor,
+      'brushColor': brushColor,
+      'recentColors': recentColors,
+      'colorPalettes': colorPalettes,
       'referenceMediaPath': referenceMediaPath,
       'referenceMediaType': referenceMediaType,
       'referenceVisible': referenceVisible,
