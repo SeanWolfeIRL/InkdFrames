@@ -1,3 +1,4 @@
+import 'bag_motion_asset.dart';
 import 'composite_asset.dart';
 import 'vector_stroke.dart';
 
@@ -54,6 +55,7 @@ class BagItem {
     this.authoredCanvasWidth,
     this.authoredCanvasHeight,
     this.composite,
+    this.motion,
   });
 
   factory BagItem.fromJson(Map<String, dynamic> json) {
@@ -75,6 +77,11 @@ class BagItem {
       composite: json['composite'] is Map
           ? CompositeAsset.fromJson(
               Map<String, dynamic>.from(json['composite'] as Map),
+            )
+          : null,
+      motion: json['motion'] is Map
+          ? BagMotionAsset.fromJson(
+              Map<String, dynamic>.from(json['motion'] as Map),
             )
           : null,
       layers: rawLayers
@@ -123,6 +130,11 @@ class BagItem {
   /// references, drawing layers, nested groups, and Variant Slots.
   final CompositeAsset? composite;
 
+  /// Optional portable animation authored for this composite hierarchy.
+  ///
+  /// Existing static Bag items do not require motion data.
+  final BagMotionAsset? motion;
+
   final List<BagLayer> layers;
   final DateTime createdAt;
 
@@ -146,6 +158,7 @@ class BagItem {
       if (authoredCanvasHeight != null)
         'authoredCanvasHeight': authoredCanvasHeight,
       if (composite != null) 'composite': composite!.toJson(),
+      if (motion != null) 'motion': motion!.toJson(),
       'layers': layers.map((layer) => layer.toJson()).toList(),
     };
   }

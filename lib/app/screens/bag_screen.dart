@@ -1596,6 +1596,46 @@ class _BagScreenState extends State<BagScreen> {
     );
   }
 
+  Future<void> _showBagPoseLibrary(BagItem item) async {
+    final clips = item.motion?.availableClips;
+
+    await showDialog<void>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: Text('Pose Library · ${item.name}'),
+        content: SizedBox(
+          width: 420,
+          child: clips == null || clips.isEmpty
+              ? const Text(
+                  'No saved motion clips yet. Open this asset in '
+                  'Workspace to create its first animation.',
+                )
+              : Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    for (final clip in clips)
+                      ListTile(
+                        leading: const Icon(Icons.animation_outlined),
+                        title: Text(clip.name),
+                        subtitle: Text(
+                          '${clip.frameIds.length} frames · '
+                          '${clip.fps.toStringAsFixed(1)} FPS · '
+                          '${clip.groupAnimationTracks.length} group tracks',
+                        ),
+                      ),
+                  ],
+                ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext),
+            child: const Text('Close'),
+          ),
+        ],
+      ),
+    );
+  }
+
   Future<void> _viewBagItem(BagItem item) async {
     if (item.isComposite) {
       await showDialog<void>(
@@ -1657,7 +1697,37 @@ class _BagScreenState extends State<BagScreen> {
               ),
             ),
             actions: [
-              FilledButton(
+              TextButton.icon(
+                onPressed: () {
+                  Navigator.pop(dialogContext);
+                  Navigator.of(context).push(
+                    MaterialPageRoute<void>(
+                      builder: (_) => WorkspaceScreen(
+                        initialBagItem: item,
+                        projectName: item.name,
+                        initialCanvasWidth: composite.canvasWidth,
+                        initialCanvasHeight: composite.canvasHeight,
+                      ),
+                    ),
+                  );
+                },
+                icon: const Icon(Icons.edit_outlined),
+                label: const Text('Open in Workspace'),
+              ),
+              TextButton.icon(
+                onPressed: () {
+                  Navigator.pop(dialogContext);
+                  _showBagPoseLibrary(item);
+                },
+                icon: const Icon(Icons.animation_outlined),
+                label: const Text('Pose Library'),
+              ),
+              TextButton.icon(
+                onPressed: null,
+                icon: const Icon(Icons.add_circle_outline),
+                label: const Text('Add to Project'),
+              ),
+              TextButton(
                 onPressed: () => Navigator.pop(dialogContext),
                 child: const Text('Close'),
               ),
@@ -1832,20 +1902,7 @@ class _BagScreenState extends State<BagScreen> {
                                     }
 
                                     if (item.isComposite) {
-                                      Navigator.of(context).push(
-                                        MaterialPageRoute<void>(
-                                          builder: (_) => WorkspaceScreen(
-                                            initialBagItem: item,
-                                            projectName: item.name,
-                                            initialCanvasWidth:
-                                                item.composite?.canvasWidth ??
-                                                1920,
-                                            initialCanvasHeight:
-                                                item.composite?.canvasHeight ??
-                                                1080,
-                                          ),
-                                        ),
-                                      );
+                                      _viewBagItem(item);
                                       return;
                                     }
 

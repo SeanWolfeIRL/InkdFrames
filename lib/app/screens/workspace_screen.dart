@@ -9,6 +9,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter/scheduler.dart';
 import 'package:video_player/video_player.dart';
+import '../models/bag_motion_asset.dart';
 import '../models/bag_item.dart';
 import '../models/composite_asset.dart';
 import '../models/brush_preset.dart';
@@ -17,6 +18,8 @@ import '../models/group_animation_track.dart';
 import '../models/inkdframes_project.dart';
 import '../models/layer_group.dart';
 import '../models/reference_layer.dart';
+import '../models/scene_motion_instance.dart';
+import '../models/scene_motion_clock.dart';
 import '../models/transform_keyframe.dart';
 import '../models/variant_slot.dart';
 import '../models/vector_point.dart';
@@ -248,6 +251,10 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
   final List<GroupAnimationTrack> _groupAnimationTracks =
       <GroupAnimationTrack>[];
 
+  // Independently animated composite characters inside this scene.
+  final List<SceneMotionInstance> _sceneMotionInstances =
+      <SceneMotionInstance>[];
+
   final List<int> _referenceFrameTimesMs = <int>[];
   int _selectedFrameIndex = 0;
 
@@ -259,6 +266,13 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
   // group animation tracks can use these units without manufacturing extra
   // main timeline frames.
   int _playbackFrameUnit = 0;
+
+  // Independent scene-motion time, measured in elapsed microseconds.
+  // Unlike the main timeline position, this clock does not reset when
+  // the scene loops or holds a frame.
+  int _sceneMotionElapsedUs = 0;
+  final ValueNotifier<int> _sceneMotionTick = ValueNotifier<int>(0);
+  DateTime? _sceneMotionLastTick;
 
   int _activePointerCount = 0;
   List<VectorPoint> _draftStroke = const <VectorPoint>[];
@@ -408,6 +422,153 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
   // Animation keyframes must target the stable LayerGroup identity instead,
   // so artwork edits cannot detach animation data from its intended part.
   String? _transformTargetGroupId;
+  SceneMotionInstance? _scenePlacementGestureStart;
+
+  void _updateScenePlacement(SceneMotionInstance updated) {
+    final index = _sceneMotionInstances.indexWhere(
+      (instance) => instance.id == updated.id,
+    );
+    if (index >= 0) {
+      _sceneMotionInstances[index] = updated;
+    }
+  }
+
+  Offset _rotatePlacementPoint(Offset point, Offset center, double angle) {
+    final dx = point.dx - center.dx;
+    final dy = point.dy - center.dy;
+    return Offset(
+      center.dx + dx * math.cos(angle) - dy * math.sin(angle),
+      center.dy + dx * math.sin(angle) + dy * math.cos(angle),
+    );
+  }
+
+  void _rotateScenePlacement(
+    SceneMotionInstance start,
+    double angle,
+    Offset anchor,
+  ) {
+    final pivot = Offset(start.placementPivotX, start.placementPivotY);
+
+    final original = Offset(start.placementX, start.placementY) + pivot;
+
+    final rotated = _rotatePlacementPoint(original, anchor, angle);
+
+    _updateScenePlacement(
+      start.copyWith(
+        placementX: rotated.dx - pivot.dx,
+        placementY: rotated.dy - pivot.dy,
+        placementRotation: start.placementRotation + angle,
+      ),
+    );
+  }
+
+  void _scaleScenePlacement(
+    SceneMotionInstance start,
+    double factor,
+    Offset anchor,
+  ) {
+    final safeFactor = factor.clamp(0.01, 100.0).toDouble();
+
+    final pivot = Offset(start.placementPivotX, start.placementPivotY);
+
+    final original = Offset(start.placementX, start.placementY) + pivot;
+
+    final moved = anchor + (original - anchor) * safeFactor;
+
+    _updateScenePlacement(
+      start.copyWith(
+        placementX: moved.dx - pivot.dx,
+        placementY: moved.dy - pivot.dy,
+        placementScaleX: (start.placementScaleX * safeFactor)
+            .clamp(0.001, 1000.0)
+            .toDouble(),
+        placementScaleY: (start.placementScaleY * safeFactor)
+            .clamp(0.001, 1000.0)
+            .toDouble(),
+      ),
+    );
+  }
+
+  SceneMotionInstance? get _activeScenePlacement {
+    final groupId = _transformTargetGroupId;
+    if (groupId == null) return null;
+
+    for (final instance in _sceneMotionInstances) {
+      if (instance.enabled && instance.rootGroupId == groupId) {
+        return instance;
+      }
+    }
+
+    return null;
+  }
+
+  Matrix4 _scenePlacementMatrix(SceneMotionInstance instance) {
+    return Matrix4.identity()
+      ..translateByDouble(instance.placementX, instance.placementY, 0, 1)
+      ..translateByDouble(
+        instance.placementPivotX,
+        instance.placementPivotY,
+        0,
+        1,
+      )
+      ..rotateZ(instance.placementRotation)
+      ..scaleByDouble(instance.placementScaleX, instance.placementScaleY, 1, 1)
+      ..translateByDouble(
+        -instance.placementPivotX,
+        -instance.placementPivotY,
+        0,
+        1,
+      );
+  }
+
+  Rect? _scenePlacementArtworkBounds(String groupId) {
+    final layerIds = <String>{};
+    final referenceIds = <String>{};
+
+    _collectGroupTransformDescendants(
+      groupId,
+      layerIds: layerIds,
+      referenceIds: referenceIds,
+    );
+
+    Rect? bounds;
+
+    for (final layer in _layers) {
+      if (!layerIds.contains(layer.id)) continue;
+
+      for (final frame in layer.frames) {
+        for (final stroke in frame) {
+          for (final point in stroke.points) {
+            final position = Offset(point.dx, point.dy);
+
+            final pointBounds = Rect.fromPoints(position, position);
+
+            bounds = bounds == null
+                ? pointBounds
+                : bounds.expandToInclude(pointBounds);
+          }
+        }
+      }
+    }
+
+    for (final referenceId in referenceIds) {
+      final index = _referenceLayers.indexWhere(
+        (reference) => reference.id == referenceId,
+      );
+
+      if (index < 0) continue;
+
+      final referenceBounds = _referenceTransformBounds(
+        _referenceLayers[index],
+      );
+
+      bounds = bounds == null
+          ? referenceBounds
+          : bounds.expandToInclude(referenceBounds);
+    }
+
+    return bounds;
+  }
 
   /// Temporary in-memory clipboard used by Transform copy/paste.
   final Map<String, List<VectorStroke>> _strokeClipboard =
@@ -547,6 +708,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     _hierarchyAutoScrollTimer?.cancel();
     _layersScrollController.dispose();
     _liveInkRepaint.dispose();
+    _sceneMotionTick.dispose();
     super.dispose();
   }
 
@@ -886,6 +1048,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
       variantSlots: _variantSlots,
       transformKeyframes: _transformKeyframes,
       groupAnimationTracks: _groupAnimationTracks,
+      sceneMotionInstances: _sceneMotionInstances,
       activeReferenceLayerId: _activeReferenceLayerId,
       frameDurations: _frameDurations,
       frameIds: _frameIds,
@@ -1035,11 +1198,54 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     );
   }
 
+  Set<String> _sceneMotionOwnedLayerIds() {
+    if (_sceneMotionInstances.isEmpty) return <String>{};
+
+    final groupsById = {for (final group in _layerGroups) group.id: group};
+    final ownedLayerIds = <String>{};
+    final visitedGroups = <String>{};
+
+    void visitGroup(String groupId) {
+      if (!visitedGroups.add(groupId)) return;
+
+      final group = groupsById[groupId];
+      if (group == null) return;
+
+      for (final layerId in group.childLayerIds) {
+        ownedLayerIds.add(layerId);
+      }
+
+      for (final childGroupId in group.childGroupIds) {
+        visitGroup(childGroupId);
+      }
+    }
+
+    for (final instance in _sceneMotionInstances) {
+      visitGroup(instance.rootGroupId);
+    }
+
+    return ownedLayerIds;
+  }
+
+  bool get _activeLayerIsSceneMotionOwned {
+    if (_activeLayerIndex < 0 || _activeLayerIndex >= _layers.length) {
+      return false;
+    }
+    return _sceneMotionOwnedLayerIds().contains(_layers[_activeLayerIndex].id);
+  }
+
   void _ensureLayerFrameCount() {
     final frameCount = _frameDurations.length;
+    final sceneMotionLayerIds = _sceneMotionOwnedLayerIds();
 
     for (var layerIndex = 0; layerIndex < _layers.length; layerIndex++) {
       final layer = _layers[layerIndex];
+
+      // Independent animation layers retain their source-frame catalogue.
+      // Never truncate them to the room's main timeline.
+      if (sceneMotionLayerIds.contains(layer.id)) {
+        continue;
+      }
 
       if (layer.frames.length == frameCount) {
         continue;
@@ -1188,7 +1394,38 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
   void _selectLayer(int index) {
     if (index < 0 || index >= _layers.length) return;
 
-    final containingGroup = _groupContainingLayer(_layers[index].id);
+    final selectedLayerId = _layers[index].id;
+
+    if (_sceneMotionOwnedLayerIds().contains(selectedLayerId)) {
+      final groupsById = {for (final group in _layerGroups) group.id: group};
+
+      bool ownsLayer(String groupId, Set<String> visited) {
+        if (!visited.add(groupId)) return false;
+        final group = groupsById[groupId];
+        if (group == null) return false;
+        if (group.childLayerIds.contains(selectedLayerId)) {
+          return true;
+        }
+        return group.childGroupIds.any((id) => ownsLayer(id, visited));
+      }
+
+      for (final instance in _sceneMotionInstances) {
+        if (ownsLayer(instance.rootGroupId, <String>{})) {
+          setState(() {
+            _clearTransformSelection();
+            _activeLayerGroupId = instance.rootGroupId;
+            _layerInsertionGroupId = null;
+            _transformTargetGroupId = instance.rootGroupId;
+            _draftStroke = const <VectorPoint>[];
+          });
+          return;
+        }
+      }
+
+      return;
+    }
+
+    final containingGroup = _groupContainingLayer(selectedLayerId);
 
     setState(() {
       _activeLayerIndex = index;
@@ -1412,6 +1649,9 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
       return (payload[key] as num?)?.toDouble() ?? fallback;
     }
 
+    // Authored composite node IDs mapped to this insertion's runtime IDs.
+    final localAuthoredToRuntime = <String, String>{};
+
     final rebuiltLayers = <DrawingLayer>[];
     final rebuiltReferences = <ReferenceLayer>[];
     final rebuiltGroups = <LayerGroup>[];
@@ -1422,6 +1662,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     String? rebuildNode(CompositeNode node) {
       if (node.type == 'layer') {
         final newId = freshId('composite_layer');
+        localAuthoredToRuntime[node.id] = newId;
 
         if (widget.initialBagItem?.isComposite == true) {
           _initialBagCompositeAuthoredNodeIds[newId] = node.id;
@@ -1458,6 +1699,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
 
       if (node.type == 'reference') {
         final newId = freshId('composite_reference');
+        localAuthoredToRuntime[node.id] = newId;
 
         if (widget.initialBagItem?.isComposite == true) {
           _initialBagCompositeAuthoredNodeIds[newId] = node.id;
@@ -1535,6 +1777,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
 
       if (node.type == 'group') {
         final newId = freshId('composite_group');
+        localAuthoredToRuntime[node.id] = newId;
 
         if (widget.initialBagItem?.isComposite == true) {
           _initialBagCompositeAuthoredNodeIds[newId] = node.id;
@@ -1604,11 +1847,154 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
 
     final rootGroupId = rootEntry.substring(6);
 
-    if (widget.initialBagItem?.isComposite == true) {
+    // Only direct Bag -> Workspace editing restores the asset's own
+    // animation timeline. Inserting into an existing project must not
+    // replace that project's timeline.
+    final openingBagComposite = widget.initialBagItem?.isComposite == true;
+    final motion = openingBagComposite ? item.motion : null;
+
+    if (motion != null) {
+      final validationProblem = _validateBagMotion(composite, motion);
+
+      if (validationProblem != null) {
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Bag motion cannot load: $validationProblem')),
+        );
+        return;
+      }
+    }
+
+    final authoredToRuntime = localAuthoredToRuntime;
+
+    // A scene insertion retains its own motion snapshot. Group targets
+    // are remapped to this particular imported hierarchy.
+    final sceneMotion = openingBagComposite ? null : item.motion;
+
+    if (sceneMotion != null) {
+      final problem = _validateBagMotion(composite, sceneMotion);
+      if (problem != null) {
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Bag motion cannot load: $problem')),
+        );
+        return;
+      }
+    }
+
+    final restoredKeyframes = motion == null
+        ? <TransformKeyframe>[]
+        : motion.transformKeyframes
+              .map(
+                (keyframe) => keyframe.copyWith(
+                  targetGroupId: authoredToRuntime[keyframe.targetGroupId],
+                ),
+              )
+              .toList();
+
+    final restoredTracks = motion == null
+        ? <GroupAnimationTrack>[]
+        : motion.groupAnimationTracks
+              .map(
+                (track) => track.copyWith(
+                  targetGroupId: authoredToRuntime[track.targetGroupId],
+                ),
+              )
+              .toList();
+
+    if (openingBagComposite) {
       _initialBagCompositeRootGroupId = rootGroupId;
     }
 
     setState(() {
+      if (motion != null) {
+        _frameIds
+          ..clear()
+          ..addAll(motion.frameIds);
+
+        _frameDurations
+          ..clear()
+          ..addAll(motion.frameDurations);
+
+        _fps = motion.fps;
+        _selectedFrameIndex = 0;
+
+        _transformKeyframes
+          ..clear()
+          ..addAll(restoredKeyframes);
+
+        _groupAnimationTracks
+          ..clear()
+          ..addAll(restoredTracks);
+
+        // The initial empty Linework layer must follow the same timeline.
+        for (var i = 0; i < _layers.length; i++) {
+          final layer = _layers[i];
+          _layers[i] = layer.copyWith(
+            frames: List.generate(
+              motion.frameIds.length,
+              (_) => <VectorStroke>[],
+            ),
+          );
+        }
+      }
+
+      if (sceneMotion != null) {
+        final remappedMotion = BagMotionAsset(
+          frameIds: List<String>.from(sceneMotion.frameIds),
+          frameDurations: List<int>.from(sceneMotion.frameDurations),
+          fps: sceneMotion.fps,
+          version: sceneMotion.version,
+          transformKeyframes: sceneMotion.transformKeyframes
+              .map(
+                (key) => key.copyWith(
+                  targetGroupId: authoredToRuntime[key.targetGroupId],
+                ),
+              )
+              .toList(),
+          groupAnimationTracks: sceneMotion.groupAnimationTracks
+              .map(
+                (track) => track.copyWith(
+                  targetGroupId: authoredToRuntime[track.targetGroupId],
+                ),
+              )
+              .toList(),
+          clips: sceneMotion.clips
+              .map(
+                (clip) => BagMotionClip(
+                  name: clip.name,
+                  fps: clip.fps,
+                  frameIds: List<String>.from(clip.frameIds),
+                  frameDurations: List<int>.from(clip.frameDurations),
+                  transformKeyframes: clip.transformKeyframes
+                      .map(
+                        (key) => key.copyWith(
+                          targetGroupId: authoredToRuntime[key.targetGroupId],
+                        ),
+                      )
+                      .toList(),
+                  groupAnimationTracks: clip.groupAnimationTracks
+                      .map(
+                        (track) => track.copyWith(
+                          targetGroupId: authoredToRuntime[track.targetGroupId],
+                        ),
+                      )
+                      .toList(),
+                ),
+              )
+              .toList(),
+        );
+
+        _sceneMotionInstances.add(
+          SceneMotionInstance(
+            id: freshId('scene_motion'),
+            rootGroupId: rootGroupId,
+            bagItemId: item.id,
+            motion: remappedMotion,
+          ),
+        );
+      }
+
       _layers.insertAll(0, rebuiltLayers);
       _referenceLayers.insertAll(0, rebuiltReferences);
       _variantSlots.addAll(rebuiltVariants);
@@ -2344,6 +2730,230 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     }
   }
 
+  /// Captures animation belonging to one reusable Composite hierarchy.
+  ///
+  /// Composite nodes preserve authored artwork. Motion preserves the
+  /// source frame catalogue and animation relationships separately.
+  /// Checks whether a captured hierarchy owns Workspace animation.
+  bool _compositeHasWorkspaceMotion(CompositeAsset composite) {
+    final authoredGroupIds = <String>{};
+
+    void visit(CompositeNode node) {
+      if (node.type == 'group') {
+        authoredGroupIds.add(node.id);
+      }
+
+      for (final child in node.children) {
+        visit(child);
+      }
+    }
+
+    visit(composite.root);
+
+    final workspaceGroupIds = _layerGroups
+        .where(
+          (group) => authoredGroupIds.contains(
+            _initialBagCompositeAuthoredNodeIds[group.id] ?? group.id,
+          ),
+        )
+        .map((group) => group.id)
+        .toSet();
+
+    return _transformKeyframes.any(
+          (keyframe) => workspaceGroupIds.contains(keyframe.targetGroupId),
+        ) ||
+        _groupAnimationTracks.any(
+          (track) => workspaceGroupIds.contains(track.targetGroupId),
+        );
+  }
+
+  /// Validates portable animation against its captured artwork.
+  String? _validateBagMotion(CompositeAsset composite, BagMotionAsset motion) {
+    final frameCount = motion.frameIds.length;
+    final frameIds = motion.frameIds.toSet();
+    final groupIds = <String>{};
+    var layerCount = 0;
+    String? problem;
+
+    if (frameCount == 0 ||
+        motion.frameDurations.length != frameCount ||
+        frameIds.length != frameCount ||
+        motion.frameDurations.any((duration) => duration < 1) ||
+        !motion.fps.isFinite ||
+        motion.fps <= 0) {
+      return 'Invalid animation frame catalogue or FPS.';
+    }
+
+    void visit(CompositeNode node) {
+      if (problem != null) return;
+
+      if (node.type == 'group') {
+        groupIds.add(node.id);
+      }
+
+      if (node.type == 'layer') {
+        layerCount++;
+        final frames = node.payload['frames'];
+
+        if (frames is! List || frames.length != frameCount) {
+          problem = 'Artwork frame count mismatch in ${node.name}.';
+          return;
+        }
+      }
+
+      for (final child in node.children) {
+        visit(child);
+      }
+    }
+
+    visit(composite.root);
+
+    if (problem != null) return problem;
+
+    if (layerCount == 0) {
+      return 'Animation composite contains no drawing layers.';
+    }
+
+    for (final namedClip in motion.clips) {
+      if (namedClip.name.trim().isEmpty ||
+          namedClip.frameIds.isEmpty ||
+          namedClip.frameIds.length != namedClip.frameDurations.length ||
+          namedClip.frameIds.toSet().length != namedClip.frameIds.length ||
+          namedClip.frameIds.any((id) => !frameIds.contains(id)) ||
+          namedClip.frameDurations.any((duration) => duration < 1) ||
+          !namedClip.fps.isFinite ||
+          namedClip.fps <= 0) {
+        return 'Invalid animation clip: ${namedClip.name}.';
+      }
+
+      final clipFrameIds = namedClip.frameIds.toSet();
+
+      for (final keyframe in namedClip.transformKeyframes) {
+        if (!groupIds.contains(keyframe.targetGroupId) ||
+            !clipFrameIds.contains(keyframe.frameId)) {
+          return 'Invalid transform keyframe in ${namedClip.name}.';
+        }
+      }
+
+      for (final track in namedClip.groupAnimationTracks) {
+        if (!groupIds.contains(track.targetGroupId)) {
+          return 'Missing animation group in ${namedClip.name}.';
+        }
+
+        for (final clip in track.clips) {
+          if (!frameIds.contains(clip.sourceFrameId) || clip.duration < 1) {
+            return 'Invalid group animation in ${namedClip.name}.';
+          }
+        }
+      }
+    }
+
+    for (final keyframe in motion.transformKeyframes) {
+      if (!groupIds.contains(keyframe.targetGroupId)) {
+        return 'Missing group: ${keyframe.targetGroupId}';
+      }
+      if (!frameIds.contains(keyframe.frameId)) {
+        return 'Missing frame: ${keyframe.frameId}';
+      }
+    }
+
+    for (final track in motion.groupAnimationTracks) {
+      if (!groupIds.contains(track.targetGroupId)) {
+        return 'An animation track references a missing group.';
+      }
+
+      for (final clip in track.clips) {
+        if (!frameIds.contains(clip.sourceFrameId) || clip.duration < 1) {
+          return 'An animation clip references an invalid frame.';
+        }
+      }
+    }
+
+    return null;
+  }
+
+  BagMotionAsset? _captureWorkspaceGroupMotion(CompositeAsset composite) {
+    final authoredGroupIds = <String>{};
+
+    void visit(CompositeNode node) {
+      if (node.type == 'group') {
+        authoredGroupIds.add(node.id);
+      }
+
+      for (final child in node.children) {
+        visit(child);
+      }
+    }
+
+    visit(composite.root);
+
+    final workspaceToAuthored = <String, String>{
+      for (final group in _layerGroups)
+        group.id: _initialBagCompositeAuthoredNodeIds[group.id] ?? group.id,
+    };
+
+    final matchingWorkspaceGroupIds = workspaceToAuthored.entries
+        .where((entry) => authoredGroupIds.contains(entry.value))
+        .map((entry) => entry.key)
+        .toSet();
+
+    // Export only keyframes belonging to current artwork frames.
+    // Historical keyframes remain untouched in the source project.
+    final currentFrameIds = _frameIds.toSet();
+
+    final capturedKeyframes = _transformKeyframes
+        .where(
+          (keyframe) =>
+              matchingWorkspaceGroupIds.contains(keyframe.targetGroupId) &&
+              currentFrameIds.contains(keyframe.frameId),
+        )
+        .map(
+          (keyframe) => keyframe.copyWith(
+            targetGroupId: workspaceToAuthored[keyframe.targetGroupId],
+          ),
+        )
+        .toList();
+
+    final capturedTracks = _groupAnimationTracks
+        .where(
+          (track) => matchingWorkspaceGroupIds.contains(track.targetGroupId),
+        )
+        .map(
+          (track) => track.copyWith(
+            targetGroupId: workspaceToAuthored[track.targetGroupId]!,
+            // Match Workspace playback: obsolete source frames
+            // are not part of the effective animation sequence.
+            clips: track.clips
+                .where(
+                  (clip) =>
+                      clip.sourceFrameId.isNotEmpty &&
+                      currentFrameIds.contains(clip.sourceFrameId) &&
+                      clip.duration > 0,
+                )
+                .toList(),
+          ),
+        )
+        .toList();
+
+    if (capturedKeyframes.isEmpty && capturedTracks.isEmpty) {
+      return null;
+    }
+
+    if (_frameIds.isEmpty ||
+        _frameIds.length != _frameDurations.length ||
+        _frameIds.toSet().length != _frameIds.length) {
+      return null;
+    }
+
+    return BagMotionAsset(
+      fps: _fps,
+      frameIds: List<String>.from(_frameIds),
+      frameDurations: List<int>.from(_frameDurations),
+      transformKeyframes: capturedKeyframes,
+      groupAnimationTracks: capturedTracks,
+    );
+  }
+
   Future<void> _saveProjectAndOriginatingBagItem() async {
     // Project persistence happens first.
     //
@@ -2414,6 +3024,65 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
       return;
     }
 
+    final capturedMotion = _captureWorkspaceGroupMotion(composite);
+
+    if (capturedMotion == null &&
+        (sourceItem.motion != null ||
+            _compositeHasWorkspaceMotion(composite))) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text(
+              'Bag update cancelled: existing animation could not be captured.',
+            ),
+          ),
+        );
+      }
+      return;
+    }
+
+    final existingMotion = sourceItem.motion;
+    BagMotionAsset? motion = capturedMotion ?? existingMotion;
+
+    if (capturedMotion != null &&
+        existingMotion != null &&
+        existingMotion.clips.isNotEmpty) {
+      final preservedClips = existingMotion.availableClips
+          .where((clip) => clip.name != 'idle')
+          .toList();
+
+      motion = BagMotionAsset(
+        fps: capturedMotion.fps,
+        frameIds: capturedMotion.frameIds,
+        frameDurations: capturedMotion.frameDurations,
+        transformKeyframes: capturedMotion.transformKeyframes,
+        groupAnimationTracks: capturedMotion.groupAnimationTracks,
+        clips: [
+          BagMotionClip(
+            name: 'idle',
+            fps: capturedMotion.fps,
+            frameIds: capturedMotion.frameIds,
+            frameDurations: capturedMotion.frameDurations,
+            transformKeyframes: capturedMotion.transformKeyframes,
+            groupAnimationTracks: capturedMotion.groupAnimationTracks,
+          ),
+          ...preservedClips,
+        ],
+      );
+    }
+
+    if (motion != null) {
+      final problem = _validateBagMotion(composite, motion);
+      if (problem != null) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Bag update cancelled: $problem')),
+          );
+        }
+        return;
+      }
+    }
+
     final rootGroup = _layerGroups[groupIndex];
 
     final updated = BagItem(
@@ -2425,6 +3094,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
       assetType: 'composite',
       layers: const <BagLayer>[],
       composite: composite,
+      motion: motion,
       createdAt: sourceItem.createdAt,
       imagePath: sourceItem.imagePath,
       authoredWidth: sourceItem.authoredWidth,
@@ -2661,6 +3331,18 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     // must preserve its hierarchy and therefore becomes Composite.
     // ------------------------------------------------------------
     bool groupRequiresComposite(LayerGroup currentGroup) {
+      final hasMotion =
+          _transformKeyframes.any(
+            (keyframe) => keyframe.targetGroupId == currentGroup.id,
+          ) ||
+          _groupAnimationTracks.any(
+            (track) => track.targetGroupId == currentGroup.id,
+          );
+
+      if (hasMotion) {
+        return true;
+      }
+
       // Environmental metadata must survive Bag round-trips, so tagged
       // groups always use the structured Composite format.
       if (currentGroup.environmentRole != null) {
@@ -3159,6 +3841,33 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
       return;
     }
 
+    final capturedMotion = composite == null
+        ? null
+        : _captureWorkspaceGroupMotion(composite);
+
+    if (composite != null &&
+        capturedMotion == null &&
+        _compositeHasWorkspaceMotion(composite)) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+            'Bag export cancelled: animation could not be captured.',
+          ),
+        ),
+      );
+      return;
+    }
+
+    if (capturedMotion != null && composite != null) {
+      final problem = _validateBagMotion(composite, capturedMotion);
+      if (problem != null) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Bag export cancelled: $problem')),
+        );
+        return;
+      }
+    }
+
     final item = BagItem(
       id: 'bag_${DateTime.now().microsecondsSinceEpoch}',
       name: result,
@@ -3166,6 +3875,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
       assetType: requiresComposite ? 'composite' : 'vector',
       layers: requiresComposite ? const <BagLayer>[] : bagLayers,
       composite: composite,
+      motion: capturedMotion,
       createdAt: DateTime.now(),
       authoredCanvasWidth: requiresComposite ? _canvasWidth : null,
       authoredCanvasHeight: requiresComposite ? _canvasHeight : null,
@@ -4630,6 +5340,14 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
       return;
     }
 
+    if (_sceneMotionOwnedLayerIds().contains(_layers[index].id)) {
+      debugPrint(
+        'INKDFRAMES_SCENE_LOCK: imported artwork cannot '
+        'be deleted individually',
+      );
+      return;
+    }
+
     setState(() {
       final deletedLayerId = _layers[index].id;
       final deletedEntry = 'layer:$deletedLayerId';
@@ -4752,6 +5470,10 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
       _groupAnimationTracks
         ..clear()
         ..addAll(project.groupAnimationTracks);
+
+      _sceneMotionInstances
+        ..clear()
+        ..addAll(project.sceneMotionInstances);
 
       // loadProject() returns a freshly deserialized project graph.
       // Workspace can take ownership of those immutable stroke/point objects
@@ -5264,7 +5986,25 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
       _frameDurations.removeAt(_selectedFrameIndex);
 
       if (_selectedFrameIndex < _frameIds.length) {
-        _frameIds.removeAt(_selectedFrameIndex);
+        final deletedFrameId = _frameIds.removeAt(_selectedFrameIndex);
+
+        // A deleted frame must not leave orphaned transform keyframes.
+        _transformKeyframes.removeWhere(
+          (keyframe) => keyframe.frameId == deletedFrameId,
+        );
+
+        // Preserve each independent track and its remaining valid clips.
+        // An empty track is safely ignored by the playback resolver.
+        for (var i = 0; i < _groupAnimationTracks.length; i++) {
+          final track = _groupAnimationTracks[i];
+          final remainingClips = track.clips
+              .where((clip) => clip.sourceFrameId != deletedFrameId)
+              .toList();
+
+          if (remainingClips.length != track.clips.length) {
+            _groupAnimationTracks[i] = track.copyWith(clips: remainingClips);
+          }
+        }
       }
 
       if (_selectedFrameIndex < _referenceFrameTimesMs.length) {
@@ -5692,33 +6432,37 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     // animation continue inside a held main timeline frame.
     final baseFrameMilliseconds = (1000 / _fps).round().clamp(40, 1000);
 
+    _sceneMotionLastTick ??= DateTime.now();
+
     _playbackTimer = Timer(Duration(milliseconds: baseFrameMilliseconds), () {
       if (!mounted || !_isPlaying || _frameDurations.isEmpty) {
         return;
       }
 
-      setState(() {
-        final selectedDuration = _frameDurations[_selectedFrameIndex].clamp(
-          1,
-          1000000,
-        );
+      final now = DateTime.now();
+      final lastTick = _sceneMotionLastTick;
+      final elapsedUs = lastTick == null
+          ? baseFrameMilliseconds * 1000
+          : now.difference(lastTick).inMicroseconds.clamp(0, 1000000);
+      _sceneMotionLastTick = now;
 
-        if (_playbackFrameUnit + 1 < selectedDuration) {
-          // Stay on the same main timeline frame, but advance the independent
-          // animation clock by one base-frame unit.
-          _playbackFrameUnit += 1;
-        } else {
-          // The held main frame has completed. Advance the authoritative
-          // timeline and begin the next frame at intra-frame unit zero.
+      _sceneMotionElapsedUs += elapsedUs;
+      final selectedDuration = _frameDurations[_selectedFrameIndex].clamp(
+        1,
+        1000000,
+      );
+
+      if (_playbackFrameUnit + 1 < selectedDuration) {
+        _playbackFrameUnit += 1;
+        _sceneMotionTick.value += 1;
+      } else {
+        setState(() {
           _playbackFrameUnit = 0;
-
-          if (_selectedFrameIndex < _frameDurations.length - 1) {
-            _selectedFrameIndex += 1;
-          } else {
-            _selectedFrameIndex = 0;
-          }
-        }
-      });
+          _selectedFrameIndex = _selectedFrameIndex < _frameDurations.length - 1
+              ? _selectedFrameIndex + 1
+              : 0;
+        });
+      }
 
       final controller = _videoController;
 
@@ -5732,7 +6476,8 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
   }
 
   Future<void> _togglePlayback() async {
-    if (_frameDurations.length < 2) {
+    if (_frameDurations.length < 2 &&
+        !_sceneMotionInstances.any((instance) => instance.enabled)) {
       return;
     }
 
@@ -5741,6 +6486,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
 
     if (_isPlaying) {
       _playbackTimer?.cancel();
+      _sceneMotionLastTick = null;
 
       if (hasVideo && controller.value.isPlaying) {
         await controller.pause();
@@ -5846,9 +6592,16 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
       return _referenceTransformBounds(reference);
     }
 
-    Rect? bounds = _selectedStrokeBounds();
+    final scenePlacement = _activeScenePlacement;
 
-    for (final referenceId in _transformGroupReferenceIds) {
+    Rect? bounds = scenePlacement == null
+        ? _selectedStrokeBounds()
+        : _scenePlacementArtworkBounds(scenePlacement.rootGroupId);
+
+    for (final referenceId
+        in scenePlacement == null
+            ? _transformGroupReferenceIds
+            : const <String>{}) {
       final index = _referenceLayers.indexWhere(
         (reference) => reference.id == referenceId,
       );
@@ -5864,6 +6617,13 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
       bounds = bounds == null
           ? referenceBounds
           : bounds.expandToInclude(referenceBounds);
+    }
+
+    if (scenePlacement != null && bounds != null) {
+      return MatrixUtils.transformRect(
+        _scenePlacementMatrix(scenePlacement),
+        bounds,
+      );
     }
 
     // Always return the authoritative authored/base geometry here.
@@ -6506,7 +7266,13 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
       );
     }
 
-    if (selected.isEmpty && referenceIds.isEmpty) {
+    final isScenePlacement =
+        groupId != null &&
+        _sceneMotionInstances.any(
+          (instance) => instance.enabled && instance.rootGroupId == groupId,
+        );
+
+    if (selected.isEmpty && referenceIds.isEmpty && !isScenePlacement) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Nothing to transform in this group')),
       );
@@ -6826,8 +7592,83 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
 
   TransformKeyframe? _resolvedTransformPoseForFrame(
     String frameId,
-    String groupId,
-  ) {
+    String groupId, {
+    SceneMotionInstance? sceneMotion,
+  }) {
+    if (sceneMotion != null) {
+      final motion = sceneMotion.motion;
+      final frames = motion.frameIds;
+      final keys = motion.transformKeyframes;
+
+      TransformKeyframe? keyAt(String sourceFrameId) {
+        for (final key in keys) {
+          if (key.enabled &&
+              key.frameId == sourceFrameId &&
+              key.targetGroupId == groupId) {
+            return key;
+          }
+        }
+        return null;
+      }
+
+      final exact = keyAt(frameId);
+      if (exact != null) return exact;
+
+      final index = frames.indexOf(frameId);
+      if (index < 0) return null;
+
+      TransformKeyframe? previous;
+      TransformKeyframe? next;
+      int? previousIndex;
+      int? nextIndex;
+
+      for (var i = index - 1; i >= 0; i--) {
+        final candidate = keyAt(frames[i]);
+        if (candidate != null) {
+          previous = candidate;
+          previousIndex = i;
+          break;
+        }
+      }
+
+      for (var i = index + 1; i < frames.length; i++) {
+        final candidate = keyAt(frames[i]);
+        if (candidate != null) {
+          next = candidate;
+          nextIndex = i;
+          break;
+        }
+      }
+
+      if (previous == null ||
+          next == null ||
+          previousIndex == null ||
+          nextIndex == null) {
+        return null;
+      }
+
+      final t = (index - previousIndex) / (nextIndex - previousIndex);
+
+      double interpolate(double a, double b) => a + (b - a) * t;
+
+      double? interpolatePivot(double? a, double? b) {
+        if (a == null && b == null) return null;
+        return interpolate(a ?? b!, b ?? a!);
+      }
+
+      return TransformKeyframe(
+        id: 'scene_tween_${previous.id}_${next.id}_$frameId',
+        frameId: frameId,
+        targetGroupId: groupId,
+        translateX: interpolate(previous.translateX, next.translateX),
+        translateY: interpolate(previous.translateY, next.translateY),
+        rotation: interpolate(previous.rotation, next.rotation),
+        scaleX: interpolate(previous.scaleX, next.scaleX),
+        scaleY: interpolate(previous.scaleY, next.scaleY),
+        pivotX: interpolatePivot(previous.pivotX, next.pivotX),
+        pivotY: interpolatePivot(previous.pivotY, next.pivotY),
+      );
+    }
     // An authored key always wins exactly.
     final exact = _transformKeyframeForFrame(frameId, groupId);
 
@@ -7932,6 +8773,10 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
   }
 
   List<Offset>? _keyedTransformCageCorners(Rect bounds) {
+    if (_activeScenePlacement != null) {
+      return null;
+    }
+
     if (!_editingKeyedTransformGroupPose) {
       return null;
     }
@@ -8021,6 +8866,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
   }
 
   bool get _transformPivotIsAuthored =>
+      _activeScenePlacement == null &&
       _transformReferenceLayerId == null &&
       (_transformTargetGroup?.hasAuthoredPivot ?? false);
 
@@ -8032,6 +8878,10 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
 
   void _beginTransformPivotLockHold(Offset pivot) {
     _cancelTransformPivotLockHold();
+
+    if (_activeScenePlacement != null) {
+      return;
+    }
 
     final groupId = _transformTargetGroupId;
 
@@ -8088,6 +8938,10 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
   }
 
   Offset _effectiveTransformPivot(Rect bounds) {
+    if (_activeScenePlacement != null) {
+      return _transformPivot ?? bounds.center;
+    }
+
     if (_editingKeyedTransformGroupPose) {
       final groupId = _transformTargetGroupId;
 
@@ -10544,6 +11398,15 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
       return;
     }
 
+    // Imported Scene Motion artwork is read-only in the room.
+    // Transform gestures remain available for whole instances.
+    if (_activeLayerIsSceneMotionOwned && !_isTransformActive) {
+      _draftStroke = const <VectorPoint>[];
+      _draftStampStrokes = <VectorStroke>[];
+      _draftTextureStrokes = <VectorStroke>[];
+      return;
+    }
+
     _armCanvasAssetLongPress(event, canvasContext);
 
     final renderBox = canvasContext.findRenderObject() as RenderBox;
@@ -10627,7 +11490,14 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
               canvasPosition,
               pivot,
             );
-            if (_transformReferenceLayerId != null) {
+            _scenePlacementGestureStart = _activeScenePlacement;
+
+            if (_scenePlacementGestureStart != null) {
+              _referenceTransformSnapshot = null;
+              _transformGroupReferenceSnapshot = null;
+              _transformRotationSnapshot = null;
+              _transformKeyframeRotationSnapshot = null;
+            } else if (_transformReferenceLayerId != null) {
               _referenceTransformSnapshot = _referenceTransformTarget;
               _transformGroupReferenceSnapshot = null;
               _transformRotationSnapshot = null;
@@ -10675,7 +11545,14 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
             _transformScaleStartDistance = startDistance < 0.001
                 ? 0.001
                 : startDistance;
-            if (_transformReferenceLayerId != null) {
+            _scenePlacementGestureStart = _activeScenePlacement;
+
+            if (_scenePlacementGestureStart != null) {
+              _referenceTransformSnapshot = null;
+              _transformGroupReferenceSnapshot = null;
+              _transformScaleSnapshot = null;
+              _transformKeyframeScaleSnapshot = null;
+            } else if (_transformReferenceLayerId != null) {
               _referenceTransformSnapshot = _referenceTransformTarget;
               _transformGroupReferenceSnapshot = null;
               _transformScaleSnapshot = null;
@@ -10729,7 +11606,14 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                 ? 0.001
                 : startDistance;
 
-            if (_transformReferenceLayerId != null) {
+            _scenePlacementGestureStart = _activeScenePlacement;
+
+            if (_scenePlacementGestureStart != null) {
+              _referenceTransformSnapshot = null;
+              _transformGroupReferenceSnapshot = null;
+              _transformScaleSnapshot = null;
+              _transformKeyframeScaleSnapshot = null;
+            } else if (_transformReferenceLayerId != null) {
               _referenceTransformSnapshot = _referenceTransformTarget;
               _transformGroupReferenceSnapshot = null;
               _transformScaleSnapshot = null;
@@ -10968,6 +11852,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
               );
 
               if (groupIndex != -1 &&
+                  _activeScenePlacement == null &&
                   _layerGroups[groupIndex].hasAuthoredPivot) {
                 _layerGroups[groupIndex] = _layerGroups[groupIndex].copyWith(
                   pivotX: canvasPosition.dx,
@@ -10987,7 +11872,8 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
           (_transformRotationSnapshot != null ||
               _referenceTransformSnapshot != null ||
               _transformGroupReferenceSnapshot != null ||
-              _transformKeyframeRotationSnapshot != null)) {
+              _transformKeyframeRotationSnapshot != null ||
+              _scenePlacementGestureStart != null)) {
         final currentAngle = _angleFromCenter(
           canvasPosition,
           _transformRotationCenter!,
@@ -10998,7 +11884,14 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
         setState(() {
           final referenceSnapshot = _referenceTransformSnapshot;
 
-          if (_transformReferenceLayerId != null && referenceSnapshot != null) {
+          if (_scenePlacementGestureStart != null) {
+            _rotateScenePlacement(
+              _scenePlacementGestureStart!,
+              angle,
+              _transformRotationCenter!,
+            );
+          } else if (_transformReferenceLayerId != null &&
+              referenceSnapshot != null) {
             _rotateReferenceTransform(
               angle,
               _transformRotationCenter!,
@@ -11044,7 +11937,8 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
           (_transformScaleSnapshot != null ||
               _referenceTransformSnapshot != null ||
               _transformGroupReferenceSnapshot != null ||
-              _transformKeyframeScaleSnapshot != null)) {
+              _transformKeyframeScaleSnapshot != null ||
+              _scenePlacementGestureStart != null)) {
         double scaleX = 1.0;
         double scaleY = 1.0;
 
@@ -11068,10 +11962,39 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
           scaleY = scale;
         }
 
+        if (_scenePlacementGestureStart != null) {
+          final factor = _transformScaleHorizontalOnly
+              ? scaleX
+              : _transformScaleVerticalOnly
+              ? scaleY
+              : scaleX;
+
+          _scaleScenePlacement(
+            _scenePlacementGestureStart!,
+            factor,
+            _transformScaleAnchor!,
+          );
+          _sceneMotionTick.value += 1;
+          return;
+        }
+
         setState(() {
           final referenceSnapshot = _referenceTransformSnapshot;
 
-          if (_transformReferenceLayerId != null && referenceSnapshot != null) {
+          if (_scenePlacementGestureStart != null) {
+            final factor = _transformScaleHorizontalOnly
+                ? scaleX
+                : _transformScaleVerticalOnly
+                ? scaleY
+                : scaleX;
+
+            _scaleScenePlacement(
+              _scenePlacementGestureStart!,
+              factor,
+              _transformScaleAnchor!,
+            );
+          } else if (_transformReferenceLayerId != null &&
+              referenceSnapshot != null) {
             _scaleReferenceTransform(
               scaleX,
               scaleY,
@@ -11118,8 +12041,32 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
       if (_isTransformDragging && _transformLastPosition != null) {
         final delta = canvasPosition - _transformLastPosition!;
 
+        if (_activeScenePlacement != null) {
+          final instance = _activeScenePlacement!;
+          _updateScenePlacement(
+            instance.copyWith(
+              placementX: instance.placementX + delta.dx,
+              placementY: instance.placementY + delta.dy,
+            ),
+          );
+          if (_transformPivot != null) {
+            _transformPivot = _transformPivot! + delta;
+          }
+          _transformLastPosition = canvasPosition;
+          _sceneMotionTick.value += 1;
+          return;
+        }
+
         setState(() {
-          if (_transformReferenceLayerId != null) {
+          if (_activeScenePlacement != null) {
+            final instance = _activeScenePlacement!;
+            _updateScenePlacement(
+              instance.copyWith(
+                placementX: instance.placementX + delta.dx,
+                placementY: instance.placementY + delta.dy,
+              ),
+            );
+          } else if (_transformReferenceLayerId != null) {
             _moveReferenceTransform(delta);
           } else if (_editingKeyedTransformGroupPose) {
             // Animation pose lane:
@@ -11473,6 +12420,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
 
     if (_isTransformActive) {
       setState(() {
+        _scenePlacementGestureStart = null;
         if (_isTransformPivotDragging) {
           _cancelTransformPivotLockHold();
           _isTransformPivotDragging = false;
@@ -11506,7 +12454,8 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
       return;
     }
 
-    if (_isPlaying || _draftStroke.isEmpty) {
+    if (_isPlaying || _draftStroke.isEmpty || _activeLayerIsSceneMotionOwned) {
+      _draftStroke = const <VectorPoint>[];
       return;
     }
 
@@ -15351,8 +16300,26 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     DrawingLayer layer, {
     int? frameIndex,
     bool includeLiveDraft = false,
+    bool holdSceneArtwork = false,
   }) {
-    final resolvedFrameIndex = frameIndex ?? _selectedFrameIndex;
+    var resolvedFrameIndex = frameIndex ?? _selectedFrameIndex;
+
+    // Independent scene animation may animate a group's transform while
+    // its drawing artwork remains unchanged. Hold the last authored
+    // artwork instead of making that layer disappear on an empty frame.
+    // Ordinary Workspace timeline rendering is unaffected.
+    if (holdSceneArtwork &&
+        resolvedFrameIndex >= 0 &&
+        resolvedFrameIndex < layer.frames.length &&
+        layer.frames[resolvedFrameIndex].isEmpty) {
+      for (var i = resolvedFrameIndex - 1; i >= 0; i--) {
+        if (layer.frames[i].isNotEmpty) {
+          resolvedFrameIndex = i;
+          break;
+        }
+      }
+    }
+
     final layerIndex = _layers.indexWhere((item) => item.id == layer.id);
 
     // Live draft ownership is explicit.
@@ -15372,11 +16339,18 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     if (resolvedFrameIndex >= 0 && resolvedFrameIndex < layer.frames.length) {
       final sourceStrokes = layer.frames[resolvedFrameIndex];
 
-      savedFrameStrokes.addAll(
-        sourceStrokes.map(
-          (stroke) => _strokeWithOpacity(stroke, layer.opacity),
-        ),
-      );
+      // Reuse immutable authored strokes when no opacity adjustment is
+      // required. Scene placement and animation rebuild frequently, so
+      // avoid copying every stroke in the common fully opaque case.
+      if (layer.opacity >= 1.0) {
+        savedFrameStrokes.addAll(sourceStrokes);
+      } else {
+        savedFrameStrokes.addAll(
+          sourceStrokes.map(
+            (stroke) => _strokeWithOpacity(stroke, layer.opacity),
+          ),
+        );
+      }
 
       frameStrokes.addAll(savedFrameStrokes);
     }
@@ -15560,18 +16534,60 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
       ..translateByDouble(-pivot.dx, -pivot.dy, 0.0, 1.0);
   }
 
+  Widget _applySceneInstancePlacement(
+    SceneMotionInstance instance,
+    Widget child,
+  ) {
+    final matrix = Matrix4.identity()
+      ..translateByDouble(instance.placementX, instance.placementY, 0, 1)
+      ..translateByDouble(
+        instance.placementPivotX,
+        instance.placementPivotY,
+        0,
+        1,
+      )
+      ..rotateZ(instance.placementRotation)
+      ..scaleByDouble(instance.placementScaleX, instance.placementScaleY, 1, 1)
+      ..translateByDouble(
+        -instance.placementPivotX,
+        -instance.placementPivotY,
+        0,
+        1,
+      );
+
+    return Transform(
+      alignment: Alignment.topLeft,
+      transform: matrix,
+      child: child,
+    );
+  }
+
   Widget _applyTransformKeyframeToGroup(
     String groupId,
     Widget child, {
     String? frameId,
+    SceneMotionInstance? sceneMotion,
+    int? sceneSourceFrameIndex,
   }) {
-    final resolvedFrameId = frameId ?? _currentFrameId;
+    final motionFrames = sceneMotion?.motion.frameIds;
+    final resolvedFrameId =
+        sceneMotion != null &&
+            sceneSourceFrameIndex != null &&
+            motionFrames != null &&
+            sceneSourceFrameIndex >= 0 &&
+            sceneSourceFrameIndex < motionFrames.length
+        ? motionFrames[sceneSourceFrameIndex]
+        : frameId ?? _currentFrameId;
 
     if (resolvedFrameId == null) {
       return child;
     }
 
-    final keyframe = _resolvedTransformPoseForFrame(resolvedFrameId, groupId);
+    final keyframe = _resolvedTransformPoseForFrame(
+      resolvedFrameId,
+      groupId,
+      sceneMotion: sceneMotion,
+    );
 
     if (keyframe == null) {
       return child;
@@ -15611,6 +16627,20 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     final groupIndexById = <String, int>{
       for (var index = 0; index < _layerGroups.length; index++)
         _layerGroups[index].id: index,
+    };
+
+    // Animated composites own their source frames independently of the
+    // project's main timeline. Only the live scene uses this clock.
+    final liveSceneMotion =
+        isolatedGroupId == null &&
+        !drawingOnly &&
+        !echoHistoricalArtwork &&
+        frameIndex == null;
+
+    final sceneMotionByRoot = <String, SceneMotionInstance>{
+      if (liveSceneMotion)
+        for (final instance in _sceneMotionInstances)
+          if (instance.enabled) instance.rootGroupId: instance,
     };
 
     final mainAnimatedGroupIds = <String>{
@@ -15675,7 +16705,11 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
       }
     }
 
-    void addEntry(String entry, {int? drawingFrameIndexOverride}) {
+    void addEntry(
+      String entry, {
+      int? drawingFrameIndexOverride,
+      SceneMotionInstance? activeSceneMotion,
+    }) {
       if (entry.startsWith('layer:')) {
         final layerId = entry.substring(6);
 
@@ -15700,6 +16734,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
             layer,
             frameIndex: drawingFrameIndexOverride ?? frameIndex,
             includeLiveDraft: includeLiveDraft,
+            holdSceneArtwork: activeSceneMotion != null,
           ),
         );
         return;
@@ -15769,6 +16804,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
           addEntry(
             activeEntry,
             drawingFrameIndexOverride: drawingFrameIndexOverride,
+            activeSceneMotion: activeSceneMotion,
           );
         }
 
@@ -15789,6 +16825,18 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
         }
 
         final group = _layerGroups[groupIndex];
+
+        final groupSceneMotion =
+            activeSceneMotion ?? sceneMotionByRoot[group.id];
+
+        final sceneSourceFrameIndex = groupSceneMotion == null
+            ? null
+            : SceneMotionClock.frameIndex(
+                elapsedMicroseconds: _sceneMotionElapsedUs,
+                fps: groupSceneMotion.motion.fps,
+                frameDurations: groupSceneMotion.motion.frameDurations,
+                loop: groupSceneMotion.loop,
+              );
 
         if (!_isGroupEffectivelyVisible(group.id)) {
           return;
@@ -15815,7 +16863,12 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
           group.id,
         );
 
-        final trackedDrawingFrameIndex = participatesInMainAnimation
+        // Imported Scene Instances have their own animation clock and
+        // source artwork. Never resolve their group artwork through the
+        // destination room's animation tracks or timeline.
+        final trackedDrawingFrameIndex = groupSceneMotion != null
+            ? null
+            : participatesInMainAnimation
             ? null
             : _groupAnimationSourceFrameIndexAtTimelineUnit(
                 group.id,
@@ -15824,7 +16877,9 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
 
         // Existing pose tween artwork borrowing remains the fallback when no
         // autonomous artwork track owns this semantic group.
-        final tweenDrawingFrameIndex = frameId != null
+        final tweenDrawingFrameIndex = groupSceneMotion != null
+            ? null
+            : frameId != null
             ? (echoHistoricalArtwork
                   ? _echoArtworkSourceFrameIndex(frameId, group.id)
                   : _tweenArtworkSourceFrameIndex(frameId, group.id))
@@ -15862,7 +16917,9 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
 
           addEntry(
             childEntry,
-            drawingFrameIndexOverride: effectiveDrawingFrameIndex,
+            drawingFrameIndexOverride:
+                sceneSourceFrameIndex ?? effectiveDrawingFrameIndex,
+            activeSceneMotion: groupSceneMotion,
           );
 
           if (outerWidgets.length > beforeCount) {
@@ -15874,11 +16931,26 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
         if (groupWidgets.isNotEmpty) {
           widgets.add(
             Positioned.fill(
-              child: _applyTransformKeyframeToGroup(
-                group.id,
-                Stack(fit: StackFit.expand, children: groupWidgets),
-                frameId: frameId,
-              ),
+              child:
+                  groupSceneMotion != null &&
+                      groupSceneMotion.rootGroupId == group.id
+                  ? _applySceneInstancePlacement(
+                      groupSceneMotion,
+                      _applyTransformKeyframeToGroup(
+                        group.id,
+                        Stack(fit: StackFit.expand, children: groupWidgets),
+                        frameId: frameId,
+                        sceneMotion: groupSceneMotion,
+                        sceneSourceFrameIndex: sceneSourceFrameIndex,
+                      ),
+                    )
+                  : _applyTransformKeyframeToGroup(
+                      group.id,
+                      Stack(fit: StackFit.expand, children: groupWidgets),
+                      frameId: frameId,
+                      sceneMotion: groupSceneMotion,
+                      sceneSourceFrameIndex: sceneSourceFrameIndex,
+                    ),
             ),
           );
         }
@@ -16317,48 +17389,58 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                                                 ),
                                               ),
 
-                                            ..._buildMixedHierarchySceneWidgets(
-                                              // Give the live scene its stable
-                                              // animation-frame identity so
-                                              // semantic groups can resolve
-                                              // tween poses and inherited
-                                              // artwork on blank inbetweens.
-                                              //
-                                              // Deliberately leave frameIndex
-                                              // null: that still marks this as
-                                              // the actively editable scene.
-                                              frameId: _currentFrameId,
+                                            ValueListenableBuilder<int>(
+                                              valueListenable: _sceneMotionTick,
+                                              builder: (context, tick, child) {
+                                                return Stack(
+                                                  fit: StackFit.expand,
+                                                  children: [
+                                                    ..._buildMixedHierarchySceneWidgets(
+                                                      // Give the live scene its stable
+                                                      // animation-frame identity so
+                                                      // semantic groups can resolve
+                                                      // tween poses and inherited
+                                                      // artwork on blank inbetweens.
+                                                      //
+                                                      // Deliberately leave frameIndex
+                                                      // null: that still marks this as
+                                                      // the actively editable scene.
+                                                      frameId: _currentFrameId,
 
-                                              // This is the one authoritative
-                                              // editable scene. Keep the live
-                                              // S Pen draft visible even when
-                                              // animation tweening borrows
-                                              // artwork from another frame.
-                                              includeLiveDraft:
-                                                  !_isCompositePngCapture,
+                                                      // This is the one authoritative
+                                                      // editable scene. Keep the live
+                                                      // S Pen draft visible even when
+                                                      // animation tweening borrows
+                                                      // artwork from another frame.
+                                                      includeLiveDraft:
+                                                          !_isCompositePngCapture,
 
-                                              // Independent nested animation
-                                              // advances once per base FPS
-                                              // unit while the selected main
-                                              // frame remains held.
-                                              intraFrameUnit: _isPlaying
-                                                  ? _playbackFrameUnit
-                                                  : 0,
+                                                      // Independent nested animation
+                                                      // advances once per base FPS
+                                                      // unit while the selected main
+                                                      // frame remains held.
+                                                      intraFrameUnit: _isPlaying
+                                                          ? _playbackFrameUnit
+                                                          : 0,
 
-                                              // Normal Workspace rendering
-                                              // always traverses the complete
-                                              // authoritative scene hierarchy.
-                                              //
-                                              // Only an explicit Composite PNG
-                                              // export isolates a single group.
-                                              // This keeps Bag/asset exports
-                                              // surgical while allowing normal
-                                              // project/scene consumers to see
-                                              // the complete resolved scene.
-                                              isolatedGroupId:
-                                                  _isCompositePngCapture
-                                                  ? _compositePngCaptureGroupId
-                                                  : null,
+                                                      // Normal Workspace rendering
+                                                      // always traverses the complete
+                                                      // authoritative scene hierarchy.
+                                                      //
+                                                      // Only an explicit Composite PNG
+                                                      // export isolates a single group.
+                                                      // This keeps Bag/asset exports
+                                                      // surgical while allowing normal
+                                                      // project/scene consumers to see
+                                                      // the complete resolved scene.
+                                                      isolatedGroupId:
+                                                          _isCompositePngCapture
+                                                          ? _compositePngCaptureGroupId
+                                                          : null,
+                                                    ),
+                                                  ],
+                                                );
+                                              },
                                             ),
 
                                             // Pose-aware onion skins render
@@ -16510,34 +17592,41 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                                               ),
                                             if (_isTransformActive &&
                                                 !_isCompositePngCapture)
-                                              IgnorePointer(
-                                                child: CustomPaint(
-                                                  painter: _TransformOverlayPainter(
-                                                    lassoPoints: _lassoPoints,
-                                                    selectionBounds:
-                                                        _transformSelectionBounds(),
-                                                    posedCorners:
-                                                        _transformSelectionBounds() ==
-                                                            null
-                                                        ? null
-                                                        : _keyedTransformCageCorners(
-                                                            _transformSelectionBounds()!,
-                                                          ),
-                                                    pivot:
-                                                        _transformSelectionBounds() ==
-                                                            null
-                                                        ? _transformPivot
-                                                        : _effectiveTransformPivot(
-                                                            _transformSelectionBounds()!,
-                                                          ),
-                                                    viewScale:
-                                                        _transformViewScale,
-                                                    pivotLocked:
-                                                        _transformPivotIsAuthored,
-                                                  ),
-                                                  child:
-                                                      const SizedBox.expand(),
-                                                ),
+                                              ValueListenableBuilder<int>(
+                                                valueListenable:
+                                                    _sceneMotionTick,
+                                                builder: (context, tick, child) {
+                                                  return IgnorePointer(
+                                                    child: CustomPaint(
+                                                      painter: _TransformOverlayPainter(
+                                                        lassoPoints:
+                                                            _lassoPoints,
+                                                        selectionBounds:
+                                                            _transformSelectionBounds(),
+                                                        posedCorners:
+                                                            _transformSelectionBounds() ==
+                                                                null
+                                                            ? null
+                                                            : _keyedTransformCageCorners(
+                                                                _transformSelectionBounds()!,
+                                                              ),
+                                                        pivot:
+                                                            _transformSelectionBounds() ==
+                                                                null
+                                                            ? _transformPivot
+                                                            : _effectiveTransformPivot(
+                                                                _transformSelectionBounds()!,
+                                                              ),
+                                                        viewScale:
+                                                            _transformViewScale,
+                                                        pivotLocked:
+                                                            _transformPivotIsAuthored,
+                                                      ),
+                                                      child:
+                                                          const SizedBox.expand(),
+                                                    ),
+                                                  );
+                                                },
                                               ),
                                           ],
                                         ),

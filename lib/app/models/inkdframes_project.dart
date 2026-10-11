@@ -1,5 +1,6 @@
 import 'drawing_layer.dart';
 import 'group_animation_track.dart';
+import 'scene_motion_instance.dart';
 import 'layer_group.dart';
 import 'reference_layer.dart';
 import 'transform_keyframe.dart';
@@ -26,6 +27,7 @@ class InkdFramesProject {
     List<VariantSlot>? variantSlots,
     List<TransformKeyframe>? transformKeyframes,
     List<GroupAnimationTrack>? groupAnimationTracks,
+    List<SceneMotionInstance>? sceneMotionInstances,
     this.activeReferenceLayerId,
     List<int>? referenceFrameTimesMs,
     this.referenceVisible = true,
@@ -41,6 +43,7 @@ class InkdFramesProject {
            ),
        variantSlots = variantSlots ?? <VariantSlot>[],
        groupAnimationTracks = groupAnimationTracks ?? <GroupAnimationTrack>[],
+       sceneMotionInstances = sceneMotionInstances ?? <SceneMotionInstance>[],
        transformKeyframes = transformKeyframes ?? <TransformKeyframe>[],
        referenceLayers =
            referenceLayers ??
@@ -184,6 +187,17 @@ class InkdFramesProject {
           );
 
     final rawGroupAnimationTracks = json['groupAnimationTracks'];
+    final rawSceneMotionInstances = json['sceneMotionInstances'];
+    final sceneMotionInstances = rawSceneMotionInstances is List
+        ? rawSceneMotionInstances
+              .whereType<Map>()
+              .map(
+                (entry) => SceneMotionInstance.fromJson(
+                  Map<String, dynamic>.from(entry),
+                ),
+              )
+              .toList()
+        : <SceneMotionInstance>[];
 
     final groupAnimationTracks = rawGroupAnimationTracks is List
         ? rawGroupAnimationTracks
@@ -226,6 +240,7 @@ class InkdFramesProject {
       variantSlots: variantSlots,
       transformKeyframes: transformKeyframes,
       groupAnimationTracks: groupAnimationTracks,
+      sceneMotionInstances: sceneMotionInstances,
       activeReferenceLayerId:
           json['activeReferenceLayerId'] as String? ??
           (referenceLayers.isNotEmpty ? referenceLayers.first.id : null),
@@ -279,6 +294,7 @@ class InkdFramesProject {
   /// Clips reference stable animation frame IDs rather than duplicating
   /// drawing data. Rendering support is intentionally layered on separately.
   final List<GroupAnimationTrack> groupAnimationTracks;
+  final List<SceneMotionInstance> sceneMotionInstances;
 
   /// Reference currently driving video playback/scrubbing.
   final String? activeReferenceLayerId;
@@ -335,6 +351,9 @@ class InkdFramesProject {
       'variantSlots': variantSlots.map((slot) => slot.toJson()).toList(),
       'transformKeyframes': transformKeyframes
           .map((keyframe) => keyframe.toJson())
+          .toList(),
+      'sceneMotionInstances': sceneMotionInstances
+          .map((instance) => instance.toJson())
           .toList(),
       'groupAnimationTracks': groupAnimationTracks
           .map((track) => track.toJson())
