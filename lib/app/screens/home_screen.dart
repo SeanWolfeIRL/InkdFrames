@@ -5752,7 +5752,7 @@ class _HomeScreenState extends State<HomeScreen>
     required double roomHeight,
   }) {
     return IgnorePointer(
-      ignoring: _decorateMode,
+      ignoring: _decorateMode || _cleanMode,
       child: Semantics(
         button: true,
         label: tooltip,
@@ -6066,7 +6066,7 @@ class _HomeScreenState extends State<HomeScreen>
                                     _selectedDecorationId = decoration.id;
                                   });
                                 },
-                                onPanStart: !_decorateMode
+                                onPanStart: !(_decorateMode || _cleanMode)
                                     ? null
                                     : (details) {
                                         if (_cleanMode) {
@@ -6097,7 +6097,7 @@ class _HomeScreenState extends State<HomeScreen>
                                           _selectedDecorationId = decoration.id;
                                         });
                                       },
-                                onPanUpdate: !_decorateMode
+                                onPanUpdate: !(_decorateMode || _cleanMode)
                                     ? null
                                     : (details) {
                                         if (_cleanMode) {
@@ -6161,7 +6161,7 @@ class _HomeScreenState extends State<HomeScreen>
                                           );
                                         });
                                       },
-                                onPanEnd: !_decorateMode
+                                onPanEnd: !(_decorateMode || _cleanMode)
                                     ? null
                                     : (_) {
                                         if (_cleanMode) {
@@ -6258,7 +6258,7 @@ class _HomeScreenState extends State<HomeScreen>
                   // geometry. The full room forwards taps into the semantic
                   // hit router; alpha-aware Composite hit testing decides
                   // whether anything meaningful was actually touched.
-                  if (!_decorateMode)
+                  if (!_decorateMode && !_cleanMode)
                     Positioned.fill(
                       child: GestureDetector(
                         behavior: HitTestBehavior.translucent,
@@ -6447,23 +6447,6 @@ class _HomeScreenState extends State<HomeScreen>
                     ),
                   ),
 
-                  // GARDEN
-                  Positioned(
-                    left: roomWidth * 0.70,
-                    top: roomHeight * 0.16,
-                    width: roomWidth * 0.17,
-                    height: roomHeight * 0.47,
-                    child: _roomHotspot(
-                      tooltip: 'Garden · Coming Soon',
-                      roomOrigin: Offset(roomWidth * 0.70, roomHeight * 0.16),
-                      roomWidth: roomWidth,
-                      roomHeight: roomHeight,
-                      onTap: () {
-                        _showComingSoon(context, 'Garden');
-                      },
-                    ),
-                  ),
-
                   // SETTINGS
                   Positioned(
                     left: roomWidth * 0.795,
@@ -6477,27 +6460,6 @@ class _HomeScreenState extends State<HomeScreen>
                       roomHeight: roomHeight,
                       onTap: () {
                         _showComingSoon(context, 'Options');
-                      },
-                    ),
-                  ),
-
-                  // WINDOW
-                  Positioned(
-                    left: roomWidth * 0.015,
-                    top: roomHeight * 0.18,
-                    width: roomWidth * 0.20,
-                    height: roomHeight * 0.42,
-                    child: _roomHotspot(
-                      tooltip: 'Window',
-                      roomOrigin: Offset(roomWidth * 0.015, roomHeight * 0.18),
-                      roomWidth: roomWidth,
-                      roomHeight: roomHeight,
-                      onTap: () {
-                        ScaffoldMessenger.of(context).showSnackBar(
-                          const SnackBar(
-                            content: Text('A quiet view outside. 🌿'),
-                          ),
-                        );
                       },
                     ),
                   ),
@@ -6648,6 +6610,26 @@ class _HomeScreenState extends State<HomeScreen>
                             runSpacing: 0,
                             crossAxisAlignment: WrapCrossAlignment.center,
                             children: [
+                              IconButton(
+                                tooltip: _cleanMode
+                                    ? 'Finish Cleaning'
+                                    : 'Clean Mode',
+                                onPressed: () {
+                                  setState(() {
+                                    _cleanMode = !_cleanMode;
+                                    _activeCleaningDecorationId = null;
+                                    _activeCleaningDustNodeId = null;
+                                    _selectedRoomNodeId = null;
+                                    _selectedRoomNodeName = null;
+                                  });
+                                },
+                                icon: Icon(
+                                  Icons.cleaning_services_outlined,
+                                  color: _cleanMode
+                                      ? Colors.lightGreenAccent
+                                      : Colors.white,
+                                ),
+                              ),
                               IconButton(
                                 tooltip: _decorateMode
                                     ? 'Finish Decorating'
