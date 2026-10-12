@@ -411,6 +411,7 @@ class _HomeScreenState extends State<HomeScreen>
 
   String? _activeCleaningDecorationId;
   String? _activeCleaningDustNodeId;
+  int? _activeCleaningPointer;
 
   final Map<String, _DustCleaningSignal> _dustCleaningSignals =
       <String, _DustCleaningSignal>{};
@@ -794,6 +795,67 @@ class _HomeScreenState extends State<HomeScreen>
     _homeSceneReady = true;
   }
 
+  // TEMPORARY CHAPTER 1 COBWEB DIAGNOSTIC
+  void _debugCobwebObjectives() {
+    var total = 0;
+    var cleared = 0;
+
+    void visit(CompositeNode node, String decorationId) {
+      if (!node.visible) return;
+
+      final override = _roomNodeOverrideFor(decorationId, node.id);
+      if (override.hidden) return;
+
+      if (node.type == 'variant') {
+        if (node.children.isNotEmpty) {
+          visit(
+            node.children[_activeRoomVariantIndex(decorationId, node)],
+            decorationId,
+          );
+        }
+        return;
+      }
+
+      if (node.type != 'group') return;
+
+      if (node.payload['environmentRole']?.toString() == 'cobweb') {
+        debugPrint('=== COBWEB GROUP: ${node.name} ===');
+
+        for (final child in node.children) {
+          if (!child.visible) continue;
+
+          final state = _roomNodeOverrideFor(decorationId, child.id);
+
+          total++;
+          if (state.hidden) cleared++;
+
+          debugPrint(
+            'COBWEB | ${child.name} | '
+            'id=${child.id} | '
+            'cleared=${state.hidden} | '
+            'taps=${state.interactionCount} | '
+            'opacity=${state.opacity}',
+          );
+        }
+        return;
+      }
+
+      for (final child in node.children) {
+        visit(child, decorationId);
+      }
+    }
+
+    for (final decoration in _decorations) {
+      final composite = _bagItemsById[decoration.bagItemId]?.composite;
+      if (composite != null) {
+        visit(composite.root, decoration.id);
+      }
+    }
+
+    debugPrint('COBWEB TOTAL: $cleared / $total cleared');
+    debugPrint('COBWEB CURTAINS UNLOCKED: $_allCobwebsCleared');
+  }
+
   Future<void> _loadDecorations() async {
     final prefs = await SharedPreferences.getInstance();
     final items = await _bagService.loadItems();
@@ -876,6 +938,8 @@ class _HomeScreenState extends State<HomeScreen>
       _bagItemsById = itemsById;
       _homeSceneReady = true;
     });
+
+    _debugCobwebObjectives();
 
     // Warm Flutter's ImageCache after the geometry-critical masks exist.
     // This is best-effort and must never block the room becoming usable.
@@ -2824,16 +2888,34 @@ class _HomeScreenState extends State<HomeScreen>
 
       if (isDust) {
         for (final child in node.children) {
-          final hit = _findCompositeNodeHit(
-            child,
-            nodePoint,
-            canvasSize,
-            decorationId: decorationId,
-            semanticOwner: node,
-          );
+          // Try the exact touch first, then nearby points.
+          // Dust is scattered artwork, so tiny gaps should
+          // not interrupt a cleaning gesture.
+          const dustHitRadius = 24.0;
 
-          if (hit != null) {
-            return node;
+          final testPoints = <Offset>[
+            nodePoint,
+            for (final radius in <double>[dustHitRadius * 0.5, dustHitRadius])
+              for (var step = 0; step < 8; step++)
+                nodePoint +
+                    Offset(
+                      math.cos(step * math.pi / 4) * radius,
+                      math.sin(step * math.pi / 4) * radius,
+                    ),
+          ];
+
+          for (final testPoint in testPoints) {
+            final hit = _findCompositeNodeHit(
+              child,
+              testPoint,
+              canvasSize,
+              decorationId: decorationId,
+              semanticOwner: node,
+            );
+
+            if (hit != null) {
+              return node;
+            }
           }
         }
       }
@@ -6031,217 +6113,293 @@ class _HomeScreenState extends State<HomeScreen>
                                         .imagePath!]
                                   : null,
                               mirrored: decoration.mirrored,
-                              child: GestureDetector(
-                                behavior: HitTestBehavior.opaque,
-                                onTapUp: (details) async {
-                                  if (_cleanMode) {
-                                    if (bagItem.isComposite &&
-                                        compositeVisibleBounds != null &&
-                                        compositeSceneScale != null) {
-                                      await _interactWithCobweb(
-                                        decoration: decoration,
-                                        bagItem: bagItem,
-                                        localPosition: details.localPosition,
-                                        decorationSize: Size(
-                                          decorationWidth,
-                                          decorationHeight,
-                                        ),
-                                        visibleBounds: compositeVisibleBounds,
-                                        sceneScale: compositeSceneScale,
-                                      );
+                              child: Listener(
+                                behavior: HitTestBehavior.deferToChild,
+                                onPointerDown: (event) {
+                                  if (!_cleanMode ||
+                                      _activeCleaningPointer != null ||
+                                      !bagItem.isComposite ||
+                                      compositeVisibleBounds == null ||
+                                      compositeSceneScale == null) {
+                                    return;
+                                  }
+
+                                  _beginDustCleaning(
+                                    decoration: decoration,
+                                    bagItem: bagItem,
+                                    localPosition: event.localPosition,
+                                    decorationSize: Size(
+                                      decorationWidth,
+                                      decorationHeight,
+                                    ),
+                                    visibleBounds: compositeVisibleBounds,
+                                    sceneScale: compositeSceneScale,
+                                  );
+
+                                  if (_activeCleaningDecorationId ==
+                                          decoration.id &&
+                                      _activeCleaningDustNodeId != null) {
+                                    _activeCleaningPointer = event.pointer;
+                                    setState(() {});
+                                  }
+                                },
+                                onPointerMove: (event) {
+                                  if (_activeCleaningPointer != event.pointer ||
+                                      compositeVisibleBounds == null ||
+                                      compositeSceneScale == null) {
+                                    return;
+                                  }
+
+                                  _continueDustCleaning(
+                                    decoration: decoration,
+                                    bagItem: bagItem,
+                                    localPosition: event.localPosition,
+                                    decorationSize: Size(
+                                      decorationWidth,
+                                      decorationHeight,
+                                    ),
+                                    visibleBounds: compositeVisibleBounds,
+                                    sceneScale: compositeSceneScale,
+                                  );
+                                },
+                                onPointerUp: (event) {
+                                  if (_activeCleaningPointer == event.pointer) {
+                                    _activeCleaningPointer = null;
+                                    _finishDustCleaning();
+                                    setState(() {});
+                                  }
+                                },
+                                onPointerCancel: (event) {
+                                  if (_activeCleaningPointer == event.pointer) {
+                                    _activeCleaningPointer = null;
+                                    _finishDustCleaning();
+                                    setState(() {});
+                                  }
+                                },
+                                child: GestureDetector(
+                                  behavior: HitTestBehavior.opaque,
+                                  onTapUp: (details) async {
+                                    if (_cleanMode) {
+                                      if (bagItem.isComposite &&
+                                          compositeVisibleBounds != null &&
+                                          compositeSceneScale != null) {
+                                        await _interactWithCobweb(
+                                          decoration: decoration,
+                                          bagItem: bagItem,
+                                          localPosition: details.localPosition,
+                                          decorationSize: Size(
+                                            decorationWidth,
+                                            decorationHeight,
+                                          ),
+                                          visibleBounds: compositeVisibleBounds,
+                                          sceneScale: compositeSceneScale,
+                                        );
+                                      }
+
+                                      return;
                                     }
 
-                                    return;
-                                  }
+                                    if (!_decorateMode) {
+                                      return;
+                                    }
 
-                                  if (!_decorateMode) {
-                                    return;
-                                  }
+                                    // Rooms Awaken #12:
+                                    // Composites are sealed in Room Manager.
+                                    // A tap selects the complete placed
+                                    // asset rather than an authored child.
+                                    setState(() {
+                                      _selectedDecorationId = decoration.id;
+                                    });
+                                  },
+                                  onPanStart: !_decorateMode
+                                      ? null
+                                      : (details) {
+                                          if (_cleanMode) {
+                                            if (bagItem.isComposite &&
+                                                compositeVisibleBounds !=
+                                                    null &&
+                                                compositeSceneScale != null) {
+                                              _beginDustCleaning(
+                                                decoration: decoration,
+                                                bagItem: bagItem,
+                                                localPosition:
+                                                    details.localPosition,
+                                                decorationSize: Size(
+                                                  decorationWidth,
+                                                  decorationHeight,
+                                                ),
+                                                visibleBounds:
+                                                    compositeVisibleBounds,
+                                                sceneScale: compositeSceneScale,
+                                              );
+                                            }
 
-                                  // Rooms Awaken #12:
-                                  // Composites are sealed in Room Manager.
-                                  // A tap selects the complete placed
-                                  // asset rather than an authored child.
-                                  setState(() {
-                                    _selectedDecorationId = decoration.id;
-                                  });
-                                },
-                                onPanStart: !(_decorateMode || _cleanMode)
-                                    ? null
-                                    : (details) {
-                                        if (_cleanMode) {
-                                          if (bagItem.isComposite &&
-                                              compositeVisibleBounds != null &&
-                                              compositeSceneScale != null) {
-                                            _beginDustCleaning(
-                                              decoration: decoration,
-                                              bagItem: bagItem,
-                                              localPosition:
-                                                  details.localPosition,
-                                              decorationSize: Size(
-                                                decorationWidth,
-                                                decorationHeight,
-                                              ),
-                                              visibleBounds:
-                                                  compositeVisibleBounds,
-                                              sceneScale: compositeSceneScale,
-                                            );
+                                            return;
                                           }
 
-                                          return;
-                                        }
-
-                                        // Rooms Awaken #12:
-                                        // Dragging begins on the whole asset.
-                                        setState(() {
-                                          _selectedDecorationId = decoration.id;
-                                        });
-                                      },
-                                onPanUpdate: !(_decorateMode || _cleanMode)
-                                    ? null
-                                    : (details) {
-                                        if (_cleanMode) {
-                                          if (bagItem.isComposite &&
-                                              compositeVisibleBounds != null &&
-                                              compositeSceneScale != null) {
-                                            _continueDustCleaning(
-                                              decoration: decoration,
-                                              bagItem: bagItem,
-                                              localPosition:
-                                                  details.localPosition,
-                                              decorationSize: Size(
-                                                decorationWidth,
-                                                decorationHeight,
-                                              ),
-                                              visibleBounds:
-                                                  compositeVisibleBounds,
-                                              sceneScale: compositeSceneScale,
-                                            );
-                                          }
-
-                                          return;
-                                        }
-
-                                        if (_decorateTouchPointers.length > 1) {
-                                          return;
-                                        }
-
-                                        // Rooms Awaken #12:
-                                        // Never transform children of an
-                                        // authored Composite in Room Manager.
-                                        // Continue into normal whole-decoration
-                                        // movement below.
-                                        final currentIndex = _decorations
-                                            .indexWhere(
-                                              (candidate) =>
-                                                  candidate.id == decoration.id,
-                                            );
-
-                                        if (currentIndex == -1) {
-                                          return;
-                                        }
-
-                                        final current =
-                                            _decorations[currentIndex];
-
-                                        setState(() {
-                                          _replaceDecoration(
-                                            current.copyWith(
-                                              x:
-                                                  (current.x +
-                                                          (details.delta.dx /
-                                                              roomWidth))
-                                                      .clamp(0.0, 1.0),
-                                              y:
-                                                  (current.y +
-                                                          (details.delta.dy /
-                                                              roomHeight))
-                                                      .clamp(0.0, 1.0),
-                                            ),
-                                          );
-                                        });
-                                      },
-                                onPanEnd: !(_decorateMode || _cleanMode)
-                                    ? null
-                                    : (_) {
-                                        if (_cleanMode) {
-                                          _finishDustCleaning();
-                                          return;
-                                        }
-
-                                        if (_isEditingRoomContents &&
-                                            decoration.id ==
-                                                _editingRoomDecorationId &&
-                                            bagItem.isComposite) {
-                                          _saveDecorations();
-                                          return;
-                                        }
-
-                                        _saveDecorations();
-                                      },
-                                child: DecoratedBox(
-                                  decoration: BoxDecoration(
-                                    border: selected
-                                        ? Border.all(
-                                            color:
-                                                _isEditingRoomContents &&
-                                                    decoration.id ==
-                                                        _editingRoomDecorationId
-                                                ? Colors.amberAccent
-                                                : Colors.cyanAccent,
-                                            width: 2,
-                                          )
-                                        : null,
-                                  ),
-                                  child: Padding(
-                                    padding: selected
-                                        ? const EdgeInsets.all(2)
-                                        : EdgeInsets.zero,
-                                    child: Transform(
-                                      alignment: Alignment.center,
-                                      transform: Matrix4.diagonal3Values(
-                                        decoration.mirrored ? -1.0 : 1.0,
-                                        1.0,
-                                        1.0,
-                                      ),
-                                      child: Builder(
-                                        builder: (context) {
-                                          if (bagItem.isImage) {
-                                            return Image.file(
-                                              File(bagItem.imagePath!),
-                                              fit: BoxFit.contain,
-                                              errorBuilder:
-                                                  (context, error, stackTrace) {
-                                                    return const Center(
-                                                      child: Icon(
-                                                        Icons
-                                                            .broken_image_outlined,
-                                                        color: Colors.white38,
-                                                      ),
-                                                    );
-                                                  },
-                                            );
-                                          }
-
-                                          if (bagItem.isComposite &&
-                                              compositeVisibleBounds != null &&
-                                              compositeSceneScale != null) {
-                                            return _buildCroppedCompositeDecoration(
-                                              bagItem,
-                                              decoration: decoration,
-                                              visibleBounds:
-                                                  compositeVisibleBounds,
-                                              sceneScale: compositeSceneScale,
-                                            );
-                                          }
-
-                                          return CustomPaint(
-                                            painter: BagItemPreviewPainter(
-                                              strokes: _bagItemStrokes(bagItem),
-                                            ),
-                                            child: const SizedBox.expand(),
-                                          );
+                                          // Rooms Awaken #12:
+                                          // Dragging begins on the whole asset.
+                                          setState(() {
+                                            _selectedDecorationId =
+                                                decoration.id;
+                                          });
                                         },
+                                  onPanUpdate: !_decorateMode
+                                      ? null
+                                      : (details) {
+                                          if (_cleanMode) {
+                                            if (bagItem.isComposite &&
+                                                compositeVisibleBounds !=
+                                                    null &&
+                                                compositeSceneScale != null) {
+                                              _continueDustCleaning(
+                                                decoration: decoration,
+                                                bagItem: bagItem,
+                                                localPosition:
+                                                    details.localPosition,
+                                                decorationSize: Size(
+                                                  decorationWidth,
+                                                  decorationHeight,
+                                                ),
+                                                visibleBounds:
+                                                    compositeVisibleBounds,
+                                                sceneScale: compositeSceneScale,
+                                              );
+                                            }
+
+                                            return;
+                                          }
+
+                                          if (_decorateTouchPointers.length >
+                                              1) {
+                                            return;
+                                          }
+
+                                          // Rooms Awaken #12:
+                                          // Never transform children of an
+                                          // authored Composite in Room Manager.
+                                          // Continue into normal whole-decoration
+                                          // movement below.
+                                          final currentIndex = _decorations
+                                              .indexWhere(
+                                                (candidate) =>
+                                                    candidate.id ==
+                                                    decoration.id,
+                                              );
+
+                                          if (currentIndex == -1) {
+                                            return;
+                                          }
+
+                                          final current =
+                                              _decorations[currentIndex];
+
+                                          setState(() {
+                                            _replaceDecoration(
+                                              current.copyWith(
+                                                x:
+                                                    (current.x +
+                                                            (details.delta.dx /
+                                                                roomWidth))
+                                                        .clamp(0.0, 1.0),
+                                                y:
+                                                    (current.y +
+                                                            (details.delta.dy /
+                                                                roomHeight))
+                                                        .clamp(0.0, 1.0),
+                                              ),
+                                            );
+                                          });
+                                        },
+                                  onPanEnd: !_decorateMode
+                                      ? null
+                                      : (_) {
+                                          if (_cleanMode) {
+                                            _finishDustCleaning();
+                                            return;
+                                          }
+
+                                          if (_isEditingRoomContents &&
+                                              decoration.id ==
+                                                  _editingRoomDecorationId &&
+                                              bagItem.isComposite) {
+                                            _saveDecorations();
+                                            return;
+                                          }
+
+                                          _saveDecorations();
+                                        },
+                                  child: DecoratedBox(
+                                    decoration: BoxDecoration(
+                                      border: selected
+                                          ? Border.all(
+                                              color:
+                                                  _isEditingRoomContents &&
+                                                      decoration.id ==
+                                                          _editingRoomDecorationId
+                                                  ? Colors.amberAccent
+                                                  : Colors.cyanAccent,
+                                              width: 2,
+                                            )
+                                          : null,
+                                    ),
+                                    child: Padding(
+                                      padding: selected
+                                          ? const EdgeInsets.all(2)
+                                          : EdgeInsets.zero,
+                                      child: Transform(
+                                        alignment: Alignment.center,
+                                        transform: Matrix4.diagonal3Values(
+                                          decoration.mirrored ? -1.0 : 1.0,
+                                          1.0,
+                                          1.0,
+                                        ),
+                                        child: Builder(
+                                          builder: (context) {
+                                            if (bagItem.isImage) {
+                                              return Image.file(
+                                                File(bagItem.imagePath!),
+                                                fit: BoxFit.contain,
+                                                errorBuilder:
+                                                    (
+                                                      context,
+                                                      error,
+                                                      stackTrace,
+                                                    ) {
+                                                      return const Center(
+                                                        child: Icon(
+                                                          Icons
+                                                              .broken_image_outlined,
+                                                          color: Colors.white38,
+                                                        ),
+                                                      );
+                                                    },
+                                              );
+                                            }
+
+                                            if (bagItem.isComposite &&
+                                                compositeVisibleBounds !=
+                                                    null &&
+                                                compositeSceneScale != null) {
+                                              return _buildCroppedCompositeDecoration(
+                                                bagItem,
+                                                decoration: decoration,
+                                                visibleBounds:
+                                                    compositeVisibleBounds,
+                                                sceneScale: compositeSceneScale,
+                                              );
+                                            }
+
+                                            return CustomPaint(
+                                              painter: BagItemPreviewPainter(
+                                                strokes: _bagItemStrokes(
+                                                  bagItem,
+                                                ),
+                                              ),
+                                              child: const SizedBox.expand(),
+                                            );
+                                          },
+                                        ),
                                       ),
                                     ),
                                   ),
@@ -6478,7 +6636,7 @@ class _HomeScreenState extends State<HomeScreen>
                 ? SingleChildScrollView(
                     controller: _homeScrollController,
                     scrollDirection: Axis.horizontal,
-                    physics: _decorateMode
+                    physics: (_decorateMode || _activeCleaningPointer != null)
                         ? const NeverScrollableScrollPhysics()
                         : const BouncingScrollPhysics(),
                     child: buildRoom(),
@@ -6491,91 +6649,87 @@ class _HomeScreenState extends State<HomeScreen>
             children: [
               roomViewport,
 
-              // ROOM CONDITION V0.1
-              //
-              // Screen-space feedback for environmental restoration.
-              // The value is derived from persistent room state rather than
-              // being stored independently.
-              if (_cleanMode)
+              // CHAPTER 1: COMPACT CLEANING OBJECTIVE
+              // Phase-aware, touch-through and derived from saved room state.
+              if (_cleanMode && !(_allCobwebsCleared && _allDustCleared))
                 SafeArea(
                   child: Align(
                     alignment: Alignment.topCenter,
                     child: Padding(
-                      padding: const EdgeInsets.fromLTRB(16, 16, 16, 0),
+                      padding: const EdgeInsets.fromLTRB(16, 12, 16, 0),
                       child: IgnorePointer(
                         child: ConstrainedBox(
-                          constraints: const BoxConstraints(maxWidth: 360),
+                          constraints: const BoxConstraints(maxWidth: 250),
                           child: Material(
-                            color: const Color(0xDD1A1720),
-                            borderRadius: BorderRadius.circular(16),
-                            elevation: 8,
+                            color: const Color(0x991A1720),
+                            borderRadius: BorderRadius.circular(14),
                             child: Padding(
-                              padding: const EdgeInsets.fromLTRB(
-                                16,
-                                12,
-                                16,
-                                14,
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 12,
+                                vertical: 10,
                               ),
-                              child: Column(
-                                mainAxisSize: MainAxisSize.min,
-                                children: [
-                                  Row(
+                              child: Builder(
+                                builder: (context) {
+                                  final websDone = _allCobwebsCleared;
+                                  final dustVisible = _dustConditionRevealed;
+
+                                  final label = !websDone
+                                      ? 'Clear the cobwebs'
+                                      : !dustVisible
+                                      ? 'Open the curtains'
+                                      : 'Clean the dust';
+
+                                  final progress = !websDone
+                                      ? _cobwebConditionProgress
+                                      : !dustVisible
+                                      ? 1.0
+                                      : _dustConditionProgress;
+
+                                  return Column(
+                                    mainAxisSize: MainAxisSize.min,
                                     children: [
-                                      const Icon(
-                                        Icons.home_outlined,
-                                        size: 18,
-                                        color: Colors.lightGreenAccent,
-                                      ),
-                                      const SizedBox(width: 8),
-                                      const Expanded(
-                                        child: Text(
-                                          'ROOM CONDITION',
-                                          style: TextStyle(
-                                            color: Colors.white,
-                                            fontSize: 12,
-                                            fontWeight: FontWeight.w700,
-                                            letterSpacing: 1.1,
+                                      Row(
+                                        children: [
+                                          const Icon(
+                                            Icons.auto_awesome_outlined,
+                                            color: Colors.white70,
+                                            size: 15,
                                           ),
-                                        ),
+                                          const SizedBox(width: 7),
+                                          Expanded(
+                                            child: Text(
+                                              label,
+                                              style: const TextStyle(
+                                                color: Colors.white,
+                                                fontSize: 11,
+                                                fontWeight: FontWeight.w600,
+                                              ),
+                                            ),
+                                          ),
+                                          Text(
+                                            '${(progress * 100).round()}%',
+                                            style: const TextStyle(
+                                              color: Colors.white70,
+                                              fontSize: 10,
+                                            ),
+                                          ),
+                                        ],
                                       ),
-                                      Text(
-                                        '$_roomConditionPercent%',
-                                        style: const TextStyle(
-                                          color: Colors.white,
-                                          fontSize: 14,
-                                          fontWeight: FontWeight.w700,
+                                      const SizedBox(height: 7),
+                                      ClipRRect(
+                                        borderRadius: BorderRadius.circular(
+                                          999,
+                                        ),
+                                        child: LinearProgressIndicator(
+                                          value: progress,
+                                          minHeight: 4,
+                                          backgroundColor: Colors.white12,
+                                          color: Colors.lightGreenAccent,
                                         ),
                                       ),
                                     ],
-                                  ),
-                                  const SizedBox(height: 9),
-                                  ClipRRect(
-                                    borderRadius: BorderRadius.circular(999),
-                                    child: LinearProgressIndicator(
-                                      value: _roomConditionProgress,
-                                      minHeight: 8,
-                                      backgroundColor: Colors.white12,
-                                      color: Colors.lightGreenAccent,
-                                    ),
-                                  ),
-                                  if (_cobwebConditionCounts.total > 0) ...[
-                                    const SizedBox(height: 12),
-                                    _buildConditionCategoryRow(
-                                      label: 'Cobwebs',
-                                      progress: _cobwebConditionProgress,
-                                      percent: _cobwebConditionPercent,
-                                    ),
-                                  ],
-                                  if (_dustConditionCounts.total > 0 &&
-                                      _dustConditionRevealed) ...[
-                                    const SizedBox(height: 9),
-                                    _buildConditionCategoryRow(
-                                      label: 'Dust',
-                                      progress: _dustConditionProgress,
-                                      percent: _dustConditionPercent,
-                                    ),
-                                  ],
-                                ],
+                                  );
+                                },
                               ),
                             ),
                           ),
