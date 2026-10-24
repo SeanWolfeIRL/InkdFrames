@@ -397,6 +397,242 @@ class _HomeScreenState extends State<HomeScreen>
   bool _decorateMode = false;
   bool _cleanMode = false;
 
+  // CHAPTER 1: INKLING DIALOGUE
+  static const String _inklingMilestonesKey =
+      'inkdframes_home_inkling_milestones_v3';
+
+  final Set<String> _inklingSeenMilestones = <String>{};
+  String? _inklingDialogue;
+  int _inklingDialogueGeneration = 0;
+
+  // CHAPTER 1: DEVELOPMENT TESTING CONTROLS
+  bool _devInklingEnabled = true;
+  bool _devBagCameraEnabled = true;
+
+  bool get _chapterOneDebugControlsEnabled {
+    var enabled = false;
+    assert(() {
+      enabled = true;
+      return true;
+    }());
+    return enabled;
+  }
+
+  Future<void> _resetChapterOneMilestones() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.remove(_inklingMilestonesKey);
+    if (!mounted) return;
+    setState(() {
+      _inklingSeenMilestones.clear();
+      _inklingDialogueGeneration++;
+      _inklingDialogue = null;
+    });
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text('Inkling milestones reset. Replay a fresh room.'),
+        duration: Duration(seconds: 3),
+      ),
+    );
+  }
+
+  Future<void> _showInklingMilestone(
+    String milestone,
+    String dialogue, {
+    String? followUp,
+  }) async {
+    if (!mounted ||
+        !_devInklingEnabled ||
+        _inklingSeenMilestones.contains(milestone)) {
+      return;
+    }
+
+    _inklingSeenMilestones.add(milestone);
+
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setStringList(
+      _inklingMilestonesKey,
+      _inklingSeenMilestones.toList(),
+    );
+
+    if (!mounted) return;
+
+    final generation = ++_inklingDialogueGeneration;
+
+    setState(() {
+      _inklingDialogue = dialogue;
+    });
+
+    await Future<void>.delayed(const Duration(seconds: 6));
+
+    if (!mounted || generation != _inklingDialogueGeneration) {
+      return;
+    }
+
+    if (followUp != null) {
+      setState(() {
+        _inklingDialogue = followUp;
+      });
+
+      await Future<void>.delayed(const Duration(seconds: 5));
+
+      if (!mounted || generation != _inklingDialogueGeneration) {
+        return;
+      }
+    }
+
+    setState(() {
+      _inklingDialogue = null;
+    });
+  }
+
+  // CHAPTER 1: CINEMATIC CAMERA
+  // CHAPTER 1: CAMERA FOCUS ON AUTHORED BAG
+  Future<void> _focusCameraOnBag() async {
+    if (!mounted || !_homeScrollController.hasClients) return;
+
+    double? bagX;
+    final position = _homeScrollController.position;
+    final roomWidth = position.maxScrollExtent + position.viewportDimension;
+    final roomHeight = MediaQuery.sizeOf(context).height;
+
+    for (final decoration in _decorations) {
+      final composite = _bagItemsById[decoration.bagItemId]?.composite;
+      if (composite == null) continue;
+
+      CompositeNode? findBag(CompositeNode node) {
+        if (!node.visible ||
+            _roomNodeOverrideFor(decoration.id, node.id).hidden) {
+          return null;
+        }
+
+        if (node.payload['environmentRole']?.toString() == 'bag') {
+          return node;
+        }
+
+        if (node.type == 'variant') {
+          if (node.children.isEmpty) return null;
+          final index = _activeRoomVariantIndex(decoration.id, node);
+          return findBag(node.children[index]);
+        }
+
+        for (final child in node.children) {
+          final found = findBag(child);
+          if (found != null) return found;
+        }
+        return null;
+      }
+
+      final bag = findBag(composite.root);
+      if (bag == null) continue;
+
+      final bounds = _compositeNodePreviewBounds(
+        bag,
+        composite,
+        decorationId: decoration.id,
+      );
+
+      if (bounds != null &&
+          composite.canvasWidth > 0 &&
+          composite.canvasHeight > 0) {
+        final scaleX = roomWidth / composite.canvasWidth;
+        final scaleY = roomHeight / composite.canvasHeight;
+        final sceneScale = scaleX < scaleY ? scaleX : scaleY;
+
+        bagX =
+            decoration.x * roomWidth +
+            (bounds.center.dx - composite.canvasWidth / 2) * sceneScale;
+      } else {
+        bagX = roomWidth * 0.865;
+      }
+      break;
+    }
+
+    final targetX = bagX ?? roomWidth * 0.865;
+    final target = (targetX - position.viewportDimension / 2).clamp(
+      position.minScrollExtent,
+      position.maxScrollExtent,
+    );
+
+    if ((target - position.pixels).abs() < 1.0) return;
+
+    await _homeScrollController.animateTo(
+      target,
+      duration: const Duration(milliseconds: 1900),
+      curve: Curves.easeInOutCubic,
+    );
+  }
+
+  Future<void> _playChapterOneDiscovery() async {
+    if (!mounted || _inklingSeenMilestones.contains('dust_cleared')) {
+      return;
+    }
+    if (!_devInklingEnabled && !_devBagCameraEnabled) return;
+
+    if (_devInklingEnabled) {
+      _inklingSeenMilestones.add('dust_cleared');
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setStringList(
+        _inklingMilestonesKey,
+        _inklingSeenMilestones.toList(),
+      );
+    }
+
+    if (!mounted) return;
+    final generation = ++_inklingDialogueGeneration;
+
+    if (_devInklingEnabled) {
+      setState(() {
+        _inklingDialogue = "Ahh, that's better!";
+      });
+    }
+
+    await Future<void>.delayed(const Duration(seconds: 5));
+
+    if (!mounted || generation != _inklingDialogueGeneration) {
+      return;
+    }
+
+    setState(() {
+      _inklingDialogue = null;
+    });
+
+    await Future<void>.delayed(const Duration(milliseconds: 1500));
+
+    if (!mounted || generation != _inklingDialogueGeneration) {
+      return;
+    }
+
+    if (_devBagCameraEnabled) {
+      await _focusCameraOnBag();
+    }
+
+    if (!mounted || generation != _inklingDialogueGeneration) {
+      return;
+    }
+
+    await Future<void>.delayed(const Duration(milliseconds: 500));
+
+    if (!mounted || generation != _inklingDialogueGeneration) {
+      return;
+    }
+
+    if (_devInklingEnabled) {
+      setState(() {
+        _inklingDialogue = '...Something just moved!!';
+      });
+    }
+
+    await Future<void>.delayed(const Duration(seconds: 6));
+
+    if (!mounted || generation != _inklingDialogueGeneration) {
+      return;
+    }
+
+    setState(() {
+      _inklingDialogue = null;
+    });
+  }
+
   // DAYLIGHT POLISH #1
   //
   // Environmental illumination is driven by one room-level clock rather
@@ -858,6 +1094,11 @@ class _HomeScreenState extends State<HomeScreen>
 
   Future<void> _loadDecorations() async {
     final prefs = await SharedPreferences.getInstance();
+
+    _inklingSeenMilestones.addAll(
+      prefs.getStringList(_inklingMilestonesKey) ?? <String>[],
+    );
+
     final items = await _bagService.loadItems();
 
     final raw = prefs.getString(_decorationsKey);
@@ -2122,7 +2363,7 @@ class _HomeScreenState extends State<HomeScreen>
         continue;
       }
 
-      if (_compositeDaylightState(composite.root, decoration.id) == true) {
+      if (_chapterOneDaylightState(composite.root, decoration.id) == true) {
         return true;
       }
     }
@@ -2502,52 +2743,19 @@ class _HomeScreenState extends State<HomeScreen>
     return null;
   }
 
+  // CHAPTER 1: DAYLIGHT REVEAL WITHOUT NIGHT-TO-DAY CROSSFADE
+
+  // CHAPTER 1: LIGHTING WITHOUT WINDOW ARTWORK SWITCHING
   void _advanceRoomToDaylight({
     required String decorationId,
     required CompositeAsset composite,
   }) {
-    final daylightChoice = _findEnvironmentalDaylightChoice(composite.root);
-
-    if (daylightChoice == null) {
-      return;
-    }
-
-    final currentIndex = _activeRoomVariantIndex(
-      decorationId,
-      daylightChoice.variant,
-    );
-
-    if (currentIndex == daylightChoice.daylightIndex) {
-      return;
-    }
-
-    if (_daylightController.isAnimating) {
-      return;
-    }
+    if (_daylightController.isAnimating) return;
 
     _daylightTransitionDecorationId = decorationId;
-    _pendingDaylightVariant = daylightChoice.variant;
-    _pendingDaylightSourceIndex = currentIndex;
-    _pendingDaylightIndex = daylightChoice.daylightIndex;
 
     _daylightController.forward(from: 0.0).whenComplete(() {
-      if (!mounted ||
-          _daylightTransitionDecorationId != decorationId ||
-          _pendingDaylightVariant == null ||
-          _pendingDaylightSourceIndex == null ||
-          _pendingDaylightIndex == null) {
-        return;
-      }
-
-      final variant = _pendingDaylightVariant!;
-      final daylightIndex = _pendingDaylightIndex!;
-
-      // Commit the authored environmental state only after the visual
-      // illumination has completed. This prevents the day branch and dust
-      // from popping into existence at the beginning of the transition.
-      _setRoomVariantChoiceForDecoration(decorationId, variant, daylightIndex);
-
-      if (!mounted) {
+      if (!mounted || _daylightTransitionDecorationId != decorationId) {
         return;
       }
 
@@ -2557,6 +2765,17 @@ class _HomeScreenState extends State<HomeScreen>
         _pendingDaylightSourceIndex = null;
         _pendingDaylightIndex = null;
         _daylightController.value = 0.0;
+      });
+
+      Future<void>(() async {
+        await Future<void>.delayed(const Duration(milliseconds: 700));
+
+        if (!mounted) return;
+
+        await _showInklingMilestone(
+          'curtains_opened',
+          "We should probably clean a bit more... it's so dusty in here!",
+        );
       });
     });
   }
@@ -2636,6 +2855,10 @@ class _HomeScreenState extends State<HomeScreen>
     }
 
     HapticFeedback.mediumImpact();
+
+    _pendingDaylightVariant = variant;
+    _pendingDaylightSourceIndex = currentIndex;
+    _pendingDaylightIndex = openIndex;
 
     _setRoomVariantChoiceForDecoration(decoration.id, variant, openIndex);
 
@@ -2844,6 +3067,13 @@ class _HomeScreenState extends State<HomeScreen>
     });
 
     await _saveDecorations();
+
+    if (_allCobwebsCleared) {
+      _showInklingMilestone(
+        'cobwebs_cleared',
+        'Maybe we should let some light in?',
+      );
+    }
   }
 
   CompositeNode? _findDustGroupHit(
@@ -3077,7 +3307,7 @@ class _HomeScreenState extends State<HomeScreen>
     // Dust exists as an uncleared room objective before daylight, but it
     // remains dormant until the authored environmental state becomes day.
     // Do not use the hidden override here: hidden means actually cleaned.
-    if (_compositeDaylightState(composite.root, decoration.id) != true) {
+    if (_chapterOneDaylightState(composite.root, decoration.id) != true) {
       _activeCleaningDecorationId = null;
       _activeCleaningDustNodeId = null;
       return;
@@ -3219,6 +3449,10 @@ class _HomeScreenState extends State<HomeScreen>
     });
 
     _saveDecorations();
+
+    if (complete && _allDustCleared) {
+      _playChapterOneDiscovery();
+    }
   }
 
   // ignore: unused_element
@@ -3850,6 +4084,51 @@ class _HomeScreenState extends State<HomeScreen>
     return strokes;
   }
 
+  // CHAPTER 1: CURTAIN-CONTROLLED DAYLIGHT
+  bool? _chapterOneCurtainsOpen(CompositeNode node, String decorationId) {
+    if (!node.visible || _roomNodeOverrideFor(decorationId, node.id).hidden) {
+      return null;
+    }
+
+    if (node.name.toLowerCase().contains('curtain')) {
+      final variant = _findVariantNodeInside(node);
+
+      if (variant != null && variant.children.isNotEmpty) {
+        final closedIndex = variant.children.indexWhere(
+          (child) => child.name.toLowerCase().contains('closed'),
+        );
+
+        if (closedIndex >= 0) {
+          return _activeRoomVariantIndex(decorationId, variant) != closedIndex;
+        }
+      }
+    }
+
+    if (node.type == 'variant') {
+      if (node.children.isEmpty) return null;
+
+      return _chapterOneCurtainsOpen(
+        node.children[_activeRoomVariantIndex(decorationId, node)],
+        decorationId,
+      );
+    }
+
+    for (final child in node.children) {
+      final result = _chapterOneCurtainsOpen(child, decorationId);
+      if (result != null) return result;
+    }
+
+    return null;
+  }
+
+  bool? _chapterOneDaylightState(CompositeNode root, String? decorationId) {
+    if (decorationId != null) {
+      final curtains = _chapterOneCurtainsOpen(root, decorationId);
+      if (curtains != null) return curtains;
+    }
+    return _compositeDaylightState(root, decorationId);
+  }
+
   bool? _compositeDaylightState(CompositeNode node, String? decorationId) {
     if (!node.visible) {
       return null;
@@ -3940,7 +4219,7 @@ class _HomeScreenState extends State<HomeScreen>
     final authoredBrightness =
         (node.payload['brightness'] as num?)?.toDouble().clamp(0.0, 1.0) ?? 1.0;
 
-    final daylight = _compositeDaylightState(asset.root, decorationId);
+    final daylight = _chapterOneDaylightState(asset.root, decorationId);
 
     double targetBrightness;
 
@@ -3985,14 +4264,12 @@ class _HomeScreenState extends State<HomeScreen>
 
       final isDust = node.payload['environmentRole']?.toString() == 'dust';
 
-      // RETURNING HOME: Curtains Awaken #1E
-      //
-      // Night-time dust is unrevealed, not cleared. Keep its persistent
-      // room state untouched and simply omit this authored branch until
-      // the existing environmental Variant reports daylight.
+      // CHAPTER 1: Dust is revealed only after curtain illumination.
+      // Hiding artwork never changes its persistent cleaning state.
       if (isDust &&
           decorationId != null &&
-          _compositeDaylightState(asset.root, decorationId) != true) {
+          (_chapterOneDaylightState(asset.root, decorationId) != true ||
+              _daylightTransitionDecorationId == decorationId)) {
         return const SizedBox.shrink();
       }
 
@@ -4015,6 +4292,19 @@ class _HomeScreenState extends State<HomeScreen>
         decorationId: decorationId,
         child: groupChild,
       );
+
+      if (isDust && decorationId != null) {
+        groupChild = TweenAnimationBuilder<double>(
+          key: ValueKey('dust_reveal_${decorationId}_${node.id}'),
+          tween: Tween<double>(begin: 0.0, end: 1.0),
+          duration: const Duration(milliseconds: 450),
+          curve: Curves.easeInOut,
+          builder: (context, opacity, child) {
+            return Opacity(opacity: opacity, child: child);
+          },
+          child: groupChild,
+        );
+      }
 
       return _applyRoomNodeOverride(
         node: node,
@@ -4048,8 +4338,9 @@ class _HomeScreenState extends State<HomeScreen>
           node.children.length - 1,
         );
 
+        // Curtains crossfade over the first 350ms of illumination.
         final progress = Curves.easeInOutCubic.transform(
-          _daylightController.value.clamp(0.0, 1.0),
+          (_daylightController.value * (1600.0 / 350.0)).clamp(0.0, 1.0),
         );
 
         final sourceChild = _buildCompositeNode(
@@ -6430,6 +6721,66 @@ class _HomeScreenState extends State<HomeScreen>
                       ),
                     ),
 
+                  // CHAPTER 1: DEBUG-ONLY TESTING MENU
+                  if (_chapterOneDebugControlsEnabled)
+                    Positioned(
+                      right: roomWidth * 0.025 + 58,
+                      top: roomHeight * 0.035,
+                      child: Material(
+                        color: const Color(0xCC1A1720),
+                        shape: const CircleBorder(),
+                        elevation: 6,
+                        child: PopupMenuButton<String>(
+                          tooltip: 'Chapter 1 testing',
+                          icon: const Icon(
+                            Icons.science_outlined,
+                            color: Colors.amberAccent,
+                          ),
+                          onSelected: (value) {
+                            if (value == 'inkling') {
+                              setState(() {
+                                _devInklingEnabled = !_devInklingEnabled;
+                                if (!_devInklingEnabled) {
+                                  _inklingDialogueGeneration++;
+                                  _inklingDialogue = null;
+                                }
+                              });
+                            } else if (value == 'camera') {
+                              setState(() {
+                                _devBagCameraEnabled = !_devBagCameraEnabled;
+                              });
+                            } else if (value == 'reset') {
+                              _resetChapterOneMilestones();
+                            }
+                          },
+                          itemBuilder: (context) => [
+                            CheckedPopupMenuItem<String>(
+                              value: 'inkling',
+                              checked: _devInklingEnabled,
+                              child: const Text('Inkling dialogue'),
+                            ),
+                            CheckedPopupMenuItem<String>(
+                              value: 'camera',
+                              checked: _devBagCameraEnabled,
+                              child: const Text('Bag discovery camera'),
+                            ),
+                            const PopupMenuDivider(),
+                            const PopupMenuItem<String>(
+                              value: 'reset',
+                              child: Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  Icon(Icons.restart_alt, size: 20),
+                                  SizedBox(width: 8),
+                                  Text('Reset milestones'),
+                                ],
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+
                   // DEVELOPMENT: RETURN TO HOME EXTERIOR
                   Positioned(
                     right: roomWidth * 0.025,
@@ -6730,6 +7081,58 @@ class _HomeScreenState extends State<HomeScreen>
                                     ],
                                   );
                                 },
+                              ),
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+
+              // CHAPTER 1: INKLING THOUGHT BUBBLE
+              if (_inklingDialogue != null)
+                SafeArea(
+                  child: Align(
+                    alignment: Alignment.topCenter,
+                    child: Padding(
+                      padding: const EdgeInsets.fromLTRB(16, 70, 16, 0),
+                      child: IgnorePointer(
+                        child: ConstrainedBox(
+                          constraints: const BoxConstraints(maxWidth: 290),
+                          child: AnimatedSwitcher(
+                            duration: const Duration(milliseconds: 350),
+                            child: Material(
+                              key: ValueKey(_inklingDialogue),
+                              color: const Color(0xDD262132),
+                              borderRadius: BorderRadius.circular(20),
+                              elevation: 6,
+                              child: Padding(
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 18,
+                                  vertical: 14,
+                                ),
+                                child: Row(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    const Icon(
+                                      Icons.auto_awesome,
+                                      color: Colors.lightGreenAccent,
+                                      size: 18,
+                                    ),
+                                    const SizedBox(width: 10),
+                                    Flexible(
+                                      child: Text(
+                                        _inklingDialogue!,
+                                        style: const TextStyle(
+                                          color: Colors.white,
+                                          fontSize: 14,
+                                          height: 1.4,
+                                        ),
+                                      ),
+                                    ),
+                                  ],
+                                ),
                               ),
                             ),
                           ),
