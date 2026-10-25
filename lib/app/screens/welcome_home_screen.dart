@@ -3,6 +3,7 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 
 import '../services/onboarding_milestone_service.dart';
+import 'mode_navigation.dart';
 import 'home_screen.dart';
 
 enum _ArrivalPhase { loading, welcome, milestone, exploring }
@@ -482,6 +483,24 @@ class _WelcomeHomeScreenState extends State<WelcomeHomeScreen> {
               if (_phase == _ArrivalPhase.welcome) _buildWelcomeOverlay(),
 
               if (_phase == _ArrivalPhase.milestone) _buildMilestoneOverlay(),
+
+              Positioned(
+                top: MediaQuery.paddingOf(context).top + 12,
+                left: 16,
+                child: SafeArea(
+                  top: false,
+                  child: Material(
+                    color: const Color(0xCC1A1720),
+                    shape: const CircleBorder(),
+                    elevation: 6,
+                    child: IconButton(
+                      tooltip: 'Main Menu',
+                      icon: const Icon(Icons.menu_rounded, color: Colors.white),
+                      onPressed: () => returnToModeSelection(context),
+                    ),
+                  ),
+                ),
+              ),
             ],
           );
         },

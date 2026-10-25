@@ -727,6 +727,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     _autosaveTimer?.cancel();
     _groupBrightnessFadeTimer?.cancel();
     _canvasAssetLongPressTimer?.cancel();
+    _transformPivotLockTimer?.cancel();
     _videoController?.pause();
     _videoController?.dispose();
     _transformationController.dispose();

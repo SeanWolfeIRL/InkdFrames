@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 
-import 'screens/welcome_home_screen.dart';
+import 'screens/mode_selection_screen.dart';
 import 'screens/workspace_screen.dart';
 
 final RouteObserver<ModalRoute<dynamic>> homeRouteObserver =
@@ -47,7 +47,7 @@ class InkdFramesApp extends StatelessWidget {
         ),
       ),
       navigatorObservers: [homeRouteObserver],
-      home: const WelcomeHomeScreen(),
+      home: const ModeSelectionScreen(),
       routes: {WorkspaceScreen.routeName: (context) => const WorkspaceScreen()},
     );
   }

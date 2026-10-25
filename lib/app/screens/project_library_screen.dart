@@ -7,6 +7,7 @@ import '../models/inkdframes_project.dart';
 import '../models/vector_stroke.dart';
 import '../painters/frame_thumbnail_painter.dart';
 import '../services/project_storage_service.dart';
+import 'mode_navigation.dart';
 import 'workspace_screen.dart';
 
 class ProjectLibraryScreen extends StatefulWidget {
@@ -747,7 +748,14 @@ class _ProjectLibraryScreenState extends State<ProjectLibraryScreen> {
                         height: sceneHeight * 0.08,
                         child: GestureDetector(
                           behavior: HitTestBehavior.opaque,
-                          onTap: () => Navigator.pop(context),
+                          onTap: () {
+                            final navigator = Navigator.of(context);
+                            if (navigator.canPop()) {
+                              navigator.pop();
+                            } else {
+                              returnToModeSelection(context);
+                            }
+                          },
                           child: const SizedBox.expand(),
                         ),
                       ),
