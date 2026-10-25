@@ -7,6 +7,7 @@ import 'dart:ui' as ui;
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
+import '../inkdframes_app.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter/rendering.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -378,7 +379,7 @@ class _RoomNodeOverride {
 }
 
 class _HomeScreenState extends State<HomeScreen>
-    with SingleTickerProviderStateMixin {
+    with SingleTickerProviderStateMixin, RouteAware {
   static const String _decorationsKey = 'inkdframes_home_decorations_v1';
 
   final BagService _bagService = BagService();
@@ -402,8 +403,54 @@ class _HomeScreenState extends State<HomeScreen>
       'inkdframes_home_inkling_milestones_v3';
 
   final Set<String> _inklingSeenMilestones = <String>{};
+  Future<void> _inklingMilestoneWriteQueue = Future<void>.value();
+  int _inklingMilestoneRevision = 0;
+  static const String _inklingMilestoneFormatV2 =
+      'chapter_one_milestones_format_v2';
+
+  Future<void> _queueInklingMilestoneWrite({
+    bool reset = false,
+    Set<String>? snapshotOverride,
+  }) {
+    final revision = ++_inklingMilestoneRevision;
+    final snapshot = (snapshotOverride ?? _inklingSeenMilestones).toList();
+
+    final operation = _inklingMilestoneWriteQueue.then((_) async {
+      if (revision != _inklingMilestoneRevision) {
+        throw StateError('Inkling milestone write superseded');
+      }
+
+      final prefs = await SharedPreferences.getInstance();
+      if (revision != _inklingMilestoneRevision) {
+        throw StateError('Inkling milestone write superseded');
+      }
+
+      if (reset) {
+        await prefs.remove(_inklingMilestonesKey);
+      } else {
+        await prefs.setStringList(_inklingMilestonesKey, snapshot);
+      }
+    });
+
+    _inklingMilestoneWriteQueue = operation.catchError((Object error) {
+      debugPrint('Inkling milestone write failed: $error');
+    });
+
+    return operation;
+  }
+
   String? _inklingDialogue;
   int _inklingDialogueGeneration = 0;
+  bool _chapterOneDiscoveryPlaying = false;
+  int _chapterOneDiscoveryGeneration = 0;
+  bool _ordinaryInklingDialoguePlaying = false;
+  bool _homeRouteVisible = true;
+  ModalRoute<dynamic>? _observedHomeRoute;
+  bool _inklingMilestonesReady = false;
+  int _inklingLoadGeneration = 0;
+
+  static const String _chapterOneDiscoveryComplete =
+      'chapter_one_discovery_complete';
 
   // CHAPTER 1: DEVELOPMENT TESTING CONTROLS
   bool _devInklingEnabled = true;
@@ -419,14 +466,21 @@ class _HomeScreenState extends State<HomeScreen>
   }
 
   Future<void> _resetChapterOneMilestones() async {
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.remove(_inklingMilestonesKey);
-    if (!mounted) return;
+    ++_inklingLoadGeneration;
+    ++_inklingDialogueGeneration;
+    ++_chapterOneDiscoveryGeneration;
+
     setState(() {
       _inklingSeenMilestones.clear();
-      _inklingDialogueGeneration++;
+      _inklingMilestonesReady = true;
+      _chapterOneDiscoveryPlaying = false;
+      _ordinaryInklingDialoguePlaying = false;
       _inklingDialogue = null;
     });
+
+    await _queueInklingMilestoneWrite(reset: true);
+    if (!mounted) return;
+
     ScaffoldMessenger.of(context).showSnackBar(
       const SnackBar(
         content: Text('Inkling milestones reset. Replay a fresh room.'),
@@ -447,42 +501,40 @@ class _HomeScreenState extends State<HomeScreen>
     }
 
     _inklingSeenMilestones.add(milestone);
-
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setStringList(
-      _inklingMilestonesKey,
-      _inklingSeenMilestones.toList(),
-    );
-
-    if (!mounted) return;
-
+    _ordinaryInklingDialoguePlaying = true;
+    ++_chapterOneDiscoveryGeneration;
+    _chapterOneDiscoveryPlaying = false;
     final generation = ++_inklingDialogueGeneration;
 
-    setState(() {
-      _inklingDialogue = dialogue;
-    });
+    try {
+      await _queueInklingMilestoneWrite();
+      if (!mounted || generation != _inklingDialogueGeneration) return;
 
-    await Future<void>.delayed(const Duration(seconds: 6));
-
-    if (!mounted || generation != _inklingDialogueGeneration) {
-      return;
-    }
-
-    if (followUp != null) {
       setState(() {
-        _inklingDialogue = followUp;
+        _inklingDialogue = dialogue;
       });
 
-      await Future<void>.delayed(const Duration(seconds: 5));
+      await Future<void>.delayed(const Duration(seconds: 6));
+      if (!mounted || generation != _inklingDialogueGeneration) return;
 
-      if (!mounted || generation != _inklingDialogueGeneration) {
-        return;
+      if (followUp != null) {
+        setState(() {
+          _inklingDialogue = followUp;
+        });
+
+        await Future<void>.delayed(const Duration(seconds: 5));
+        if (!mounted || generation != _inklingDialogueGeneration) return;
+      }
+
+      setState(() {
+        _inklingDialogue = null;
+      });
+    } finally {
+      if (generation == _inklingDialogueGeneration) {
+        _ordinaryInklingDialoguePlaying = false;
+        if (mounted) _maybeStartChapterOneDiscovery();
       }
     }
-
-    setState(() {
-      _inklingDialogue = null;
-    });
   }
 
   // CHAPTER 1: CINEMATIC CAMERA
@@ -563,74 +615,122 @@ class _HomeScreenState extends State<HomeScreen>
   }
 
   Future<void> _playChapterOneDiscovery() async {
-    if (!mounted || _inklingSeenMilestones.contains('dust_cleared')) {
+    if (!mounted ||
+        !_homeRouteVisible ||
+        !_inklingMilestonesReady ||
+        _chapterOneDiscoveryPlaying ||
+        _ordinaryInklingDialoguePlaying ||
+        _inklingSeenMilestones.contains(_chapterOneDiscoveryComplete)) {
       return;
     }
     if (!_devInklingEnabled && !_devBagCameraEnabled) return;
 
-    if (_devInklingEnabled) {
-      _inklingSeenMilestones.add('dust_cleared');
-      final prefs = await SharedPreferences.getInstance();
-      await prefs.setStringList(
-        _inklingMilestonesKey,
-        _inklingSeenMilestones.toList(),
-      );
-    }
+    _chapterOneDiscoveryPlaying = true;
+    final generation = ++_chapterOneDiscoveryGeneration;
+    final dialogueGeneration = ++_inklingDialogueGeneration;
 
-    if (!mounted) return;
-    final generation = ++_inklingDialogueGeneration;
+    try {
+      if (_devInklingEnabled) {
+        setState(() {
+          _inklingDialogue = "Ahh, that's better!";
+        });
+      }
 
-    if (_devInklingEnabled) {
+      await Future<void>.delayed(const Duration(seconds: 5));
+
+      if (!mounted ||
+          !_homeRouteVisible ||
+          (generation != _chapterOneDiscoveryGeneration ||
+              dialogueGeneration != _inklingDialogueGeneration)) {
+        return;
+      }
+
       setState(() {
-        _inklingDialogue = "Ahh, that's better!";
+        _inklingDialogue = null;
       });
-    }
 
-    await Future<void>.delayed(const Duration(seconds: 5));
+      await Future<void>.delayed(const Duration(milliseconds: 1500));
 
-    if (!mounted || generation != _inklingDialogueGeneration) {
-      return;
-    }
+      if (!mounted ||
+          !_homeRouteVisible ||
+          (generation != _chapterOneDiscoveryGeneration ||
+              dialogueGeneration != _inklingDialogueGeneration)) {
+        return;
+      }
 
-    setState(() {
-      _inklingDialogue = null;
-    });
+      if (_devBagCameraEnabled) {
+        await _focusCameraOnBag();
+      }
 
-    await Future<void>.delayed(const Duration(milliseconds: 1500));
+      if (!mounted ||
+          !_homeRouteVisible ||
+          (generation != _chapterOneDiscoveryGeneration ||
+              dialogueGeneration != _inklingDialogueGeneration)) {
+        return;
+      }
 
-    if (!mounted || generation != _inklingDialogueGeneration) {
-      return;
-    }
+      await Future<void>.delayed(const Duration(milliseconds: 500));
 
-    if (_devBagCameraEnabled) {
-      await _focusCameraOnBag();
-    }
+      if (!mounted ||
+          !_homeRouteVisible ||
+          (generation != _chapterOneDiscoveryGeneration ||
+              dialogueGeneration != _inklingDialogueGeneration)) {
+        return;
+      }
 
-    if (!mounted || generation != _inklingDialogueGeneration) {
-      return;
-    }
+      if (_devInklingEnabled) {
+        setState(() {
+          _inklingDialogue = '...Something just moved!!';
+        });
+      }
 
-    await Future<void>.delayed(const Duration(milliseconds: 500));
+      await Future<void>.delayed(const Duration(seconds: 6));
 
-    if (!mounted || generation != _inklingDialogueGeneration) {
-      return;
-    }
+      if (!mounted ||
+          !_homeRouteVisible ||
+          (generation != _chapterOneDiscoveryGeneration ||
+              dialogueGeneration != _inklingDialogueGeneration)) {
+        return;
+      }
 
-    if (_devInklingEnabled) {
       setState(() {
-        _inklingDialogue = '...Something just moved!!';
+        _inklingDialogue = null;
       });
+
+      final completedMilestones = <String>{
+        ..._inklingSeenMilestones,
+        _inklingMilestoneFormatV2,
+        'dust_cleared',
+        _chapterOneDiscoveryComplete,
+      };
+
+      try {
+        await _queueInklingMilestoneWrite(
+          snapshotOverride: completedMilestones,
+        );
+      } catch (error) {
+        debugPrint('Chapter 1 completion not saved: $error');
+        return;
+      }
+
+      // The write succeeded. Keep memory consistent even if
+      // navigation changed while the platform write was in flight.
+      _inklingSeenMilestones.addAll(completedMilestones);
+
+      if (!mounted ||
+          !_homeRouteVisible ||
+          generation != _chapterOneDiscoveryGeneration ||
+          dialogueGeneration != _inklingDialogueGeneration) {
+        return;
+      }
+    } finally {
+      if (generation == _chapterOneDiscoveryGeneration &&
+          dialogueGeneration == _inklingDialogueGeneration) {
+        _chapterOneDiscoveryPlaying = false;
+        // Discovery retries on a later Home entry if not completed.
+        // Avoid immediate replay loops after storage failures.
+      }
     }
-
-    await Future<void>.delayed(const Duration(seconds: 6));
-
-    if (!mounted || generation != _inklingDialogueGeneration) {
-      return;
-    }
-
-    setState(() {
-      _inklingDialogue = null;
-    });
   }
 
   // DAYLIGHT POLISH #1
@@ -776,6 +876,49 @@ class _HomeScreenState extends State<HomeScreen>
       <String, HomeImageAlphaMask>{};
 
   @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+
+    final route = ModalRoute.of(context);
+    if (route == _observedHomeRoute) return;
+
+    if (_observedHomeRoute != null) {
+      homeRouteObserver.unsubscribe(this);
+    }
+
+    _observedHomeRoute = route;
+    if (route != null) {
+      homeRouteObserver.subscribe(this, route);
+      _homeRouteVisible = route.isCurrent;
+    }
+  }
+
+  void _interruptChapterOneDiscovery() {
+    _homeRouteVisible = false;
+    _inklingDialogueGeneration++;
+    _chapterOneDiscoveryGeneration++;
+    _chapterOneDiscoveryPlaying = false;
+    _ordinaryInklingDialoguePlaying = false;
+
+    if (_inklingDialogue != null && mounted) {
+      setState(() {
+        _inklingDialogue = null;
+      });
+    }
+  }
+
+  @override
+  void didPushNext() {
+    _interruptChapterOneDiscovery();
+  }
+
+  @override
+  void didPopNext() {
+    _homeRouteVisible = true;
+    _maybeStartChapterOneDiscovery();
+  }
+
+  @override
   void initState() {
     super.initState();
 
@@ -793,6 +936,7 @@ class _HomeScreenState extends State<HomeScreen>
 
     if (preparedScene != null) {
       _applyPreparedScene(preparedScene);
+      _loadInklingMilestones();
     } else {
       _loadDecorations();
     }
@@ -800,6 +944,7 @@ class _HomeScreenState extends State<HomeScreen>
 
   @override
   void dispose() {
+    homeRouteObserver.unsubscribe(this);
     _daylightController.dispose();
     _homeScrollController.dispose();
 
@@ -1092,12 +1237,51 @@ class _HomeScreenState extends State<HomeScreen>
     debugPrint('COBWEB CURTAINS UNLOCKED: $_allCobwebsCleared');
   }
 
+  Future<void> _loadInklingMilestones() async {
+    final generation = ++_inklingLoadGeneration;
+    final prefs = await SharedPreferences.getInstance();
+    final saved = prefs.getStringList(_inklingMilestonesKey) ?? <String>[];
+
+    if (!mounted || generation != _inklingLoadGeneration) return;
+
+    _installInklingMilestones(saved);
+  }
+
+  void _installInklingMilestones(List<String> saved) {
+    // Legacy saves used dust_cleared to mean the cinematic started.
+    // Treat those records as completed rather than replaying old scenes.
+    final milestones = saved.toSet();
+    if (!milestones.contains(_inklingMilestoneFormatV2) &&
+        milestones.contains('dust_cleared')) {
+      milestones.add(_chapterOneDiscoveryComplete);
+    }
+
+    _inklingSeenMilestones.addAll(milestones);
+    _inklingMilestonesReady = true;
+    _maybeStartChapterOneDiscovery();
+  }
+
+  void _maybeStartChapterOneDiscovery() {
+    if (!mounted ||
+        !_homeRouteVisible ||
+        !_homeSceneReady ||
+        !_inklingMilestonesReady ||
+        _chapterOneDiscoveryPlaying ||
+        _ordinaryInklingDialoguePlaying ||
+        !_allDustCleared ||
+        _inklingSeenMilestones.contains(_chapterOneDiscoveryComplete)) {
+      return;
+    }
+
+    _playChapterOneDiscovery();
+  }
+
   Future<void> _loadDecorations() async {
     final prefs = await SharedPreferences.getInstance();
 
-    _inklingSeenMilestones.addAll(
-      prefs.getStringList(_inklingMilestonesKey) ?? <String>[],
-    );
+    final savedMilestones =
+        prefs.getStringList(_inklingMilestonesKey) ?? <String>[];
+    final loadGeneration = ++_inklingLoadGeneration;
 
     final items = await _bagService.loadItems();
 
@@ -1179,6 +1363,10 @@ class _HomeScreenState extends State<HomeScreen>
       _bagItemsById = itemsById;
       _homeSceneReady = true;
     });
+
+    if (loadGeneration == _inklingLoadGeneration) {
+      _installInklingMilestones(savedMilestones);
+    }
 
     _debugCobwebObjectives();
 
@@ -3451,7 +3639,7 @@ class _HomeScreenState extends State<HomeScreen>
     _saveDecorations();
 
     if (complete && _allDustCleared) {
-      _playChapterOneDiscovery();
+      _maybeStartChapterOneDiscovery();
     }
   }
 
