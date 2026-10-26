@@ -20,6 +20,7 @@ import '../models/layer_group.dart';
 import '../models/reference_layer.dart';
 import '../models/scene_motion_instance.dart';
 import '../models/playback_frame_clock.dart';
+import '../controllers/studio_playback_controller.dart';
 import '../models/scene_motion_clock.dart';
 import '../models/transform_keyframe.dart';
 import '../models/variant_slot.dart';
@@ -273,7 +274,6 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
   // the scene loops or holds a frame.
   int _sceneMotionElapsedUs = 0;
   final ValueNotifier<int> _sceneMotionTick = ValueNotifier<int>(0);
-  DateTime? _sceneMotionLastTick;
 
   int _activePointerCount = 0;
   List<VectorPoint> _draftStroke = const <VectorPoint>[];
@@ -315,7 +315,8 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
 
   int? _nativePenLastSampleTime;
 
-  Timer? _playbackTimer;
+  final StudioPlaybackController _playbackController =
+      StudioPlaybackController();
   Timer? _autosaveTimer;
   Timer? _groupBrightnessFadeTimer;
 
@@ -724,7 +725,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
   @override
   void dispose() {
     _sPenChannel.setMethodCallHandler(null);
-    _playbackTimer?.cancel();
+    _playbackController.dispose();
     _autosaveTimer?.cancel();
     _groupBrightnessFadeTimer?.cancel();
     _canvasAssetLongPressTimer?.cancel();
@@ -6167,7 +6168,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
   void _stopPlaybackForNavigation() {
     if (!_isPlaying) return;
 
-    _playbackTimer?.cancel();
+    _playbackController.cancel();
 
     final controller = _videoController;
 
@@ -6478,55 +6479,42 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
   }
 
   void _startPlaybackTimer() {
-    _playbackTimer?.cancel();
+    _playbackController.schedule(
+      fps: _fps,
+      onTick: (elapsedUs) {
+        if (!mounted || !_isPlaying || _frameDurations.isEmpty) {
+          return;
+        }
 
-    // Playback now ticks once per base FPS unit rather than sleeping for the
-    // complete held-frame duration. This lets independent semantic group
-    // animation continue inside a held main timeline frame.
-    final baseFrameMilliseconds = (1000 / _fps).round().clamp(40, 1000);
+        _sceneMotionElapsedUs += elapsedUs;
 
-    _sceneMotionLastTick ??= DateTime.now();
+        final next = PlaybackFrameClock.advance(
+          frameIndex: _selectedFrameIndex,
+          frameUnit: _playbackFrameUnit,
+          frameDurations: _frameDurations,
+        );
 
-    _playbackTimer = Timer(Duration(milliseconds: baseFrameMilliseconds), () {
-      if (!mounted || !_isPlaying || _frameDurations.isEmpty) {
-        return;
-      }
-
-      final now = DateTime.now();
-      final lastTick = _sceneMotionLastTick;
-      final elapsedUs = lastTick == null
-          ? baseFrameMilliseconds * 1000
-          : now.difference(lastTick).inMicroseconds.clamp(0, 1000000);
-      _sceneMotionLastTick = now;
-
-      _sceneMotionElapsedUs += elapsedUs;
-      final next = PlaybackFrameClock.advance(
-        frameIndex: _selectedFrameIndex,
-        frameUnit: _playbackFrameUnit,
-        frameDurations: _frameDurations,
-      );
-
-      if (next.frameUnit != 0) {
-        // Still inside the current held frame.
-        _playbackFrameUnit = next.frameUnit;
-        _sceneMotionTick.value += 1;
-      } else {
-        // A frame boundary, including a single-frame loop.
-        setState(() {
+        if (next.frameUnit != 0) {
+          // Still inside the current held frame.
           _playbackFrameUnit = next.frameUnit;
-          _selectedFrameIndex = next.frameIndex;
-        });
-      }
+          _sceneMotionTick.value += 1;
+        } else {
+          // A frame boundary, including a single-frame loop.
+          setState(() {
+            _playbackFrameUnit = next.frameUnit;
+            _selectedFrameIndex = next.frameIndex;
+          });
+        }
 
-      final controller = _videoController;
+        final controller = _videoController;
+        if (controller != null && controller.value.isInitialized) {
+          unawaited(_syncVideoToSelectedFrameDuringPlayback());
+        }
 
-      if (controller != null && controller.value.isInitialized) {
-        unawaited(_syncVideoToSelectedFrameDuringPlayback());
-      }
-
-      _scrollTimelineToFrame(_selectedFrameIndex);
-      _startPlaybackTimer();
-    });
+        _scrollTimelineToFrame(_selectedFrameIndex);
+        _startPlaybackTimer();
+      },
+    );
   }
 
   Future<void> _togglePlayback() async {
@@ -6539,8 +6527,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     final hasVideo = controller != null && controller.value.isInitialized;
 
     if (_isPlaying) {
-      _playbackTimer?.cancel();
-      _sceneMotionLastTick = null;
+      _playbackController.pause();
 
       if (hasVideo && controller.value.isPlaying) {
         await controller.pause();
