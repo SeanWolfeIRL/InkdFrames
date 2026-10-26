@@ -19,6 +19,7 @@ import '../models/inkdframes_project.dart';
 import '../models/layer_group.dart';
 import '../models/reference_layer.dart';
 import '../models/scene_motion_instance.dart';
+import '../models/playback_frame_clock.dart';
 import '../models/scene_motion_clock.dart';
 import '../models/transform_keyframe.dart';
 import '../models/variant_slot.dart';
@@ -6499,20 +6500,21 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
       _sceneMotionLastTick = now;
 
       _sceneMotionElapsedUs += elapsedUs;
-      final selectedDuration = _frameDurations[_selectedFrameIndex].clamp(
-        1,
-        1000000,
+      final next = PlaybackFrameClock.advance(
+        frameIndex: _selectedFrameIndex,
+        frameUnit: _playbackFrameUnit,
+        frameDurations: _frameDurations,
       );
 
-      if (_playbackFrameUnit + 1 < selectedDuration) {
-        _playbackFrameUnit += 1;
+      if (next.frameUnit != 0) {
+        // Still inside the current held frame.
+        _playbackFrameUnit = next.frameUnit;
         _sceneMotionTick.value += 1;
       } else {
+        // A frame boundary, including a single-frame loop.
         setState(() {
-          _playbackFrameUnit = 0;
-          _selectedFrameIndex = _selectedFrameIndex < _frameDurations.length - 1
-              ? _selectedFrameIndex + 1
-              : 0;
+          _playbackFrameUnit = next.frameUnit;
+          _selectedFrameIndex = next.frameIndex;
         });
       }
 
