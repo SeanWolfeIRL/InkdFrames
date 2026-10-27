@@ -17,6 +17,7 @@ import 'welcome_home_screen.dart';
 import 'workspace_screen.dart';
 import 'bag_screen.dart';
 import '../models/bag_item.dart';
+import '../models/bag_item_reference.dart';
 import '../models/composite_asset.dart';
 import '../models/placed_decoration.dart';
 import '../models/vector_point.dart';
@@ -5101,20 +5102,40 @@ class _HomeScreenState extends State<HomeScreen>
   }
 
   Future<void> _chooseDecoration() async {
-    final prefs = await SharedPreferences.getInstance();
-    final items = await _bagService.loadItems();
+    final bagPerf = Stopwatch()..start();
+    var bagCheckpoint = 0;
 
-    final primedMasks = await _loadImageAlphaMasks(items);
-
-    if (!mounted) return;
-
-    if (primedMasks.isNotEmpty) {
-      setState(() {
-        _imageAlphaMasks.addAll(primedMasks);
-      });
+    void bagPerfLog(String stage) {
+      final now = bagPerf.elapsedMilliseconds;
+      debugPrint(
+        'INKDFRAMES_BAG_PERF $stage '
+        'delta=${now - bagCheckpoint}ms total=${now}ms',
+      );
+      bagCheckpoint = now;
     }
 
-    _precacheHomeImages(items);
+    bagPerfLog('START');
+
+    final prefs = await SharedPreferences.getInstance();
+    bagPerfLog('PREFERENCES');
+
+    var items = await _bagService.loadItemReferences();
+
+    if (items == null) {
+      await _bagService.rebuildItemReferenceIndex();
+      items = await _bagService.loadItemReferences();
+    }
+
+    if (items == null) {
+      debugPrint('INKDFRAMES_BAG_PERF INDEX_UNAVAILABLE');
+      return;
+    }
+
+    final List<BagItemReference> drawerItems = items;
+
+    bagPerfLog('LOAD_REFERENCES count=${drawerItems.length}');
+
+    if (!mounted) return;
 
     // --------------------------------------------------------
     // Read the exact same Pocket data used by BagScreen.
@@ -5174,7 +5195,9 @@ class _HomeScreenState extends State<HomeScreen>
     String? activePocketId;
     String? activePocketName;
 
-    final selectedItem = await showModalBottomSheet<BagItem>(
+    bagPerfLog('BEFORE_DRAWER');
+
+    final selectedItemId = await showModalBottomSheet<String>(
       context: context,
       isScrollControlled: true,
       backgroundColor: const Color(0xFF21160F),
@@ -5183,14 +5206,14 @@ class _HomeScreenState extends State<HomeScreen>
       builder: (sheetContext) {
         return StatefulBuilder(
           builder: (context, setSheetState) {
-            List<BagItem> activeItems() {
+            List<BagItemReference> activeItems() {
               if (activePocketId == '__unsorted__') {
-                return items
+                return drawerItems
                     .where((item) => !assignments.containsKey(item.id))
                     .toList();
               }
 
-              return items
+              return drawerItems
                   .where((item) => assignments[item.id] == activePocketId)
                   .toList();
             }
@@ -5338,7 +5361,7 @@ class _HomeScreenState extends State<HomeScreen>
                                     id: '__unsorted__',
                                     name: 'Unsorted',
                                     icon: Icons.inbox_outlined,
-                                    count: items
+                                    count: drawerItems
                                         .where(
                                           (item) =>
                                               !assignments.containsKey(item.id),
@@ -5384,7 +5407,10 @@ class _HomeScreenState extends State<HomeScreen>
                                         ),
                                         child: Padding(
                                           padding: const EdgeInsets.all(4),
-                                          child: item.isImage
+                                          child:
+                                              item.assetType == 'image' &&
+                                                  item.imagePath != null &&
+                                                  item.imagePath!.isNotEmpty
                                               ? Image.file(
                                                   File(item.imagePath!),
                                                   fit: BoxFit.contain,
@@ -5401,7 +5427,7 @@ class _HomeScreenState extends State<HomeScreen>
                                                         );
                                                       },
                                                 )
-                                              : item.isComposite
+                                              : item.assetType == 'composite'
                                               ? const Center(
                                                   child: Icon(
                                                     Icons.view_in_ar_outlined,
@@ -5409,14 +5435,12 @@ class _HomeScreenState extends State<HomeScreen>
                                                     color: Color(0xFFF1D3A2),
                                                   ),
                                                 )
-                                              : CustomPaint(
-                                                  painter:
-                                                      BagItemPreviewPainter(
-                                                        strokes:
-                                                            _bagItemStrokes(
-                                                              item,
-                                                            ),
-                                                      ),
+                                              : const Center(
+                                                  child: Icon(
+                                                    Icons.brush_outlined,
+                                                    size: 32,
+                                                    color: Color(0xFFF1D3A2),
+                                                  ),
                                                 ),
                                         ),
                                       ),
@@ -5437,7 +5461,7 @@ class _HomeScreenState extends State<HomeScreen>
                                       color: Color(0xFFF1D3A2),
                                     ),
                                     onTap: () {
-                                      Navigator.pop(sheetContext, item);
+                                      Navigator.pop(sheetContext, item.id);
                                     },
                                   );
                                 },
@@ -5453,9 +5477,30 @@ class _HomeScreenState extends State<HomeScreen>
       },
     );
 
+    if (selectedItemId == null || !mounted) {
+      return;
+    }
+
+    bagPerfLog('ASSET_SELECTED');
+
+    final selectedItem = await _bagService.loadItemById(selectedItemId);
+
+    bagPerfLog('SELECTED_ASSET_LOADED');
+
     if (selectedItem == null || !mounted) {
       return;
     }
+
+    final selectedMasks = await _loadImageAlphaMasks([selectedItem]);
+    if (!mounted) return;
+
+    if (selectedMasks.isNotEmpty) {
+      setState(() {
+        _imageAlphaMasks.addAll(selectedMasks);
+      });
+    }
+
+    _precacheHomeImages([selectedItem]);
 
     setState(() {
       _bagItemsById[selectedItem.id] = selectedItem;
