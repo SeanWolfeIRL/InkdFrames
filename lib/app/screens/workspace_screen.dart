@@ -612,7 +612,54 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
   double _stampBrushScatter = 0.0;
   Offset? _stampBrushLastPosition;
   List<VectorStroke> _draftStampStrokes = <VectorStroke>[];
+
+  // Cache source geometry for the currently selected Bag stamp.
+  // Rebuilt when the selected BagItem instance changes.
+  BagItem? _cachedStampSourceItem;
+  List<VectorStroke> _cachedStampSourceStrokes = <VectorStroke>[];
+  Rect? _cachedStampSourceBounds;
   final math.Random _stampBrushRandom = math.Random();
+
+  // Stable list shared with the live painter for Texture/Stamp previews.
+  final List<VectorStroke> _liveBrushDraftStrokes = <VectorStroke>[];
+  int _liveTexturePreparedCount = 0;
+  int _liveStampPreparedCount = 0;
+
+  void _clearLiveBrushDraft() {
+    _liveBrushDraftStrokes.clear();
+    _liveTexturePreparedCount = 0;
+    _liveStampPreparedCount = 0;
+    _scheduleLiveInkRepaint();
+  }
+
+  void _refreshLiveBrushDraft() {
+    if (_draftTextureStrokes.length < _liveTexturePreparedCount ||
+        _draftStampStrokes.length < _liveStampPreparedCount) {
+      _clearLiveBrushDraft();
+    }
+
+    final opacity = _activeLayer.opacity;
+
+    for (
+      var i = _liveTexturePreparedCount;
+      i < _draftTextureStrokes.length;
+      i++
+    ) {
+      _liveBrushDraftStrokes.add(
+        _strokeWithOpacity(_draftTextureStrokes[i], opacity),
+      );
+    }
+
+    for (var i = _liveStampPreparedCount; i < _draftStampStrokes.length; i++) {
+      _liveBrushDraftStrokes.add(
+        _strokeWithOpacity(_draftStampStrokes[i], opacity),
+      );
+    }
+
+    _liveTexturePreparedCount = _draftTextureStrokes.length;
+    _liveStampPreparedCount = _draftStampStrokes.length;
+    _scheduleLiveInkRepaint();
+  }
 
   Color _blendBaseColor = Colors.white;
   Color _blendSampleColor = Colors.black;
@@ -10188,6 +10235,12 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     }
   }
 
+  void _clearStampSourceCache() {
+    _cachedStampSourceItem = null;
+    _cachedStampSourceStrokes = <VectorStroke>[];
+    _cachedStampSourceBounds = null;
+  }
+
   List<VectorStroke> _bagStampSourceStrokes(BagItem item) {
     final strokes = <VectorStroke>[];
 
@@ -10234,8 +10287,16 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     Offset position,
     double pressure,
   ) {
-    final sourceStrokes = _bagStampSourceStrokes(item);
-    final bounds = _bagStampBounds(sourceStrokes);
+    if (!identical(_cachedStampSourceItem, item)) {
+      final strokes = _bagStampSourceStrokes(item);
+
+      _cachedStampSourceItem = item;
+      _cachedStampSourceStrokes = strokes;
+      _cachedStampSourceBounds = _bagStampBounds(strokes);
+    }
+
+    final sourceStrokes = _cachedStampSourceStrokes;
+    final bounds = _cachedStampSourceBounds;
 
     if (bounds == null) {
       return const <VectorStroke>[];
@@ -10375,6 +10436,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
       _layers[_activeLayerIndex] = layer.copyWith(frames: frames);
 
       _draftStampStrokes = <VectorStroke>[];
+      _clearLiveBrushDraft();
       _stampBrushLastPosition = null;
 
       _rebuildCompositeFrames();
@@ -10401,6 +10463,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
       _drawingMode = true;
       _drawingExpanded = true;
 
+      _clearStampSourceCache();
       _stampBrushItem = item;
       _stampBrushActive = true;
       _stampBrushPanelExpanded = true;
@@ -10713,6 +10776,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     _layers[_activeLayerIndex] = layer.copyWith(frames: frames);
 
     _draftTextureStrokes = <VectorStroke>[];
+    _clearLiveBrushDraft();
     _rebuildCompositeFrames();
     _scheduleAutosave();
   }
@@ -11365,6 +11429,15 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     }
 
     if (call.method == 'up') {
+      // Preserve the final Android stylus position before ending the
+      // native sample stream. The existing timestamp filter prevents
+      // an overlapping final sample from being appended twice.
+      if (_nativeSPenMayFeedFreehand) {
+        if (_appendNativeFreehandSample(arguments, density)) {
+          _scheduleLiveInkRepaint();
+        }
+      }
+
       _nativeSPenDown = false;
       _nativePenLastSampleTime = null;
       return;
@@ -11487,19 +11560,23 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     if (_drawingMode && _stampBrushActive && _stampBrushItem != null) {
       setState(() {
         _draftStampStrokes = <VectorStroke>[];
+        _clearLiveBrushDraft();
         _stampBrushLastPosition = authoredPosition;
         _addBagStampToDraft(authoredPosition, event.pressure);
       });
+      _refreshLiveBrushDraft();
 
       return;
     }
 
     if (_drawingMode && _textureActive) {
       _draftTextureStrokes = <VectorStroke>[];
+      _clearLiveBrushDraft();
 
       setState(() {
         _addTextureStamp(authoredPosition, event.pressure);
       });
+      _refreshLiveBrushDraft();
 
       return;
     }
@@ -11840,18 +11917,14 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     );
 
     if (_drawingMode && _stampBrushActive && _stampBrushItem != null) {
-      setState(() {
-        _addBagStampsAlongPath(authoredPosition, event.pressure);
-      });
-
+      _addBagStampsAlongPath(authoredPosition, event.pressure);
+      _refreshLiveBrushDraft();
       return;
     }
 
     if (_drawingMode && _textureActive) {
-      setState(() {
-        _addTextureStamp(authoredPosition, event.pressure);
-      });
-
+      _addTextureStamp(authoredPosition, event.pressure);
+      _refreshLiveBrushDraft();
       return;
     }
 
@@ -16965,20 +17038,6 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
       frameStrokes.addAll(savedFrameStrokes);
     }
 
-    if (isActiveLayer) {
-      frameStrokes.addAll(
-        _draftTextureStrokes.map(
-          (stroke) => _strokeWithOpacity(stroke, layer.opacity),
-        ),
-      );
-
-      frameStrokes.addAll(
-        _draftStampStrokes.map(
-          (stroke) => _strokeWithOpacity(stroke, layer.opacity),
-        ),
-      );
-    }
-
     // Saved artwork and volatile S Pen ink deliberately use separate
     // painters. The live repaint notifier therefore never asks Flutter to
     // repaint all previously committed strokes merely because one new pen
@@ -17008,6 +17067,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
             painter: AnimationCanvasPainter(
               repaint: _liveInkRepaint,
               strokes: const <VectorStroke>[],
+              liveDraftStrokes: _liveBrushDraftStrokes,
               currentStroke: _draftStroke.isNotEmpty ? _draftStroke : null,
               symmetryCurrentStrokes:
                   _draftStroke.isNotEmpty &&

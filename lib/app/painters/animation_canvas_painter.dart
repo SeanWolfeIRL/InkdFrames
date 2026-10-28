@@ -12,6 +12,7 @@ class AnimationCanvasPainter extends CustomPainter {
     required this.strokes,
     required this.currentStroke,
     this.symmetryCurrentStrokes = const <List<VectorPoint>>[],
+    this.liveDraftStrokes = const <VectorStroke>[],
     required this.previousOnionSkinStrokes,
     required this.nextOnionSkinStrokes,
     required this.strokeColor,
@@ -33,6 +34,10 @@ class AnimationCanvasPainter extends CustomPainter {
   /// Lock mask as the source draft. They are committed by Workspace as
   /// independent VectorStrokes when the gesture ends.
   final List<List<VectorPoint>> symmetryCurrentStrokes;
+
+  /// Mutable, view-only vector drafts for Texture and Stamp brushes.
+  /// The repaint notifier updates these without rebuilding Studio.
+  final List<VectorStroke> liveDraftStrokes;
 
   final List<VectorStroke> previousOnionSkinStrokes;
   final List<VectorStroke> nextOnionSkinStrokes;
@@ -127,12 +132,16 @@ class AnimationCanvasPainter extends CustomPainter {
       ...symmetryCurrentStrokes.where((points) => points.isNotEmpty),
     ];
 
-    if (livePointSets.isNotEmpty) {
+    if (livePointSets.isNotEmpty || liveDraftStrokes.isNotEmpty) {
       final liveAlphaLockMask = alphaLockMaskStrokes
           .where((stroke) => !stroke.alphaLocked)
           .toList(growable: false);
 
       void paintLiveStrokes() {
+        for (final stroke in liveDraftStrokes) {
+          _paintStroke(canvas, stroke, stroke.color);
+        }
+
         for (final points in livePointSets) {
           final liveStroke = VectorStroke(
             points: points,
