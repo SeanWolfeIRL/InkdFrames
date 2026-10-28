@@ -25,6 +25,7 @@ import '../models/vector_stroke.dart';
 import '../painters/animation_canvas_painter.dart';
 import '../painters/bag_item_preview_painter.dart';
 import '../services/bag_service.dart';
+import '../services/bag_thumbnail_cache.dart';
 
 class HomeImageAlphaMask {
   const HomeImageAlphaMask({
@@ -5427,20 +5428,48 @@ class _HomeScreenState extends State<HomeScreen>
                                                         );
                                                       },
                                                 )
-                                              : item.assetType == 'composite'
-                                              ? const Center(
-                                                  child: Icon(
-                                                    Icons.view_in_ar_outlined,
-                                                    size: 34,
-                                                    color: Color(0xFFF1D3A2),
-                                                  ),
-                                                )
-                                              : const Center(
-                                                  child: Icon(
-                                                    Icons.brush_outlined,
-                                                    size: 32,
-                                                    color: Color(0xFFF1D3A2),
-                                                  ),
+                                              : FutureBuilder<File?>(
+                                                  future: BagThumbnailCache()
+                                                      .existingFile(item.id),
+                                                  builder: (context, snapshot) {
+                                                    final thumbnail =
+                                                        snapshot.data;
+                                                    if (thumbnail == null) {
+                                                      return Center(
+                                                        child: Icon(
+                                                          item.assetType ==
+                                                                  'composite'
+                                                              ? Icons
+                                                                    .view_in_ar_outlined
+                                                              : Icons
+                                                                    .brush_outlined,
+                                                          size: 32,
+                                                          color: const Color(
+                                                            0xFFF1D3A2,
+                                                          ),
+                                                        ),
+                                                      );
+                                                    }
+                                                    return Image.file(
+                                                      thumbnail,
+                                                      fit: BoxFit.contain,
+                                                      cacheWidth: 192,
+                                                      errorBuilder:
+                                                          (
+                                                            context,
+                                                            error,
+                                                            stackTrace,
+                                                          ) => const Center(
+                                                            child: Icon(
+                                                              Icons
+                                                                  .brush_outlined,
+                                                              color: Color(
+                                                                0xFFF1D3A2,
+                                                              ),
+                                                            ),
+                                                          ),
+                                                    );
+                                                  },
                                                 ),
                                         ),
                                       ),

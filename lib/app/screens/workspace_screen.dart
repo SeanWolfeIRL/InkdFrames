@@ -31,6 +31,7 @@ import '../painters/frame_thumbnail_painter.dart';
 import '../services/animation_export_service.dart';
 import '../services/brush_preset_service.dart';
 import '../services/bag_service.dart';
+import '../services/bag_asset_save_coordinator.dart';
 import '../services/project_storage_service.dart';
 import 'bag_screen.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -3141,7 +3142,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
       authoredCanvasHeight: _canvasHeight,
     );
 
-    await BagService().addItem(updated);
+    await BagAssetSaveCoordinator().addItem(updated);
 
     if (!mounted) {
       return;
@@ -3299,7 +3300,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
       authoredCanvasHeight: _canvasHeight,
     );
 
-    await BagService().addItem(item);
+    await BagAssetSaveCoordinator().addItem(item);
 
     final prefs = await SharedPreferences.getInstance();
 
@@ -3919,7 +3920,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
       authoredCanvasHeight: requiresComposite ? _canvasHeight : null,
     );
 
-    await BagService().addItem(item);
+    await BagAssetSaveCoordinator().addItem(item);
 
     final prefs = await SharedPreferences.getInstance();
 
@@ -4163,7 +4164,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
       createdAt: DateTime.now(),
     );
 
-    await BagService().addItem(item);
+    await BagAssetSaveCoordinator().addItem(item);
 
     final prefs = await SharedPreferences.getInstance();
     const pocketAssignmentsKey = 'inkdframes_bag_pocket_assignments_v1';
@@ -14269,7 +14270,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
         createdAt: DateTime.now(),
       );
 
-      await BagService().addItem(item);
+      await BagAssetSaveCoordinator().addItem(item);
 
       const assignmentsKey = 'inkdframes_bag_pocket_assignments_v1';
 

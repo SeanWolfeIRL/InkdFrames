@@ -5,6 +5,7 @@ import 'dart:convert';
 
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../models/bag_item.dart';
@@ -13,6 +14,9 @@ import '../models/vector_stroke.dart';
 import '../painters/bag_item_preview_painter.dart';
 import '../painters/animation_canvas_painter.dart';
 import '../services/bag_service.dart';
+import '../services/bag_thumbnail_cache.dart';
+import '../services/bag_thumbnail_renderer.dart';
+import '../services/bag_asset_save_coordinator.dart';
 import '../services/bag_asset_transfer_service.dart';
 import 'workspace_screen.dart';
 
@@ -56,6 +60,7 @@ class _BagScreenState extends State<BagScreen> {
 
   List<BagItem> _items = <BagItem>[];
   bool _loading = true;
+  bool _refreshingBagPreviews = false;
   int _bagCompositeSerial = 0;
 
   Map<String, String> _pocketAssignments = {};
@@ -604,7 +609,7 @@ class _BagScreenState extends State<BagScreen> {
         createdAt: DateTime.now(),
       );
 
-      await _bagService.addItem(imported);
+      await BagAssetSaveCoordinator().addItem(imported);
       await _loadItems();
 
       if (!mounted) return;
@@ -653,6 +658,12 @@ class _BagScreenState extends State<BagScreen> {
     if (confirmed != true) return;
 
     await _bagService.deleteItem(item.id);
+
+    try {
+      await BagThumbnailCache().invalidate(item.id);
+    } catch (error) {
+      debugPrint('BAG_THUMBNAIL_DELETE_CLEANUP: $error');
+    }
 
     _pocketAssignments.remove(item.id);
     await _savePocketAssignments();
@@ -1173,7 +1184,7 @@ class _BagScreenState extends State<BagScreen> {
 
     final updated = _bagItemWithComposite(item, nextComposite);
 
-    await _bagService.addItem(updated);
+    await BagAssetSaveCoordinator().addItem(updated);
     await _loadItems();
 
     if (!mounted) {
@@ -1313,8 +1324,14 @@ class _BagScreenState extends State<BagScreen> {
       ),
     );
 
-    await _bagService.addItem(updatedTarget);
+    await BagAssetSaveCoordinator().addItem(updatedTarget);
     await _bagService.deleteItem(item.id);
+
+    try {
+      await BagThumbnailCache().invalidate(item.id);
+    } catch (error) {
+      debugPrint('BAG_THUMBNAIL_DELETE_CLEANUP: $error');
+    }
 
     _pocketAssignments.remove(item.id);
     await _savePocketAssignments();
@@ -2012,6 +2029,182 @@ class _BagScreenState extends State<BagScreen> {
     await _showPocketItems(title: pocket.name, items: pocketItems);
   }
 
+  Future<bool> _captureCompositeBagThumbnail(
+    BagItem item,
+    BagThumbnailCache cache,
+  ) async {
+    if (!item.isComposite) return false;
+
+    final boundaryKey = GlobalKey();
+    final overlay = Overlay.of(context);
+    late OverlayEntry entry;
+
+    entry = OverlayEntry(
+      builder: (overlayContext) => Positioned(
+        left: 12,
+        top: 72,
+        child: Material(
+          color: const Color(0xFF21160F),
+          elevation: 8,
+          borderRadius: BorderRadius.circular(12),
+          child: Padding(
+            padding: const EdgeInsets.all(12),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(
+                  'Rendering ${item.name}',
+                  style: const TextStyle(color: Colors.white),
+                ),
+                const SizedBox(height: 8),
+                RepaintBoundary(
+                  key: boundaryKey,
+                  child: SizedBox(
+                    width: 192,
+                    height: 192,
+                    child: _buildCompositeBagPreview(
+                      item,
+                      width: 192,
+                      height: 192,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+
+    overlay.insert(entry);
+
+    try {
+      await WidgetsBinding.instance.endOfFrame;
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+      await WidgetsBinding.instance.endOfFrame;
+
+      if (!mounted) return false;
+
+      final boundary =
+          boundaryKey.currentContext?.findRenderObject()
+              as RenderRepaintBoundary?;
+
+      if (boundary == null || boundary.debugNeedsPaint) {
+        return false;
+      }
+
+      final image = await boundary.toImage(pixelRatio: 1.0);
+
+      try {
+        final data = await image.toByteData(format: ui.ImageByteFormat.png);
+
+        if (data == null) return false;
+
+        await cache.save(
+          item.id,
+          data.buffer.asUint8List(data.offsetInBytes, data.lengthInBytes),
+        );
+
+        return true;
+      } finally {
+        image.dispose();
+      }
+    } finally {
+      entry.remove();
+      entry.dispose();
+    }
+  }
+
+  Future<void> _refreshBagPreviews() async {
+    if (_refreshingBagPreviews) return;
+
+    setState(() => _refreshingBagPreviews = true);
+
+    final cache = BagThumbnailCache();
+    final renderer = BagThumbnailRenderer(cache: cache);
+
+    var created = 0;
+    var failed = 0;
+    var skipped = 0;
+
+    try {
+      var references = await _bagService.loadItemReferences();
+
+      if (references == null) {
+        await _bagService.rebuildItemReferenceIndex();
+        references = await _bagService.loadItemReferences();
+      }
+
+      if (references == null) {
+        throw StateError('Bag reference index unavailable');
+      }
+
+      for (final reference in references) {
+        if (!mounted) break;
+
+        if (reference.assetType != 'vector' &&
+            reference.assetType != 'composite') {
+          skipped++;
+          continue;
+        }
+
+        if (await cache.existingFile(reference.id) != null) {
+          skipped++;
+          continue;
+        }
+
+        try {
+          final item = await _bagService.loadItemById(reference.id);
+
+          if (item == null) {
+            failed++;
+            continue;
+          }
+
+          final success = item.isComposite
+              ? await _captureCompositeBagThumbnail(item, cache)
+              : await renderer.generateVectorThumbnail(item);
+
+          if (success) {
+            created++;
+          } else {
+            failed++;
+          }
+        } catch (error) {
+          failed++;
+          debugPrint('BAG_THUMBNAIL_REFRESH ${reference.name}: $error');
+        }
+
+        await Future<void>.delayed(const Duration(milliseconds: 32));
+      }
+
+      if (!mounted) return;
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          duration: const Duration(seconds: 6),
+          content: Text(
+            'Previews: $created created, '
+            '$skipped already cached/unsupported, '
+            '$failed failed',
+          ),
+        ),
+      );
+    } catch (error) {
+      debugPrint('BAG_THUMBNAIL_REFRESH_FAILED: $error');
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Could not refresh Bag previews')),
+        );
+      }
+    } finally {
+      if (mounted) {
+        setState(() => _refreshingBagPreviews = false);
+      }
+    }
+  }
+
   Future<void> _openPocketIndex() async {
     await showModalBottomSheet<void>(
       context: context,
@@ -2042,6 +2235,23 @@ class _BagScreenState extends State<BagScreen> {
                                 fontWeight: FontWeight.w800,
                                 letterSpacing: 1.4,
                               ),
+                            ),
+                          ),
+                          IconButton(
+                            tooltip: _refreshingBagPreviews
+                                ? 'Refreshing previews'
+                                : 'Refresh Bag previews',
+                            onPressed: _refreshingBagPreviews
+                                ? null
+                                : () async {
+                                    Navigator.pop(sheetContext);
+                                    await _refreshBagPreviews();
+                                  },
+                            icon: Icon(
+                              Icons.refresh_rounded,
+                              color: _refreshingBagPreviews
+                                  ? Colors.white38
+                                  : const Color(0xFFF1D3A2),
                             ),
                           ),
                           IconButton(

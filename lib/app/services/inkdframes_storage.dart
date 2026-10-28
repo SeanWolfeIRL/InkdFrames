@@ -27,9 +27,15 @@ class InkdFramesStorage {
     return Directory('${rootDirectory.path}/project_previews');
   }
 
+  /// Disposable previews for Bag assets.
+  static Directory get bagThumbnailsDirectory {
+    return Directory('${rootDirectory.path}/bag_thumbnails');
+  }
+
   static Future<void> ensureDirectories() async {
     await projectsDirectory.create(recursive: true);
     await bagItemsDirectory.create(recursive: true);
+    await bagThumbnailsDirectory.create(recursive: true);
     await projectPreviewsDirectory.create(recursive: true);
   }
 
