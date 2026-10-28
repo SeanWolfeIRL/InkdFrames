@@ -600,7 +600,39 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
   double _textureDensity = 0.5;
   double _textureScatter = 18.0;
   List<VectorStroke> _draftTextureStrokes = <VectorStroke>[];
+  Offset? _textureLastPosition;
   final math.Random _textureRandom = math.Random();
+
+  double get _textureStampSpacing {
+    return (_textureScale * (1.5 - _textureDensity)).clamp(1.5, 24.0);
+  }
+
+  void _addTextureStampsAlongPath(Offset position, double pressure) {
+    final previous = _textureLastPosition;
+
+    if (previous == null) {
+      _addTextureStamp(position, pressure);
+      _textureLastPosition = position;
+      return;
+    }
+
+    final delta = position - previous;
+    final distance = delta.distance;
+    final spacing = _textureStampSpacing;
+
+    if (distance < spacing) {
+      return;
+    }
+
+    final direction = delta / distance;
+    final count = (distance / spacing).floor();
+
+    for (var i = 1; i <= count; i++) {
+      _addTextureStamp(previous + direction * (spacing * i), pressure);
+    }
+
+    _textureLastPosition = previous + direction * (spacing * count);
+  }
 
   bool _stampBrushActive = false;
   bool _stampBrushPanelExpanded = true;
@@ -10776,6 +10808,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     _layers[_activeLayerIndex] = layer.copyWith(frames: frames);
 
     _draftTextureStrokes = <VectorStroke>[];
+    _textureLastPosition = null;
     _clearLiveBrushDraft();
     _rebuildCompositeFrames();
     _scheduleAutosave();
@@ -11298,6 +11331,62 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     });
   }
 
+  bool _nativeBrushOwnsGesture = false;
+  int? _nativeBrushLastSampleTime;
+
+  bool get _nativeSPenMayFeedBrush {
+    return Platform.isAndroid &&
+        _nativeSPenDown &&
+        _flutterStylusStrokeActive &&
+        _activePointerCount == 1 &&
+        !_isPlaying &&
+        _drawingMode &&
+        !_brushEyedropperArmed &&
+        !_blendSamplingArmed &&
+        !_isTransformActive &&
+        _nativeStrokeCanvasRenderBox != null &&
+        ((_stampBrushActive && _stampBrushItem != null) || _textureActive);
+  }
+
+  bool _appendNativeBrushSample(Map sample, double density) {
+    final x = sample['x'];
+    final y = sample['y'];
+    final pressure = sample['pressure'];
+    final time = sample['time'];
+
+    if (x is! num || y is! num || pressure is! num || time is! num) {
+      return false;
+    }
+
+    final timestamp = time.toInt();
+
+    if (_nativeBrushLastSampleTime != null &&
+        timestamp <= _nativeBrushLastSampleTime!) {
+      return false;
+    }
+
+    final position = _nativeLogicalGlobalToAuthored(
+      x.toDouble(),
+      y.toDouble(),
+      density,
+    );
+
+    if (position == null) {
+      return false;
+    }
+
+    _nativeBrushLastSampleTime = timestamp;
+    _nativeBrushOwnsGesture = true;
+
+    if (_stampBrushActive && _stampBrushItem != null) {
+      _addBagStampsAlongPath(position, pressure.toDouble());
+    } else if (_textureActive) {
+      _addTextureStampsAlongPath(position, pressure.toDouble());
+    }
+
+    return true;
+  }
+
   bool get _nativeSPenMayFeedFreehand {
     return Platform.isAndroid &&
         _nativeSPenDown &&
@@ -11419,16 +11508,25 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
       _nativePenAcceptedSampleCount = 0;
       _nativePenLastLogicalPosition = null;
       _nativePenLastSampleTime = null;
+      _nativeBrushLastSampleTime = null;
+      _nativeBrushOwnsGesture = false;
       return;
     }
 
     if (call.method == 'cancel') {
       _nativeSPenDown = false;
       _nativePenLastSampleTime = null;
+      _nativeBrushLastSampleTime = null;
+      _nativeBrushOwnsGesture = false;
       return;
     }
 
     if (call.method == 'up') {
+      if (_nativeSPenMayFeedBrush &&
+          _appendNativeBrushSample(arguments, density)) {
+        _refreshLiveBrushDraft();
+      }
+
       // Preserve the final Android stylus position before ending the
       // native sample stream. The existing timestamp filter prevents
       // an overlapping final sample from being appended twice.
@@ -11470,6 +11568,19 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
       }
     }
 
+    if (_nativeSPenMayFeedBrush) {
+      var received = false;
+      for (final sample in rawSamples) {
+        if (sample is Map && _appendNativeBrushSample(sample, density)) {
+          received = true;
+        }
+      }
+      if (received) {
+        _refreshLiveBrushDraft();
+      }
+      return;
+    }
+
     if (!_nativeSPenMayFeedFreehand) {
       return;
     }
@@ -11503,6 +11614,8 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     _flutterStylusStrokeActive =
         event.kind == ui.PointerDeviceKind.stylus ||
         event.kind == ui.PointerDeviceKind.invertedStylus;
+    _nativeBrushOwnsGesture = false;
+    _nativeBrushLastSampleTime = null;
 
     debugPrint(
       'INKDFRAMES_SPEN_FLUTTER_DOWN '
@@ -11571,10 +11684,11 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
 
     if (_drawingMode && _textureActive) {
       _draftTextureStrokes = <VectorStroke>[];
+      _textureLastPosition = null;
       _clearLiveBrushDraft();
 
       setState(() {
-        _addTextureStamp(authoredPosition, event.pressure);
+        _addTextureStampsAlongPath(authoredPosition, event.pressure);
       });
       _refreshLiveBrushDraft();
 
@@ -11917,13 +12031,15 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     );
 
     if (_drawingMode && _stampBrushActive && _stampBrushItem != null) {
+      if (_nativeBrushOwnsGesture) return;
       _addBagStampsAlongPath(authoredPosition, event.pressure);
       _refreshLiveBrushDraft();
       return;
     }
 
     if (_drawingMode && _textureActive) {
-      _addTextureStamp(authoredPosition, event.pressure);
+      if (_nativeBrushOwnsGesture) return;
+      _addTextureStampsAlongPath(authoredPosition, event.pressure);
       _refreshLiveBrushDraft();
       return;
     }
@@ -12464,6 +12580,29 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
       '${nativeLast?.dy.toStringAsFixed(1)}',
     );
 
+    // Capture the final position before releasing the gesture's
+    // canvas transform and native-input ownership.
+    if (_activePointerCount == 1 &&
+        _drawingMode &&
+        (_textureActive || (_stampBrushActive && _stampBrushItem != null))) {
+      final renderBox = _nativeStrokeCanvasRenderBox;
+      if (renderBox != null && renderBox.attached) {
+        final position = _canvasPointToActiveLayerAuthoredSpace(
+          renderBox.globalToLocal(event.position),
+        );
+
+        if (_textureActive) {
+          _addTextureStampsAlongPath(position, event.pressure);
+        } else if (_stampBrushActive && _stampBrushItem != null) {
+          _addBagStampsAlongPath(position, event.pressure);
+        }
+
+        _refreshLiveBrushDraft();
+      }
+    }
+
+    _nativeBrushOwnsGesture = false;
+    _nativeBrushLastSampleTime = null;
     _flutterStylusStrokeActive = false;
     _nativeStrokeCanvasRenderBox = null;
 
@@ -12630,6 +12769,13 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     _flutterStylusStrokeActive = false;
     _nativeStrokeCanvasRenderBox = null;
     _nativePenLastSampleTime = null;
+    _nativeBrushOwnsGesture = false;
+    _nativeBrushLastSampleTime = null;
+    _draftTextureStrokes = <VectorStroke>[];
+    _draftStampStrokes = <VectorStroke>[];
+    _textureLastPosition = null;
+    _stampBrushLastPosition = null;
+    _clearLiveBrushDraft();
 
     _updateCanvasRotationPointerEnd(event);
     _cancelTransformPivotLockHold();
