@@ -5,6 +5,7 @@ import 'dart:math' as math;
 import 'dart:ui' as ui;
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
+import '../models/bezier_rig_deformer.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter/scheduler.dart';
@@ -26,6 +27,8 @@ import '../models/transform_keyframe.dart';
 import '../models/variant_slot.dart';
 import '../models/vector_point.dart';
 import '../models/vector_stroke.dart';
+import '../models/rig_deformer.dart';
+import '../models/stroke_rig.dart';
 import '../painters/animation_canvas_painter.dart';
 import '../painters/frame_thumbnail_painter.dart';
 import '../services/animation_export_service.dart';
@@ -399,6 +402,14 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
 
   List<VectorPoint> _lassoPoints = const <VectorPoint>[];
   Map<String, Set<int>> _selectedTransformStrokes = <String, Set<int>>{};
+
+  // Flex Rig V1: temporary editor preview only.
+  // No project serialization or animation keys yet.
+  StrokeRig? _flexRigPreview;
+  String? _flexRigPreviewLayerId;
+  int? _flexRigPreviewSourceFrameIndex;
+  int? _flexRigDragPointer;
+  int? _flexRigDragControlIndex;
 
   String? _transformReferenceLayerId;
   ReferenceLayer? _referenceTransformSnapshot;
@@ -1386,10 +1397,254 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     }
   }
 
+  /// Prepare a temporary Flex Rig from one selected vector stroke.
+  ///
+  /// Uses selection indices only for initial lookup. The rig itself
+  /// is bound to the stroke's stable ID, layer ID and source frame.
+  bool _activateFlexRigFromSelection() {
+    if (_isPlaying || _selectedTransformStrokes.length != 1) {
+      return false;
+    }
+
+    final entry = _selectedTransformStrokes.entries.single;
+
+    if (entry.value.length != 1) {
+      return false;
+    }
+
+    final layerIndex = _layers.indexWhere((layer) => layer.id == entry.key);
+
+    if (layerIndex < 0) {
+      return false;
+    }
+
+    final layer = _layers[layerIndex];
+    final activeGroupId = _activeLayerGroup?.id;
+    final frameId = _currentFrameId;
+
+    var sourceFrameIndex = _selectedFrameIndex;
+
+    if (activeGroupId != null && frameId != null) {
+      sourceFrameIndex =
+          _tweenArtworkSourceFrameIndex(frameId, activeGroupId) ??
+          _selectedFrameIndex;
+    }
+
+    if (sourceFrameIndex < 0 || sourceFrameIndex >= layer.frames.length) {
+      return false;
+    }
+
+    final strokeIndex = entry.value.single;
+    final strokes = layer.frames[sourceFrameIndex];
+
+    if (strokeIndex < 0 || strokeIndex >= strokes.length) {
+      return false;
+    }
+
+    final stroke = strokes[strokeIndex];
+
+    if (stroke.filled || stroke.alphaLocked || stroke.points.length < 2) {
+      return false;
+    }
+
+    final rig = StrokeRig.fromStroke(
+      id: 'preview-${stroke.id}',
+      strokeId: stroke.id,
+      points: stroke.points,
+    );
+
+    if (rig.controls.length != 3) {
+      return false;
+    }
+
+    setState(() {
+      _flexRigDragPointer = null;
+      _flexRigDragControlIndex = null;
+      _flexRigPreview = rig;
+      _flexRigPreviewLayerId = layer.id;
+      _flexRigPreviewSourceFrameIndex = sourceFrameIndex;
+    });
+
+    return true;
+  }
+
+  /// Project a rig control from its owning layer into visible canvas space.
+  Offset _flexRigAuthoredToCanvas(String layerId, Offset authoredPoint) {
+    final frameId = _currentFrameId;
+    final group = _groupContainingLayer(layerId);
+
+    if (frameId == null || group == null) {
+      return authoredPoint;
+    }
+
+    final matrix = _sceneTransformMatrixForGroup(group.id, frameId);
+    return MatrixUtils.transformPoint(matrix, authoredPoint);
+  }
+
+  /// Convert a canvas pointer into the selected rig layer's authored space.
+  /// Returns null for singular transforms rather than guessing a position.
+  Offset? _flexRigCanvasToAuthored(String layerId, Offset canvasPoint) {
+    final frameId = _currentFrameId;
+    final group = _groupContainingLayer(layerId);
+
+    if (frameId == null || group == null) {
+      return canvasPoint;
+    }
+
+    final matrix = Matrix4.copy(
+      _sceneTransformMatrixForGroup(group.id, frameId),
+    );
+
+    if (matrix.invert() == 0) {
+      return null;
+    }
+
+    return MatrixUtils.transformPoint(matrix, canvasPoint);
+  }
+
+  bool _flexRigPointerDown(PointerDownEvent event, BuildContext canvasContext) {
+    final rig = _flexRigPreview;
+    final layerId = _flexRigPreviewLayerId;
+
+    if (rig == null || layerId == null) return false;
+    if (_flexRigDragPointer != null) return true;
+    if (_activePointerCount != 1) return true;
+
+    final renderBox = canvasContext.findRenderObject();
+    if (renderBox is! RenderBox) return true;
+
+    final position = renderBox.globalToLocal(event.position);
+    final hitRadius = 22.0 / math.max(0.1, _transformViewScale);
+
+    int? hit;
+    var closest = double.infinity;
+
+    for (var i = 0; i < rig.controls.length; i++) {
+      final control = rig.controls[i];
+      if (control.locked) continue;
+
+      final handle = _flexRigAuthoredToCanvas(
+        layerId,
+        Offset(control.x, control.y),
+      );
+
+      final distance = (handle - position).distance;
+
+      if (distance <= hitRadius && distance < closest) {
+        hit = i;
+        closest = distance;
+      }
+    }
+
+    if (hit != null) {
+      _cancelCanvasAssetLongPress();
+      _flexRigDragPointer = event.pointer;
+      _flexRigDragControlIndex = hit;
+    }
+
+    return true;
+  }
+
+  bool _flexRigPointerMove(PointerMoveEvent event, BuildContext canvasContext) {
+    final rig = _flexRigPreview;
+    if (rig == null) return false;
+
+    final layerId = _flexRigPreviewLayerId;
+    final index = _flexRigDragControlIndex;
+
+    if (layerId == null ||
+        index == null ||
+        _flexRigDragPointer != event.pointer ||
+        _activePointerCount != 1) {
+      return true;
+    }
+
+    final renderBox = canvasContext.findRenderObject();
+    if (renderBox is! RenderBox) return true;
+
+    final authored = _flexRigCanvasToAuthored(
+      layerId,
+      renderBox.globalToLocal(event.position),
+    );
+
+    if (authored == null) return true;
+
+    final controls = List<RigControlPoint>.from(rig.controls);
+    final old = controls[index];
+
+    if (old.locked) return true;
+
+    controls[index] = RigControlPoint(
+      id: old.id,
+      restX: old.restX,
+      restY: old.restY,
+      x: authored.dx,
+      y: authored.dy,
+      radius: old.radius,
+      locked: old.locked,
+    );
+
+    setState(() {
+      _flexRigPreview = StrokeRig(
+        id: rig.id,
+        strokeId: rig.strokeId,
+        controls: controls,
+      );
+    });
+
+    return true;
+  }
+
+  bool _flexRigPointerEnd(int pointer) {
+    if (_flexRigPreview == null && _flexRigDragPointer == null) {
+      return false;
+    }
+
+    if (_flexRigDragPointer == pointer) {
+      _flexRigDragPointer = null;
+      _flexRigDragControlIndex = null;
+    }
+
+    return true;
+  }
+
+  VectorStroke _strokeWithFlexRigPreview(
+    VectorStroke stroke,
+    String layerId,
+    int sourceFrameIndex,
+  ) {
+    final rig = _flexRigPreview;
+
+    if (rig == null ||
+        _flexRigPreviewLayerId != layerId ||
+        _flexRigPreviewSourceFrameIndex != sourceFrameIndex ||
+        rig.strokeId != stroke.id ||
+        stroke.filled ||
+        stroke.alphaLocked) {
+      return stroke;
+    }
+
+    final deformedPoints = BezierRigDeformer.deform(
+      stroke.points,
+      rig.controls,
+    );
+
+    return VectorStroke(
+      id: stroke.id,
+      points: deformedPoints,
+      strokeWidth: stroke.strokeWidth,
+      color: stroke.color,
+      filled: stroke.filled,
+      brushType: stroke.brushType,
+      alphaLocked: stroke.alphaLocked,
+    );
+  }
+
   VectorStroke _strokeWithOpacity(VectorStroke stroke, double opacity) {
     final sourceAlpha = stroke.color.a;
 
     return VectorStroke(
+      id: stroke.id,
       points: List<VectorPoint>.from(stroke.points),
       strokeWidth: stroke.strokeWidth,
       filled: stroke.filled,
@@ -6284,6 +6539,14 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     }
 
     setState(() {
+      if (index != _selectedFrameIndex) {
+        _flexRigPreview = null;
+        _flexRigPreviewLayerId = null;
+        _flexRigPreviewSourceFrameIndex = null;
+        _flexRigDragPointer = null;
+        _flexRigDragControlIndex = null;
+      }
+
       _selectedFrameIndex = index;
       _playbackFrameUnit = 0;
       _draftStroke = const <VectorPoint>[];
@@ -8699,6 +8962,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
         final stroke = strokes[strokeIndex];
 
         strokes[strokeIndex] = VectorStroke(
+          id: stroke.id,
           points: stroke.points
               .map(
                 (point) => VectorPoint(
@@ -8774,6 +9038,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
           final source = strokes[strokeIndex];
 
           strokes[strokeIndex] = VectorStroke(
+            id: source.id,
             points: source.points
                 .map(
                   (point) => VectorPoint(
@@ -9156,6 +9421,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
         final source = sourceStrokes[strokeIndex];
 
         strokes[strokeIndex] = VectorStroke(
+          id: source.id,
           points: source.points.map((point) {
             final x = point.dx - center.dx;
             final y = point.dy - center.dy;
@@ -9609,6 +9875,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
         final source = sourceStrokes[strokeIndex];
 
         strokes[strokeIndex] = VectorStroke(
+          id: source.id,
           points: source.points
               .map(
                 (point) => VectorPoint(
@@ -10978,6 +11245,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
               stroke.color);
 
     return VectorStroke(
+      id: stroke.id,
       points: stroke.points.map((point) => point.copy()).toList(),
       strokeWidth: stroke.strokeWidth,
       color: resultColor,
@@ -11624,6 +11892,12 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
       '${event.position.dy.toStringAsFixed(1)}',
     );
 
+    if (_flexRigPreview != null) {
+      _activePointerCount += 1;
+      _flexRigPointerDown(event, canvasContext);
+      return;
+    }
+
     _updateCanvasRotationPointerDown(event);
     _activePointerCount += 1;
     if (_activePointerCount > 1) {
@@ -12013,6 +12287,8 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
   }
 
   void _handlePointerMove(PointerMoveEvent event, BuildContext canvasContext) {
+    if (_flexRigPointerMove(event, canvasContext)) return;
+
     _updateCanvasRotationPointerMove(event);
     _updateCanvasAssetLongPress(event, canvasContext);
 
@@ -12566,6 +12842,17 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
   }
 
   void _handlePointerUp(PointerUpEvent event) {
+    if (_flexRigPointerEnd(event.pointer)) {
+      if (_activePointerCount > 0) {
+        _activePointerCount -= 1;
+      }
+      _nativeBrushOwnsGesture = false;
+      _nativeBrushLastSampleTime = null;
+      _flutterStylusStrokeActive = false;
+      _nativeStrokeCanvasRenderBox = null;
+      return;
+    }
+
     final nativeLast = _nativePenLastLogicalPosition;
 
     debugPrint(
@@ -12766,6 +13053,17 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
   }
 
   void _handlePointerCancel(PointerCancelEvent event) {
+    if (_flexRigPointerEnd(event.pointer)) {
+      if (_activePointerCount > 0) {
+        _activePointerCount -= 1;
+      }
+      _nativeBrushOwnsGesture = false;
+      _nativeBrushLastSampleTime = null;
+      _flutterStylusStrokeActive = false;
+      _nativeStrokeCanvasRenderBox = null;
+      return;
+    }
+
     _flutterStylusStrokeActive = false;
     _nativeStrokeCanvasRenderBox = null;
     _nativePenLastSampleTime = null;
@@ -17181,7 +17479,16 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
         );
       }
 
-      frameStrokes.addAll(savedFrameStrokes);
+      if (includeLiveDraft && !_isPlaying && !_isCompositePngCapture) {
+        frameStrokes.addAll(
+          savedFrameStrokes.map(
+            (stroke) =>
+                _strokeWithFlexRigPreview(stroke, layer.id, resolvedFrameIndex),
+          ),
+        );
+      } else {
+        frameStrokes.addAll(savedFrameStrokes);
+      }
     }
 
     // Saved artwork and volatile S Pen ink deliberately use separate
@@ -18419,7 +18726,47 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                                                       const SizedBox.expand(),
                                                 ),
                                               ),
+                                            if (_flexRigPreview != null &&
+                                                _flexRigPreviewLayerId !=
+                                                    null &&
+                                                !_isPlaying &&
+                                                !_isCompositePngCapture)
+                                              ValueListenableBuilder<int>(
+                                                valueListenable:
+                                                    _sceneMotionTick,
+                                                builder: (context, tick, child) {
+                                                  final rig = _flexRigPreview!;
+                                                  final layerId =
+                                                      _flexRigPreviewLayerId!;
+
+                                                  return IgnorePointer(
+                                                    child: CustomPaint(
+                                                      painter: _FlexRigOverlayPainter(
+                                                        positions: rig.controls
+                                                            .map(
+                                                              (control) =>
+                                                                  _flexRigAuthoredToCanvas(
+                                                                    layerId,
+                                                                    Offset(
+                                                                      control.x,
+                                                                      control.y,
+                                                                    ),
+                                                                  ),
+                                                            )
+                                                            .toList(
+                                                              growable: false,
+                                                            ),
+                                                        viewScale:
+                                                            _transformViewScale,
+                                                      ),
+                                                      child:
+                                                          const SizedBox.expand(),
+                                                    ),
+                                                  );
+                                                },
+                                              ),
                                             if (_isTransformActive &&
+                                                _flexRigPreview == null &&
                                                 !_isCompositePngCapture)
                                               ValueListenableBuilder<int>(
                                                 valueListenable:
@@ -18891,6 +19238,55 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                                                 Icons.tune,
                                                 color: _isTransformActive
                                                     ? Colors.deepPurpleAccent
+                                                    : Colors.white70,
+                                              ),
+                                            ),
+                                            const SizedBox(height: 2),
+                                            IconButton(
+                                              tooltip: _flexRigPreview == null
+                                                  ? 'Flex Rig · Select one stroke first'
+                                                  : 'Exit Flex Rig Preview',
+                                              visualDensity:
+                                                  VisualDensity.compact,
+                                              onPressed: _isPlaying
+                                                  ? null
+                                                  : () {
+                                                      if (_flexRigPreview !=
+                                                          null) {
+                                                        setState(() {
+                                                          _flexRigDragPointer =
+                                                              null;
+                                                          _flexRigDragControlIndex =
+                                                              null;
+                                                          _flexRigPreview =
+                                                              null;
+                                                          _flexRigPreviewLayerId =
+                                                              null;
+                                                          _flexRigPreviewSourceFrameIndex =
+                                                              null;
+                                                        });
+                                                        return;
+                                                      }
+
+                                                      final activated =
+                                                          _activateFlexRigFromSelection();
+
+                                                      if (!activated) {
+                                                        ScaffoldMessenger.of(
+                                                          context,
+                                                        ).showSnackBar(
+                                                          const SnackBar(
+                                                            content: Text(
+                                                              'Lasso-select exactly one eligible vector stroke first.',
+                                                            ),
+                                                          ),
+                                                        );
+                                                      }
+                                                    },
+                                              icon: Icon(
+                                                Icons.device_hub_outlined,
+                                                color: _flexRigPreview != null
+                                                    ? Colors.cyanAccent
                                                     : Colors.white70,
                                               ),
                                             ),
@@ -22161,6 +22557,85 @@ class _DrawingGridPainter extends CustomPainter {
   bool shouldRepaint(covariant _DrawingGridPainter oldDelegate) {
     return oldDelegate.spacing != spacing ||
         oldDelegate.backgroundColor != backgroundColor;
+  }
+}
+
+/// Temporary Flex Rig editor overlay.
+/// Positions are already projected into visible canvas coordinates.
+class _FlexRigOverlayPainter extends CustomPainter {
+  const _FlexRigOverlayPainter({
+    required this.positions,
+    required this.viewScale,
+  });
+
+  final List<Offset> positions;
+  final double viewScale;
+
+  double _screen(double pixels) => pixels / math.max(0.1, viewScale);
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    if (positions.length != 3) return;
+
+    final root = positions[0];
+    final flex = positions[1];
+    final tip = positions[2];
+
+    final guide = Paint()
+      ..color = Colors.cyanAccent.withValues(alpha: 0.65)
+      ..strokeWidth = _screen(1.5)
+      ..style = PaintingStyle.stroke;
+
+    final path = Path()
+      ..moveTo(root.dx, root.dy)
+      ..lineTo(flex.dx, flex.dy)
+      ..lineTo(tip.dx, tip.dy);
+
+    canvas.drawPath(path, guide);
+
+    final colors = <Color>[
+      Colors.amberAccent,
+      Colors.cyanAccent,
+      Colors.purpleAccent,
+    ];
+
+    for (var i = 0; i < positions.length; i++) {
+      final position = positions[i];
+
+      final fill = Paint()
+        ..color = colors[i]
+        ..style = PaintingStyle.fill;
+
+      final outline = Paint()
+        ..color = Colors.black87
+        ..strokeWidth = _screen(2)
+        ..style = PaintingStyle.stroke;
+
+      final radius = _screen(i == 0 ? 7 : 9);
+
+      canvas.drawCircle(position, radius, fill);
+      canvas.drawCircle(position, radius, outline);
+
+      if (i == 0) {
+        final lockDot = Paint()..color = Colors.black87;
+        canvas.drawCircle(position, _screen(2.5), lockDot);
+      }
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant _FlexRigOverlayPainter oldDelegate) {
+    if (viewScale != oldDelegate.viewScale) return true;
+
+    if (positions.length != oldDelegate.positions.length) {
+      return true;
+    }
+
+    for (var i = 0; i < positions.length; i++) {
+      if (positions[i] != oldDelegate.positions[i]) return true;
+    }
+
+    return false;
   }
 }
 

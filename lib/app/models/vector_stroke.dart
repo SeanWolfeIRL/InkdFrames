@@ -1,18 +1,40 @@
 import 'package:flutter/material.dart';
+import 'dart:math';
 
 import 'vector_point.dart';
 
 enum StrokeBrushType { solid, pressure, graphite }
 
+String _newStrokeId() {
+  final random = Random.secure();
+  final bytes = List<int>.generate(16, (_) => random.nextInt(256));
+
+  // RFC 4122 UUID version 4.
+  bytes[6] = (bytes[6] & 0x0f) | 0x40;
+  bytes[8] = (bytes[8] & 0x3f) | 0x80;
+
+  final hex = bytes
+      .map((byte) => byte.toRadixString(16).padLeft(2, '0'))
+      .join();
+
+  return '${hex.substring(0, 8)}-'
+      '${hex.substring(8, 12)}-'
+      '${hex.substring(12, 16)}-'
+      '${hex.substring(16, 20)}-'
+      '${hex.substring(20)}';
+}
+
 class VectorStroke {
   VectorStroke({
     required List<VectorPoint> points,
+    String? id,
     this.strokeWidth = 4.0,
     this.color = Colors.white,
     this.filled = false,
     this.brushType = StrokeBrushType.solid,
     this.alphaLocked = false,
-  }) : points = List<VectorPoint>.from(points);
+  }) : id = id ?? _newStrokeId(),
+       points = List<VectorPoint>.from(points);
 
   factory VectorStroke.fromJson(Map<String, dynamic> json) {
     final brushTypeName = json['brushType'] as String?;
@@ -23,6 +45,7 @@ class VectorStroke {
     );
 
     return VectorStroke(
+      id: json['id'] as String?,
       points: (json['points'] as List)
           .map(
             (point) =>
@@ -37,6 +60,7 @@ class VectorStroke {
     );
   }
 
+  final String id;
   final List<VectorPoint> points;
   final double strokeWidth;
   final Color color;
@@ -50,6 +74,7 @@ class VectorStroke {
 
   Map<String, dynamic> toJson() {
     return {
+      'id': id,
       'points': points.map((point) => point.toJson()).toList(),
       'strokeWidth': strokeWidth,
       'color': color.toARGB32(),
@@ -61,6 +86,7 @@ class VectorStroke {
 
   VectorStroke copy() {
     return VectorStroke(
+      id: id,
       points: points.map((point) => point.copy()).toList(),
       strokeWidth: strokeWidth,
       color: color,
