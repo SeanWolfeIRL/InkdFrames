@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 
 import '../models/vector_point.dart';
 import '../models/vector_stroke.dart';
+import 'graphite_stroke_renderer.dart';
 
 class AnimationCanvasPainter extends CustomPainter {
   AnimationCanvasPainter({
@@ -114,7 +115,7 @@ class AnimationCanvasPainter extends CustomPainter {
         );
 
         for (final maskStroke in alphaLockMask) {
-          _paintStroke(canvas, maskStroke, Colors.white);
+          _paintStroke(canvas, maskStroke, Colors.white, mask: true);
         }
 
         canvas.restore();
@@ -168,7 +169,7 @@ class AnimationCanvasPainter extends CustomPainter {
         );
 
         for (final maskStroke in liveAlphaLockMask) {
-          _paintStroke(canvas, maskStroke, Colors.white);
+          _paintStroke(canvas, maskStroke, Colors.white, mask: true);
         }
 
         canvas.restore();
@@ -405,10 +406,26 @@ class AnimationCanvasPainter extends CustomPainter {
     );
   }
 
-  void _paintStroke(Canvas canvas, VectorStroke stroke, Color color) {
+  void _paintStroke(
+    Canvas canvas,
+    VectorStroke stroke,
+    Color color, {
+    bool mask = false,
+  }) {
     final points = stroke.filled ? stroke.points : _smoothPoints(stroke.points);
 
     if (points.isEmpty) {
+      return;
+    }
+
+    if (!stroke.filled && stroke.brushType == StrokeBrushType.graphite) {
+      GraphiteStrokeRenderer.paint(
+        canvas,
+        points,
+        stroke.strokeWidth,
+        color,
+        mask: mask,
+      );
       return;
     }
 

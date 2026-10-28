@@ -2,7 +2,7 @@ import 'package:flutter/material.dart';
 
 import 'vector_point.dart';
 
-enum StrokeBrushType { solid, pressure }
+enum StrokeBrushType { solid, pressure, graphite }
 
 class VectorStroke {
   VectorStroke({

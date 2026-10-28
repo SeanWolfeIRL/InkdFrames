@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 
 import '../models/vector_point.dart';
 import '../models/vector_stroke.dart';
+import 'graphite_stroke_renderer.dart';
 
 class FrameThumbnailPainter extends CustomPainter {
   FrameThumbnailPainter({required this.strokes});
@@ -204,6 +205,17 @@ class FrameThumbnailPainter extends CustomPainter {
     final points = stroke.filled ? stroke.points : _smoothPoints(stroke.points);
 
     if (points.isEmpty) {
+      return;
+    }
+
+    if (!stroke.filled && stroke.brushType == StrokeBrushType.graphite) {
+      GraphiteStrokeRenderer.paint(
+        canvas,
+        points,
+        stroke.strokeWidth,
+        color,
+        mask: false,
+      );
       return;
     }
 

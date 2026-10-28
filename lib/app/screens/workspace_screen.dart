@@ -20217,6 +20217,15 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                                                                     'Pressure',
                                                                   ),
                                                                 ),
+                                                                ButtonSegment<
+                                                                  StrokeBrushType
+                                                                >(
+                                                                  value: StrokeBrushType
+                                                                      .graphite,
+                                                                  label: Text(
+                                                                    'Graphite',
+                                                                  ),
+                                                                ),
                                                               ],
                                                               selected:
                                                                   <
