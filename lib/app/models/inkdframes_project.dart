@@ -17,7 +17,7 @@ class InkdFramesProject {
     List<String>? frameIds,
     this.canvasWidth = 1920,
     this.canvasHeight = 1080,
-    this.canvasBackgroundColor = 0xFF1F1B24,
+    this.canvasBackgroundColor = 0xFFF5F0E5,
     this.brushColor = 0xFFFFFFFF,
     List<int>? recentColors,
     List<Map<String, dynamic>>? colorPalettes,

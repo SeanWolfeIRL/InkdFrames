@@ -730,7 +730,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
   double _canvasWidth = 1920;
   double _canvasHeight = 1080;
   Color _brushColor = Colors.white;
-  Color _canvasBackgroundColor = const Color(0xFF1F1B24);
+  Color _canvasBackgroundColor = const Color(0xFFF5F0E5);
   final List<Color> _recentColors = <Color>[];
 
   // Colour Studio: palettes owned by the current project.
@@ -18169,6 +18169,19 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                                             if (!_isCompositePngCapture)
                                               ColoredBox(
                                                 color: _canvasBackgroundColor,
+                                                child:
+                                                    _canvasBackgroundColor
+                                                            .toARGB32() ==
+                                                        0xFFF5F0E5
+                                                    ? const IgnorePointer(
+                                                        child: CustomPaint(
+                                                          painter:
+                                                              _SketchbookPaperPainter(),
+                                                          child:
+                                                              SizedBox.expand(),
+                                                        ),
+                                                      )
+                                                    : null,
                                               ),
 
                                             // View-only authored-coordinate
@@ -22614,4 +22627,69 @@ class _PerspectiveLoupePainter extends CustomPainter {
         oldDelegate.canvasPosition != canvasPosition ||
         oldDelegate.zoom != zoom;
   }
+}
+
+class _SketchbookPaperPainter extends CustomPainter {
+  const _SketchbookPaperPainter();
+
+  static ui.Picture? _cachedPicture;
+  static Size? _cachedSize;
+
+  static int _hash(int x, int y) {
+    var n = (x * 374761393 + y * 668265263) & 0x7fffffff;
+    n = ((n ^ (n >> 13)) * 1274126177) & 0x7fffffff;
+    return (n ^ (n >> 16)) & 0xffff;
+  }
+
+  static ui.Picture _buildPicture(Size size) {
+    final recorder = ui.PictureRecorder();
+    final canvas = Canvas(recorder);
+
+    const spacing = 3.0;
+
+    final dark = Paint()
+      ..color = const Color(0x28796B50)
+      ..isAntiAlias = true;
+
+    final light = Paint()
+      ..color = const Color(0x55FFFFFF)
+      ..isAntiAlias = true;
+
+    final columns = (size.width / spacing).ceil();
+    final rows = (size.height / spacing).ceil();
+
+    for (var y = 0; y <= rows; y++) {
+      for (var x = 0; x <= columns; x++) {
+        final noise = _hash(x, y);
+        final dx = x * spacing + (noise % 17) / 17.0 * 2.0;
+        final dy = y * spacing + (noise % 23) / 23.0 * 2.0;
+
+        if (noise % 7 == 0) {
+          canvas.drawOval(Rect.fromLTWH(dx, dy, 1.5, 0.7), dark);
+        } else if (noise % 5 == 0) {
+          canvas.drawOval(Rect.fromLTWH(dx, dy, 1.2, 0.65), light);
+        }
+      }
+    }
+
+    return recorder.endRecording();
+  }
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    if (_cachedPicture == null || _cachedSize != size) {
+      final previous = _cachedPicture;
+      _cachedPicture = _buildPicture(size);
+      _cachedSize = size;
+      previous?.dispose();
+    }
+
+    final picture = _cachedPicture;
+    if (picture != null) {
+      canvas.drawPicture(picture);
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant _SketchbookPaperPainter oldDelegate) => false;
 }
