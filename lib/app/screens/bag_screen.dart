@@ -1527,6 +1527,7 @@ class _BagScreenState extends State<BagScreen> {
     BagItem item, {
     double width = 64,
     double height = 64,
+    bool transparentBackground = false,
   }) {
     final composite = item.composite;
 
@@ -1551,7 +1552,7 @@ class _BagScreenState extends State<BagScreen> {
       child: ClipRRect(
         borderRadius: BorderRadius.circular(8),
         child: ColoredBox(
-          color: Colors.black26,
+          color: transparentBackground ? Colors.transparent : Colors.black26,
           child: FittedBox(
             fit: BoxFit.contain,
             child: SizedBox(
@@ -1569,8 +1570,36 @@ class _BagScreenState extends State<BagScreen> {
   }
 
   Widget _bagItemThumbnail(BagItem item) {
-    if (item.isComposite) {
-      return _buildCompositeBagPreview(item);
+    if (item.isComposite || !item.isImage) {
+      return SizedBox(
+        width: 64,
+        height: 64,
+        child: FutureBuilder<File?>(
+          future: BagThumbnailCache().existingFile(item.id),
+          builder: (context, snapshot) {
+            final thumbnail = snapshot.data;
+
+            if (thumbnail != null) {
+              return Image.file(
+                thumbnail,
+                fit: BoxFit.contain,
+                cacheWidth: 192,
+                errorBuilder: (context, error, stackTrace) {
+                  return item.isComposite
+                      ? _buildCompositeBagPreview(item)
+                      : const Icon(Icons.brush_outlined);
+                },
+              );
+            }
+
+            if (item.isComposite) {
+              return _buildCompositeBagPreview(item);
+            }
+
+            return const Icon(Icons.brush_outlined, color: Colors.white54);
+          },
+        ),
+      );
     }
 
     if (item.isImage) {
@@ -2029,6 +2058,139 @@ class _BagScreenState extends State<BagScreen> {
     await _showPocketItems(title: pocket.name, items: pocketItems);
   }
 
+  Future<Rect?> _bagArtworkBounds(ui.Image source) async {
+    final data = await source.toByteData(format: ui.ImageByteFormat.rawRgba);
+    if (data == null) return null;
+
+    final pixels = data.buffer.asUint8List(
+      data.offsetInBytes,
+      data.lengthInBytes,
+    );
+
+    var left = source.width;
+    var top = source.height;
+    var right = -1;
+    var bottom = -1;
+
+    for (var y = 0; y < source.height; y++) {
+      for (var x = 0; x < source.width; x++) {
+        final alpha = pixels[(y * source.width + x) * 4 + 3];
+
+        if (alpha < 12) continue;
+
+        if (x < left) left = x;
+        if (x > right) right = x;
+        if (y < top) top = y;
+        if (y > bottom) bottom = y;
+      }
+    }
+
+    if (right < left || bottom < top) return null;
+
+    return Rect.fromLTRB(
+      left.toDouble(),
+      top.toDouble(),
+      (right + 1).toDouble(),
+      (bottom + 1).toDouble(),
+    );
+  }
+
+  Future<ui.Image> _smartFrameBagImage(ui.Image source) async {
+    final data = await source.toByteData(format: ui.ImageByteFormat.rawRgba);
+    if (data == null) return source;
+
+    final pixels = data.buffer.asUint8List(
+      data.offsetInBytes,
+      data.lengthInBytes,
+    );
+
+    final width = source.width;
+    final height = source.height;
+
+    var left = width;
+    var top = height;
+    var right = -1;
+    var bottom = -1;
+
+    for (var y = 0; y < height; y++) {
+      for (var x = 0; x < width; x++) {
+        final alpha = pixels[(y * width + x) * 4 + 3];
+
+        if (alpha < 12) continue;
+
+        if (x < left) left = x;
+        if (x > right) right = x;
+        if (y < top) top = y;
+        if (y > bottom) bottom = y;
+      }
+    }
+
+    if (right < left || bottom < top) return source;
+
+    final contentWidth = right - left + 1;
+    final contentHeight = bottom - top + 1;
+
+    if (contentWidth < 2 || contentHeight < 2) return source;
+
+    final padding =
+        (contentWidth > contentHeight ? contentWidth : contentHeight) * 0.12;
+
+    final crop = Rect.fromLTRB(
+      (left - padding).clamp(0.0, width.toDouble()),
+      (top - padding).clamp(0.0, height.toDouble()),
+      (right + 1 + padding).clamp(0.0, width.toDouble()),
+      (bottom + 1 + padding).clamp(0.0, height.toDouble()),
+    );
+
+    final recorder = ui.PictureRecorder();
+    final canvas = Canvas(recorder);
+
+    final scale = 192.0 / (crop.width > crop.height ? crop.width : crop.height);
+
+    final targetWidth = crop.width * scale;
+    final targetHeight = crop.height * scale;
+
+    canvas.drawImageRect(
+      source,
+      crop,
+      Rect.fromLTWH(
+        (192 - targetWidth) / 2,
+        (192 - targetHeight) / 2,
+        targetWidth,
+        targetHeight,
+      ),
+      Paint()..filterQuality = FilterQuality.high,
+    );
+
+    final picture = recorder.endRecording();
+
+    try {
+      return await picture.toImage(192, 192);
+    } finally {
+      picture.dispose();
+    }
+  }
+
+  Future<ui.Image> _resizeBagThumbnail(ui.Image source) async {
+    final recorder = ui.PictureRecorder();
+    final canvas = Canvas(recorder);
+
+    canvas.drawImageRect(
+      source,
+      Rect.fromLTWH(0, 0, source.width.toDouble(), source.height.toDouble()),
+      const Rect.fromLTWH(0, 0, 192, 192),
+      Paint()..filterQuality = FilterQuality.high,
+    );
+
+    final picture = recorder.endRecording();
+
+    try {
+      return await picture.toImage(192, 192);
+    } finally {
+      picture.dispose();
+    }
+  }
+
   Future<bool> _captureCompositeBagThumbnail(
     BagItem item,
     BagThumbnailCache cache,
@@ -2037,6 +2199,9 @@ class _BagScreenState extends State<BagScreen> {
 
     final boundaryKey = GlobalKey();
     final overlay = Overlay.of(context);
+
+    Rect? artworkBounds;
+    final zoomNotifier = ValueNotifier<Rect?>(null);
     late OverlayEntry entry;
 
     entry = OverlayEntry(
@@ -2062,10 +2227,39 @@ class _BagScreenState extends State<BagScreen> {
                   child: SizedBox(
                     width: 192,
                     height: 192,
-                    child: _buildCompositeBagPreview(
-                      item,
-                      width: 192,
-                      height: 192,
+                    child: ClipRect(
+                      child: ValueListenableBuilder<Rect?>(
+                        valueListenable: zoomNotifier,
+                        builder: (context, bounds, child) {
+                          if (bounds == null) return child!;
+
+                          final scale =
+                              192.0 /
+                              (bounds.width > bounds.height
+                                  ? bounds.width
+                                  : bounds.height);
+
+                          final center = bounds.center;
+
+                          return Transform.scale(
+                            scale: scale,
+                            alignment: Alignment.center,
+                            child: Transform.translate(
+                              offset: Offset(
+                                96.0 - center.dx,
+                                96.0 - center.dy,
+                              ),
+                              child: child,
+                            ),
+                          );
+                        },
+                        child: _buildCompositeBagPreview(
+                          item,
+                          width: 192,
+                          height: 192,
+                          transparentBackground: true,
+                        ),
+                      ),
                     ),
                   ),
                 ),
@@ -2093,25 +2287,55 @@ class _BagScreenState extends State<BagScreen> {
         return false;
       }
 
-      final image = await boundary.toImage(pixelRatio: 1.0);
+      // First pass: measure artwork in logical preview coordinates.
+      final measurement = await boundary.toImage(pixelRatio: 1.0);
 
       try {
-        final data = await image.toByteData(format: ui.ImageByteFormat.png);
+        artworkBounds = await _bagArtworkBounds(measurement);
+      } finally {
+        measurement.dispose();
+      }
 
-        if (data == null) return false;
+      if (artworkBounds != null) {
+        zoomNotifier.value = artworkBounds;
 
-        await cache.save(
-          item.id,
-          data.buffer.asUint8List(data.offsetInBytes, data.lengthInBytes),
-        );
+        await WidgetsBinding.instance.endOfFrame;
+        await WidgetsBinding.instance.endOfFrame;
+      }
 
-        return true;
+      if (!mounted || boundary.debugNeedsPaint) return false;
+
+      // Second pass: render already-framed artwork at 3x resolution.
+      final image = await boundary.toImage(pixelRatio: 3.0);
+
+      try {
+        final framed = artworkBounds == null
+            ? await _smartFrameBagImage(image)
+            : await _resizeBagThumbnail(image);
+
+        try {
+          final data = await framed.toByteData(format: ui.ImageByteFormat.png);
+
+          if (data == null) return false;
+
+          await cache.save(
+            item.id,
+            data.buffer.asUint8List(data.offsetInBytes, data.lengthInBytes),
+          );
+
+          return true;
+        } finally {
+          if (!identical(framed, image)) {
+            framed.dispose();
+          }
+        }
       } finally {
         image.dispose();
       }
     } finally {
       entry.remove();
       entry.dispose();
+      zoomNotifier.dispose();
     }
   }
 
@@ -2148,7 +2372,10 @@ class _BagScreenState extends State<BagScreen> {
           continue;
         }
 
-        if (await cache.existingFile(reference.id) != null) {
+        // Composite previews are regenerated to apply smart framing.
+        // Existing vector previews remain cached.
+        if (reference.assetType == 'vector' &&
+            await cache.existingFile(reference.id) != null) {
           skipped++;
           continue;
         }
