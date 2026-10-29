@@ -1,5 +1,7 @@
 import 'bag_motion_asset.dart';
 import 'composite_asset.dart';
+import 'character_rig.dart';
+import 'rig_pose.dart';
 import 'vector_stroke.dart';
 
 class BagLayer {
@@ -56,6 +58,8 @@ class BagItem {
     this.authoredCanvasHeight,
     this.composite,
     this.motion,
+    this.characterRig,
+    this.rigPoses = const <RigPose>[],
   });
 
   factory BagItem.fromJson(Map<String, dynamic> json) {
@@ -84,6 +88,15 @@ class BagItem {
               Map<String, dynamic>.from(json['motion'] as Map),
             )
           : null,
+      characterRig: json['characterRig'] is Map
+          ? CharacterRig.fromJson(
+              Map<String, dynamic>.from(json['characterRig'] as Map),
+            )
+          : null,
+      rigPoses: (json['rigPoses'] as List? ?? const [])
+          .whereType<Map>()
+          .map((value) => RigPose.fromJson(Map<String, dynamic>.from(value)))
+          .toList(),
       layers: rawLayers
           .map(
             (layer) =>
@@ -135,6 +148,12 @@ class BagItem {
   /// Existing static Bag items do not require motion data.
   final BagMotionAsset? motion;
 
+  /// Optional reusable deformation rig owned by this asset.
+  final CharacterRig? characterRig;
+
+  /// Named pose snapshots. Independent of animation clips.
+  final List<RigPose> rigPoses;
+
   final List<BagLayer> layers;
   final DateTime createdAt;
 
@@ -159,6 +178,9 @@ class BagItem {
         'authoredCanvasHeight': authoredCanvasHeight,
       if (composite != null) 'composite': composite!.toJson(),
       if (motion != null) 'motion': motion!.toJson(),
+      if (characterRig != null) 'characterRig': characterRig!.toJson(),
+      if (rigPoses.isNotEmpty)
+        'rigPoses': rigPoses.map((pose) => pose.toJson()).toList(),
       'layers': layers.map((layer) => layer.toJson()).toList(),
     };
   }

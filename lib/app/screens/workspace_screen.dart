@@ -13,6 +13,9 @@ import 'package:video_player/video_player.dart';
 import '../models/bag_motion_asset.dart';
 import '../models/bag_item.dart';
 import '../models/composite_asset.dart';
+import '../models/character_rig.dart';
+import '../models/rig_pose.dart';
+import '../models/rig_export.dart';
 import '../models/brush_preset.dart';
 import '../models/drawing_layer.dart';
 import '../models/group_animation_track.dart';
@@ -403,9 +406,20 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
   List<VectorPoint> _lassoPoints = const <VectorPoint>[];
   Map<String, Set<int>> _selectedTransformStrokes = <String, Set<int>>{};
 
+  // Working character rig and named poses are independent of the
+  // originating Bag asset until an explicit save.
+  CharacterRig? _workingCharacterRig;
+  List<RigPose> _workingRigPoses = <RigPose>[];
+
   // Flex Rig V1: temporary editor preview only.
   // No project serialization or animation keys yet.
   StrokeRig? _flexRigPreview;
+
+  // Non-destructive character-wide pose preview.
+  // Keyed by the stable authored vector stroke ID.
+  final Map<String, StrokeRig> _activeCharacterPoseRigs = <String, StrokeRig>{};
+  int? _activeCharacterPoseFrameIndex;
+
   String? _flexRigPreviewLayerId;
   int? _flexRigPreviewSourceFrameIndex;
   int? _flexRigDragPointer;
@@ -841,6 +855,16 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     });
 
     super.initState();
+
+    final initialRig = widget.initialBagItem?.characterRig;
+    _workingCharacterRig = initialRig == null
+        ? null
+        : CharacterRig.fromJson(initialRig.toJson());
+    _workingRigPoses =
+        widget.initialBagItem?.rigPoses
+            .map((pose) => RigPose.fromJson(pose.toJson()))
+            .toList() ??
+        <RigPose>[];
 
     _sPenChannel.setMethodCallHandler(_handleNativeSPenCall);
 
@@ -1401,6 +1425,57 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
   ///
   /// Uses selection indices only for initial lookup. The rig itself
   /// is bound to the stroke's stable ID, layer ID and source frame.
+  String _flexRigSelectionDiagnostic() {
+    if (_isPlaying) return 'Playback is active';
+
+    final selection = _selectedTransformStrokes;
+    if (selection.length != 1) {
+      return 'Selected layers: ${selection.length}; '
+          'stroke counts: ${selection.values.map((v) => v.length).join(",")}';
+    }
+
+    final entry = selection.entries.single;
+    if (entry.value.length != 1) {
+      return 'Selected strokes on layer: ${entry.value.length}';
+    }
+
+    final layerIndex = _layers.indexWhere((layer) => layer.id == entry.key);
+    if (layerIndex < 0) return 'Selected layer ID not found';
+
+    final layer = _layers[layerIndex];
+    final activeGroupId = _activeLayerGroup?.id;
+    final frameId = _currentFrameId;
+
+    var sourceFrameIndex = _selectedFrameIndex;
+    if (activeGroupId != null && frameId != null) {
+      sourceFrameIndex =
+          _tweenArtworkSourceFrameIndex(frameId, activeGroupId) ??
+          _selectedFrameIndex;
+    }
+
+    if (sourceFrameIndex < 0 || sourceFrameIndex >= layer.frames.length) {
+      return 'Invalid source frame: $sourceFrameIndex; '
+          'layer frames: ${layer.frames.length}';
+    }
+
+    final strokes = layer.frames[sourceFrameIndex];
+    final strokeIndex = entry.value.single;
+
+    if (strokeIndex < 0 || strokeIndex >= strokes.length) {
+      return 'Invalid stroke index: $strokeIndex; '
+          'frame strokes: ${strokes.length}';
+    }
+
+    final stroke = strokes[strokeIndex];
+    if (stroke.filled) return 'Selected stroke is filled';
+    if (stroke.alphaLocked) return 'Selected stroke is alpha-locked';
+    if (stroke.points.length < 2) {
+      return 'Stroke has ${stroke.points.length} points';
+    }
+
+    return 'Selection is eligible; check registered rig controls';
+  }
+
   bool _activateFlexRigFromSelection() {
     if (_isPlaying || _selectedTransformStrokes.length != 1) {
       return false;
@@ -1447,11 +1522,38 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
       return false;
     }
 
-    final rig = StrokeRig.fromStroke(
-      id: 'preview-${stroke.id}',
-      strokeId: stroke.id,
-      points: stroke.points,
-    );
+    final registeredTargets =
+        _workingCharacterRig?.targets
+            .where(
+              (target) =>
+                  target.type == RigTargetType.stroke &&
+                  target.targetId == stroke.id,
+            )
+            .toList() ??
+        <CharacterRigTarget>[];
+
+    if (registeredTargets.length > 1) {
+      return false;
+    }
+
+    // When editing an applied character pose, restore its current control
+    // positions rather than reverting to the registered rest configuration.
+    // The original vector stroke remains the deformation source.
+    final poseRig =
+        _activeCharacterPoseFrameIndex == _selectedFrameIndex &&
+            sourceFrameIndex == _selectedFrameIndex
+        ? _activeCharacterPoseRigs[stroke.id]
+        : null;
+
+    final rig = poseRig != null && poseRig.strokeId == stroke.id
+        ? StrokeRig.fromJson(poseRig.toJson())
+        : registeredTargets.isNotEmpty
+        ? StrokeRig.fromJson(registeredTargets.single.rig.toJson())
+        : StrokeRig.fromStroke(
+            id: 'preview-${stroke.id}',
+            strokeId: stroke.id,
+            points: stroke.points,
+          );
 
     if (rig.controls.length != 3) {
       return false;
@@ -1466,6 +1568,243 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     });
 
     return true;
+  }
+
+  /// Register the current stroke rig in the editable character definition.
+  ///
+  /// The source vector stroke is never modified.
+  bool _registerCurrentFlexRig() {
+    final preview = _flexRigPreview;
+
+    if (preview == null ||
+        widget.initialBagItem?.isComposite != true ||
+        _flexRigDragPointer != null) {
+      return false;
+    }
+
+    final current = _workingCharacterRig;
+    final rigId = current?.id ?? 'character-rig-${widget.initialBagItem!.id}';
+
+    final existingTargets = current?.targets ?? const <CharacterRigTarget>[];
+
+    final matching = existingTargets
+        .where(
+          (target) =>
+              target.type == RigTargetType.stroke &&
+              target.targetId == preview.strokeId,
+        )
+        .toList();
+
+    if (matching.length > 1) {
+      return false;
+    }
+
+    final existing = matching.isEmpty ? null : matching.single;
+
+    if (existing != null) {
+      final savedControlIds = existing.rig.controls
+          .map((control) => control.id)
+          .toSet();
+      final previewControlIds = preview.controls
+          .map((control) => control.id)
+          .toSet();
+
+      if (savedControlIds.length != existing.rig.controls.length ||
+          previewControlIds.length != preview.controls.length ||
+          savedControlIds.length != previewControlIds.length ||
+          !savedControlIds.containsAll(previewControlIds)) {
+        return false;
+      }
+    }
+
+    final registeredRig = StrokeRig(
+      id: existing?.rig.id ?? 'rig-${preview.strokeId}',
+      strokeId: preview.strokeId,
+      controls: preview.controls
+          .map(
+            (control) => RigControlPoint(
+              id: existing == null
+                  ? control.id.replaceFirst(
+                      '${preview.id}_',
+                      'rig-${preview.strokeId}_',
+                    )
+                  : control.id,
+              restX: control.restX,
+              restY: control.restY,
+              x: control.x,
+              y: control.y,
+              radius: control.radius,
+              locked: control.locked,
+            ),
+          )
+          .toList(),
+    );
+
+    final target = CharacterRigTarget(
+      id: existing?.id ?? 'target-${preview.strokeId}',
+      type: RigTargetType.stroke,
+      targetId: preview.strokeId,
+      rig: registeredRig,
+    );
+
+    setState(() {
+      _workingCharacterRig = CharacterRig(
+        id: rigId,
+        targets: [
+          for (final item in existingTargets)
+            if (item.id != target.id) item,
+          target,
+        ],
+      );
+
+      _flexRigPreview = StrokeRig.fromJson(registeredRig.toJson());
+    });
+
+    return true;
+  }
+
+  /// Capture registered character controls as a reusable named pose.
+  ///
+  /// The active preview contributes its latest coordinates, but neither
+  /// source vector geometry nor rig rest coordinates are modified.
+  bool _captureNamedRigPose(String name) {
+    final rig = _workingCharacterRig;
+    final trimmedName = name.trim();
+
+    if (rig == null ||
+        rig.targets.isEmpty ||
+        trimmedName.isEmpty ||
+        _flexRigDragPointer != null) {
+      return false;
+    }
+
+    if (_workingRigPoses.any(
+      (pose) =>
+          pose.characterRigId == rig.id &&
+          pose.name.toLowerCase() == trimmedName.toLowerCase(),
+    )) {
+      return false;
+    }
+
+    final preview = _flexRigPreview;
+    final controls = <RigControlPose>[];
+
+    for (final target in rig.targets) {
+      if (target.type != RigTargetType.stroke) {
+        continue;
+      }
+
+      var sourceControls = target.rig.controls;
+
+      if (preview != null && preview.strokeId == target.targetId) {
+        final registeredIds = target.rig.controls
+            .map((control) => control.id)
+            .toSet();
+        final previewIds = preview.controls
+            .map((control) => control.id)
+            .toSet();
+
+        if (registeredIds.length != target.rig.controls.length ||
+            previewIds.length != preview.controls.length ||
+            registeredIds.length != previewIds.length ||
+            !registeredIds.containsAll(previewIds)) {
+          return false;
+        }
+
+        sourceControls = preview.controls;
+      }
+
+      for (final control in sourceControls) {
+        controls.add(
+          RigControlPose(
+            targetId: target.id,
+            controlId: control.id,
+            x: control.x,
+            y: control.y,
+          ),
+        );
+      }
+    }
+
+    if (controls.isEmpty) {
+      return false;
+    }
+
+    final pose = RigPose(
+      id: 'pose-${DateTime.now().microsecondsSinceEpoch}',
+      name: trimmedName,
+      characterRigId: rig.id,
+      controls: controls,
+    );
+
+    setState(() {
+      _workingRigPoses = [..._workingRigPoses, pose];
+    });
+
+    return true;
+  }
+
+  /// Name and capture the current character-wide rig pose.
+  Future<void> _showSaveRigPoseDialog() async {
+    final rig = _workingCharacterRig;
+
+    if (rig == null || rig.targets.isEmpty) {
+      return;
+    }
+
+    final controller = TextEditingController();
+
+    try {
+      final name = await showDialog<String>(
+        context: context,
+        builder: (dialogContext) => AlertDialog(
+          title: const Text('Save Character Pose'),
+          content: TextField(
+            controller: controller,
+            autofocus: true,
+            maxLength: 60,
+            textCapitalization: TextCapitalization.words,
+            decoration: const InputDecoration(
+              labelText: 'Pose name',
+              hintText: 'e.g. Crouch',
+            ),
+            onSubmitted: (value) {
+              Navigator.of(dialogContext).pop(value);
+            },
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(dialogContext).pop(),
+              child: const Text('Cancel'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.of(dialogContext).pop(controller.text),
+              child: const Text('Save Pose'),
+            ),
+          ],
+        ),
+      );
+
+      if (!mounted || name == null) {
+        return;
+      }
+
+      final saved = _captureNamedRigPose(name);
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            saved
+                ? 'Pose "${name.trim()}" captured. Save the Bag asset to keep it.'
+                : 'Pose not saved. Check its name and registered controls.',
+          ),
+        ),
+      );
+    } finally {
+      // The dialog owns the text field until its dismissal completes.
+      // Release the controller after the route has closed.
+      controller.dispose();
+    }
   }
 
   /// Project a rig control from its owning layer into visible canvas space.
@@ -1608,19 +1947,205 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     return true;
   }
 
+  /// Choose a saved pose belonging to the current character rig.
+  Future<void> _showApplyRigPoseDialog() async {
+    final character = _workingCharacterRig;
+
+    if (character == null || _isPlaying) {
+      return;
+    }
+
+    final poses = _workingRigPoses
+        .where((pose) => pose.characterRigId == character.id)
+        .toList();
+
+    if (poses.isEmpty) {
+      return;
+    }
+
+    final selected = await showDialog<RigPose>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Apply Character Pose'),
+        content: SizedBox(
+          width: 320,
+          child: ListView.builder(
+            shrinkWrap: true,
+            itemCount: poses.length,
+            itemBuilder: (context, index) {
+              final pose = poses[index];
+
+              return ListTile(
+                leading: const Icon(Icons.accessibility_new_outlined),
+                title: Text(pose.name),
+                subtitle: Text(
+                  '${pose.controls.length} saved control positions',
+                ),
+                onTap: () => Navigator.of(dialogContext).pop(pose),
+              );
+            },
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(),
+            child: const Text('Cancel'),
+          ),
+        ],
+      ),
+    );
+
+    if (!mounted || selected == null) {
+      return;
+    }
+
+    final applied = _applyNamedRigPose(selected);
+
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          applied
+              ? 'Pose "${selected.name}" applied'
+              : 'Could not apply pose: registered controls have changed',
+        ),
+      ),
+    );
+  }
+
+  /// Apply a saved character pose as a temporary multi-stroke preview.
+  ///
+  /// Reject incomplete or mismatched poses rather than partially deforming
+  /// a character. Original strokes and rig rest positions remain unchanged.
+  bool _applyNamedRigPose(RigPose pose) {
+    final character = _workingCharacterRig;
+
+    if (character == null ||
+        pose.characterRigId != character.id ||
+        _flexRigDragPointer != null) {
+      return false;
+    }
+
+    final strokeTargets = character.targets
+        .where((target) => target.type == RigTargetType.stroke)
+        .toList();
+
+    if (strokeTargets.isEmpty) {
+      return false;
+    }
+
+    final positions = <String, RigControlPose>{};
+
+    for (final control in pose.controls) {
+      final key = '${control.targetId}:${control.controlId}';
+
+      if (positions.containsKey(key)) {
+        return false;
+      }
+
+      positions[key] = control;
+    }
+
+    final nextRigs = <String, StrokeRig>{};
+    var matchedControls = 0;
+
+    for (final target in strokeTargets) {
+      if (nextRigs.containsKey(target.targetId)) {
+        return false;
+      }
+
+      final controls = <RigControlPoint>[];
+
+      for (final original in target.rig.controls) {
+        final key = '${target.id}:${original.id}';
+        final saved = positions[key];
+
+        if (saved == null) {
+          return false;
+        }
+
+        matchedControls++;
+
+        controls.add(
+          RigControlPoint(
+            id: original.id,
+            restX: original.restX,
+            restY: original.restY,
+            x: saved.x,
+            y: saved.y,
+            radius: original.radius,
+            locked: original.locked,
+          ),
+        );
+      }
+
+      nextRigs[target.targetId] = StrokeRig(
+        id: target.rig.id,
+        strokeId: target.rig.strokeId,
+        controls: controls,
+      );
+    }
+
+    if (matchedControls != positions.length) {
+      return false;
+    }
+
+    setState(() {
+      // A named pose takes priority over an older single-stroke preview.
+      _flexRigPreview = null;
+      _flexRigPreviewLayerId = null;
+      _flexRigPreviewSourceFrameIndex = null;
+      _flexRigDragPointer = null;
+      _flexRigDragControlIndex = null;
+
+      _activeCharacterPoseRigs
+        ..clear()
+        ..addAll(nextRigs);
+      _activeCharacterPoseFrameIndex = _selectedFrameIndex;
+    });
+
+    return true;
+  }
+
+  /// Remove temporary character-wide deformation without editing artwork.
+  void _clearCharacterPosePreview() {
+    if (_activeCharacterPoseRigs.isEmpty) {
+      return;
+    }
+
+    setState(() {
+      _activeCharacterPoseRigs.clear();
+      _activeCharacterPoseFrameIndex = null;
+    });
+  }
+
   VectorStroke _strokeWithFlexRigPreview(
     VectorStroke stroke,
     String layerId,
     int sourceFrameIndex,
   ) {
-    final rig = _flexRigPreview;
+    if (stroke.filled || stroke.alphaLocked) {
+      return stroke;
+    }
 
-    if (rig == null ||
-        _flexRigPreviewLayerId != layerId ||
-        _flexRigPreviewSourceFrameIndex != sourceFrameIndex ||
-        rig.strokeId != stroke.id ||
-        stroke.filled ||
-        stroke.alphaLocked) {
+    final activeRig = _flexRigPreview;
+
+    final isActiveStroke =
+        activeRig != null &&
+        _flexRigPreviewLayerId == layerId &&
+        _flexRigPreviewSourceFrameIndex == sourceFrameIndex &&
+        activeRig.strokeId == stroke.id;
+
+    final poseAppliesToFrame =
+        _activeCharacterPoseFrameIndex == _selectedFrameIndex &&
+        sourceFrameIndex == _selectedFrameIndex;
+
+    final rig = isActiveStroke
+        ? activeRig
+        : poseAppliesToFrame
+        ? _activeCharacterPoseRigs[stroke.id]
+        : null;
+
+    if (rig == null || rig.strokeId != stroke.id) {
       return stroke;
     }
 
@@ -2890,8 +3415,17 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
 
       final group = _layerGroups[groupIndex];
       final children = <CompositeNode>[];
+      final capturedRuntimeLayerIds = <String>{};
 
       for (final childEntry in group.childOrder) {
+        if (childEntry.startsWith('layer:')) {
+          final layerId = childEntry.substring(6);
+          if (!capturedRuntimeLayerIds.add(layerId)) {
+            debugPrint('INKDFRAMES_COMPOSITE: skipped repeated layer $layerId');
+            continue;
+          }
+        }
+
         final child = _captureWorkspaceHierarchyEntry(
           childEntry,
           visitingGroups: visitingGroups,
@@ -2903,15 +3437,10 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
         }
       }
 
-      // Legacy protection for old groups whose drawing layers were not
-      // represented in childOrder.
-      final capturedLayerIds = children
-          .where((child) => child.type == 'layer')
-          .map((child) => child.id)
-          .toSet();
-
+      // Legacy protection for drawing layers absent from childOrder.
+      // Compare runtime IDs before converting nodes to authored IDs.
       for (final childLayerId in group.childLayerIds) {
-        if (capturedLayerIds.contains(childLayerId)) {
+        if (!capturedRuntimeLayerIds.add(childLayerId)) {
           continue;
         }
 
@@ -3468,6 +3997,10 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
       layers: const <BagLayer>[],
       composite: composite,
       motion: motion,
+      // Persist the editable character rig and named pose collection.
+      // These were copied from the source Bag item at Workspace startup.
+      characterRig: _workingCharacterRig,
+      rigPoses: _workingRigPoses,
       createdAt: sourceItem.createdAt,
       imagePath: sourceItem.imagePath,
       authoredWidth: sourceItem.authoredWidth,
@@ -3733,7 +4266,55 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
       return false;
     }
 
-    final requiresComposite = groupRequiresComposite(group);
+    bool groupContainsRigTargets(String rootGroupId) {
+      final rig = _workingCharacterRig;
+      if (rig == null || rig.targets.isEmpty) return false;
+
+      final groupIds = <String>{};
+      final layerIds = <String>{};
+      final pending = <String>[rootGroupId];
+
+      while (pending.isNotEmpty) {
+        final id = pending.removeLast();
+        if (!groupIds.add(id)) continue;
+
+        final index = _layerGroups.indexWhere(
+          (candidate) => candidate.id == id,
+        );
+        if (index == -1) continue;
+
+        final current = _layerGroups[index];
+        layerIds.addAll(current.childLayerIds);
+        pending.addAll(current.childGroupIds);
+
+        for (final entry in current.childOrder) {
+          if (entry.startsWith('layer:')) {
+            layerIds.add(entry.substring(6));
+          } else if (entry.startsWith('group:')) {
+            pending.add(entry.substring(6));
+          }
+        }
+      }
+
+      final strokeIds = <String>{};
+      for (final layer in _layers) {
+        if (!layerIds.contains(layer.id)) continue;
+        for (final frame in layer.frames) {
+          for (final stroke in frame) {
+            strokeIds.add(stroke.id);
+          }
+        }
+      }
+
+      return rig.targets.any(
+        (target) => target.type == RigTargetType.stroke
+            ? strokeIds.contains(target.targetId)
+            : groupIds.contains(target.targetId),
+      );
+    }
+
+    final requiresComposite =
+        groupContainsRigTargets(group.id) || groupRequiresComposite(group);
 
     // ------------------------------------------------------------
     // Traditional vector capture.
@@ -4241,6 +4822,101 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
       }
     }
 
+    final rigExport = composite == null
+        ? const RigExport(rig: null, poses: [])
+        : captureRigExport(composite, _workingCharacterRig, _workingRigPoses);
+
+    final exportedRig = rigExport.rig;
+    final exportedPoses = rigExport.poses;
+
+    final existingItems = await BagService().loadItems();
+    final collisions = existingItems
+        .where(
+          (existing) =>
+              existing.name.trim().toLowerCase() == result.trim().toLowerCase(),
+        )
+        .toList();
+
+    if (!mounted) return;
+
+    if (collisions.isNotEmpty) {
+      bool losesRigData(BagItem existing) {
+        final oldRig = existing.characterRig;
+        if (oldRig == null) return false;
+
+        if (exportedRig == null || exportedRig.id != oldRig.id) {
+          return true;
+        }
+
+        final newTargetIds = exportedRig.targets
+            .map((target) => target.id)
+            .toSet();
+
+        for (final target in oldRig.targets) {
+          if (!newTargetIds.contains(target.id)) return true;
+        }
+
+        for (final oldPose in existing.rigPoses) {
+          final matches = exportedPoses.where(
+            (pose) =>
+                pose.id == oldPose.id &&
+                pose.characterRigId == oldPose.characterRigId,
+          );
+
+          if (matches.isEmpty) return true;
+
+          final newControls = matches.first.controls
+              .map((control) => '${control.targetId}:${control.controlId}')
+              .toSet();
+
+          for (final control in oldPose.controls) {
+            if (!newControls.contains(
+              '${control.targetId}:${control.controlId}',
+            )) {
+              return true;
+            }
+          }
+        }
+
+        return false;
+      }
+
+      if (collisions.any(losesRigData)) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text(
+              'Replacement blocked: existing rig or pose data '
+              'would be lost. Save using a different name.',
+            ),
+          ),
+        );
+        return;
+      }
+
+      final replace = await showDialog<bool>(
+        context: context,
+        builder: (dialogContext) => AlertDialog(
+          title: const Text('Replace Bag asset?'),
+          content: Text(
+            'An asset named "$result" already exists. '
+            'Replacing it will remove the previous version.',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(dialogContext, false),
+              child: const Text('Cancel'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(dialogContext, true),
+              child: const Text('Replace'),
+            ),
+          ],
+        ),
+      );
+
+      if (replace != true || !mounted) return;
+    }
+
     final item = BagItem(
       id: 'bag_${DateTime.now().microsecondsSinceEpoch}',
       name: result,
@@ -4249,6 +4925,8 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
       layers: requiresComposite ? const <BagLayer>[] : bagLayers,
       composite: composite,
       motion: capturedMotion,
+      characterRig: exportedRig,
+      rigPoses: exportedPoses,
       createdAt: DateTime.now(),
       authoredCanvasWidth: requiresComposite ? _canvasWidth : null,
       authoredCanvasHeight: requiresComposite ? _canvasHeight : null,
@@ -6540,6 +7218,9 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
 
     setState(() {
       if (index != _selectedFrameIndex) {
+        // Pose previews are not yet timeline keyframes.
+        _activeCharacterPoseRigs.clear();
+        _activeCharacterPoseFrameIndex = null;
         _flexRigPreview = null;
         _flexRigPreviewLayerId = null;
         _flexRigPreviewSourceFrameIndex = null;
@@ -8935,11 +9616,95 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     return Rect.fromLTRB(minX, minY, maxX, maxY);
   }
 
+  StrokeRig _shiftRig(StrokeRig rig, Offset d) => StrokeRig(
+    id: rig.id,
+    strokeId: rig.strokeId,
+    controls: [
+      for (final c in rig.controls)
+        RigControlPoint(
+          id: c.id,
+          restX: c.restX + d.dx,
+          restY: c.restY + d.dy,
+          x: c.x + d.dx,
+          y: c.y + d.dy,
+          radius: c.radius,
+          locked: c.locked,
+        ),
+    ],
+  );
+
+  void _shiftMovedRigs(Set<String> ids, Offset d) {
+    final character = _workingCharacterRig;
+    if (character != null) {
+      final targets = character.targets
+          .where(
+            (t) => t.type == RigTargetType.stroke && ids.contains(t.targetId),
+          )
+          .map((t) => t.id)
+          .toSet();
+
+      if (targets.isNotEmpty) {
+        _workingCharacterRig = CharacterRig(
+          id: character.id,
+          targets: [
+            for (final t in character.targets)
+              if (targets.contains(t.id))
+                CharacterRigTarget(
+                  id: t.id,
+                  type: t.type,
+                  targetId: t.targetId,
+                  rig: _shiftRig(t.rig, d),
+                )
+              else
+                t,
+          ],
+        );
+
+        _workingRigPoses = [
+          for (final p in _workingRigPoses)
+            if (p.characterRigId == character.id)
+              RigPose(
+                id: p.id,
+                name: p.name,
+                characterRigId: p.characterRigId,
+                controls: [
+                  for (final c in p.controls)
+                    if (targets.contains(c.targetId))
+                      RigControlPose(
+                        targetId: c.targetId,
+                        controlId: c.controlId,
+                        x: c.x + d.dx,
+                        y: c.y + d.dy,
+                      )
+                    else
+                      c,
+                ],
+              )
+            else
+              p,
+        ];
+      }
+    }
+
+    for (final id in ids) {
+      final active = _activeCharacterPoseRigs[id];
+      if (active != null) {
+        _activeCharacterPoseRigs[id] = _shiftRig(active, d);
+      }
+    }
+
+    final preview = _flexRigPreview;
+    if (preview != null && ids.contains(preview.strokeId)) {
+      _flexRigPreview = _shiftRig(preview, d);
+    }
+  }
+
   void _moveSelectedStrokes(Offset delta) {
     if (_selectedTransformStrokes.isEmpty) {
       return;
     }
 
+    final movedStrokeIds = <String>{};
     for (final entry in _selectedTransformStrokes.entries) {
       final layerIndex = _layerIndexForId(entry.key);
 
@@ -8960,6 +9725,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
         }
 
         final stroke = strokes[strokeIndex];
+        movedStrokeIds.add(stroke.id);
 
         strokes[strokeIndex] = VectorStroke(
           id: stroke.id,
@@ -8983,6 +9749,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
       _layers[layerIndex] = layer.copyWith(frames: frames);
     }
 
+    _shiftMovedRigs(movedStrokeIds, delta);
     _rebuildCompositeFrames();
   }
 
@@ -19275,9 +20042,9 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                                                         ScaffoldMessenger.of(
                                                           context,
                                                         ).showSnackBar(
-                                                          const SnackBar(
+                                                          SnackBar(
                                                             content: Text(
-                                                              'Lasso-select exactly one eligible vector stroke first.',
+                                                              _flexRigSelectionDiagnostic(),
                                                             ),
                                                           ),
                                                         );
@@ -19290,6 +20057,109 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                                                     : Colors.white70,
                                               ),
                                             ),
+                                            if (widget
+                                                        .initialBagItem
+                                                        ?.isComposite ==
+                                                    true &&
+                                                _flexRigPreview != null) ...[
+                                              const SizedBox(height: 2),
+                                              IconButton(
+                                                tooltip: 'Register Flex Rig',
+                                                visualDensity:
+                                                    VisualDensity.compact,
+                                                onPressed: _isPlaying
+                                                    ? null
+                                                    : () {
+                                                        final registered =
+                                                            _registerCurrentFlexRig();
+
+                                                        ScaffoldMessenger.of(
+                                                          context,
+                                                        ).showSnackBar(
+                                                          SnackBar(
+                                                            content: Text(
+                                                              registered
+                                                                  ? 'Flex Rig registered to character'
+                                                                  : 'Could not register Flex Rig',
+                                                            ),
+                                                          ),
+                                                        );
+                                                      },
+                                                icon: const Icon(
+                                                  Icons.bookmark_add_outlined,
+                                                  color: Colors.cyanAccent,
+                                                ),
+                                              ),
+                                            ],
+
+                                            if (widget
+                                                        .initialBagItem
+                                                        ?.isComposite ==
+                                                    true &&
+                                                _workingCharacterRig
+                                                        ?.targets
+                                                        .isNotEmpty ==
+                                                    true) ...[
+                                              const SizedBox(height: 2),
+                                              IconButton(
+                                                tooltip: 'Save Character Pose',
+                                                visualDensity:
+                                                    VisualDensity.compact,
+                                                onPressed:
+                                                    _isPlaying ||
+                                                        _flexRigDragPointer !=
+                                                            null
+                                                    ? null
+                                                    : _showSaveRigPoseDialog,
+                                                icon: const Icon(
+                                                  Icons.save_as_outlined,
+                                                  color: Colors.amberAccent,
+                                                ),
+                                              ),
+                                            ],
+
+                                            if (widget
+                                                        .initialBagItem
+                                                        ?.isComposite ==
+                                                    true &&
+                                                _workingRigPoses.any(
+                                                  (pose) =>
+                                                      pose.characterRigId ==
+                                                      _workingCharacterRig?.id,
+                                                )) ...[
+                                              const SizedBox(height: 2),
+                                              IconButton(
+                                                tooltip: 'Apply Character Pose',
+                                                visualDensity:
+                                                    VisualDensity.compact,
+                                                onPressed: _isPlaying
+                                                    ? null
+                                                    : _showApplyRigPoseDialog,
+                                                icon: const Icon(
+                                                  Icons
+                                                      .accessibility_new_outlined,
+                                                  color:
+                                                      Colors.lightGreenAccent,
+                                                ),
+                                              ),
+                                            ],
+                                            if (_activeCharacterPoseRigs
+                                                .isNotEmpty) ...[
+                                              const SizedBox(height: 2),
+                                              IconButton(
+                                                tooltip: 'Clear Character Pose',
+                                                visualDensity:
+                                                    VisualDensity.compact,
+                                                onPressed: _isPlaying
+                                                    ? null
+                                                    : _clearCharacterPosePreview,
+                                                icon: const Icon(
+                                                  Icons.restart_alt,
+                                                  color: Colors.white70,
+                                                ),
+                                              ),
+                                            ],
+
                                             // Fast access to the selected group's
                                             // independent animation track.
                                             //
