@@ -15,6 +15,7 @@ import '../models/bag_item.dart';
 import '../models/composite_asset.dart';
 import '../models/character_rig.dart';
 import '../models/rig_pose.dart';
+import '../models/rig_pose_capture.dart';
 import '../models/rig_export.dart';
 import '../models/brush_preset.dart';
 import '../models/drawing_layer.dart';
@@ -1686,47 +1687,15 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
       return false;
     }
 
-    final preview = _flexRigPreview;
-    final controls = <RigControlPose>[];
+    final controls = captureRigPoseControls(
+      rig: rig,
+      activeRigs: _activeCharacterPoseFrameIndex == _selectedFrameIndex
+          ? _activeCharacterPoseRigs
+          : const <String, StrokeRig>{},
+      singleStrokePreview: _flexRigPreview,
+    );
 
-    for (final target in rig.targets) {
-      if (target.type != RigTargetType.stroke) {
-        continue;
-      }
-
-      var sourceControls = target.rig.controls;
-
-      if (preview != null && preview.strokeId == target.targetId) {
-        final registeredIds = target.rig.controls
-            .map((control) => control.id)
-            .toSet();
-        final previewIds = preview.controls
-            .map((control) => control.id)
-            .toSet();
-
-        if (registeredIds.length != target.rig.controls.length ||
-            previewIds.length != preview.controls.length ||
-            registeredIds.length != previewIds.length ||
-            !registeredIds.containsAll(previewIds)) {
-          return false;
-        }
-
-        sourceControls = preview.controls;
-      }
-
-      for (final control in sourceControls) {
-        controls.add(
-          RigControlPose(
-            targetId: target.id,
-            controlId: control.id,
-            x: control.x,
-            y: control.y,
-          ),
-        );
-      }
-    }
-
-    if (controls.isEmpty) {
+    if (controls == null) {
       return false;
     }
 
