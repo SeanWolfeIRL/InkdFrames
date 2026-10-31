@@ -1699,47 +1699,50 @@ class _BagScreenState extends State<BagScreen> {
             ),
             content: ConstrainedBox(
               constraints: const BoxConstraints(maxWidth: 720),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Container(
-                    height: 360,
-                    width: double.infinity,
-                    decoration: BoxDecoration(
-                      color: Colors.black26,
-                      borderRadius: BorderRadius.circular(12),
-                    ),
-                    clipBehavior: Clip.antiAlias,
-                    child: FittedBox(
-                      fit: BoxFit.contain,
-                      child: SizedBox(
-                        width: composite.canvasWidth,
-                        height: composite.canvasHeight,
-                        child: _buildCompositeBagPreviewNode(
-                          composite.root,
-                          asset: composite,
+              child: SingleChildScrollView(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Container(
+                      height: (MediaQuery.sizeOf(dialogContext).height * 0.32)
+                          .clamp(160.0, 360.0),
+                      width: double.infinity,
+                      decoration: BoxDecoration(
+                        color: Colors.black26,
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                      clipBehavior: Clip.antiAlias,
+                      child: FittedBox(
+                        fit: BoxFit.contain,
+                        child: SizedBox(
+                          width: composite.canvasWidth,
+                          height: composite.canvasHeight,
+                          child: _buildCompositeBagPreviewNode(
+                            composite.root,
+                            asset: composite,
+                          ),
                         ),
                       ),
                     ),
-                  ),
-                  const SizedBox(height: 16),
-                  Text(
-                    'Composite Group  •  '
-                    '${composite.canvasWidth.round()} × '
-                    '${composite.canvasHeight.round()}  •  '
-                    '${composite.root.children.length} top-level node(s)',
-                    style: Theme.of(
-                      dialogContext,
-                    ).textTheme.bodySmall?.copyWith(color: Colors.white60),
-                  ),
-                  const SizedBox(height: 8),
-                  const Text(
-                    'Editable hierarchy, references, groups and Variant Slots '
-                    'are preserved.',
-                    style: TextStyle(color: Colors.white54),
-                  ),
-                ],
+                    const SizedBox(height: 16),
+                    Text(
+                      'Composite Group  •  '
+                      '${composite.canvasWidth.round()} × '
+                      '${composite.canvasHeight.round()}  •  '
+                      '${composite.root.children.length} top-level node(s)',
+                      style: Theme.of(
+                        dialogContext,
+                      ).textTheme.bodySmall?.copyWith(color: Colors.white60),
+                    ),
+                    const SizedBox(height: 8),
+                    const Text(
+                      'Editable hierarchy, references, groups and Variant Slots '
+                      'are preserved.',
+                      style: TextStyle(color: Colors.white54),
+                    ),
+                  ],
+                ),
               ),
             ),
             actions: [

@@ -14,6 +14,8 @@ import '../models/bag_motion_asset.dart';
 import '../models/bag_item.dart';
 import '../models/composite_asset.dart';
 import '../models/character_rig.dart';
+import '../models/character_rig_editing_session.dart';
+import '../models/character_rig_session_validator.dart';
 import '../models/rig_pose.dart';
 import '../models/rig_pose_capture.dart';
 import '../models/rig_export.dart';
@@ -414,6 +416,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
 
   // Flex Rig V1: temporary editor preview only.
   // No project serialization or animation keys yet.
+  bool _characterRigMode = false;
   StrokeRig? _flexRigPreview;
 
   // Non-destructive character-wide pose preview.
@@ -1180,6 +1183,38 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     });
   }
 
+  CharacterRigEditingSession? _captureActiveRigSession() {
+    final character = _workingCharacterRig;
+    final frameId = _currentFrameId;
+
+    if (character == null ||
+        frameId == null ||
+        _activeCharacterPoseFrameIndex != _selectedFrameIndex ||
+        _activeCharacterPoseRigs.isEmpty) {
+      return null;
+    }
+
+    final registeredIds = character.targets
+        .where((target) => target.type == RigTargetType.stroke)
+        .map((target) => target.targetId)
+        .toSet();
+
+    final activeRigs = _activeCharacterPoseRigs.entries
+        .where((entry) => registeredIds.contains(entry.key))
+        .map((entry) => StrokeRig.fromJson(entry.value.toJson()))
+        .toList();
+
+    if (activeRigs.isEmpty) {
+      return null;
+    }
+
+    return CharacterRigEditingSession(
+      characterRigId: character.id,
+      frameId: frameId,
+      strokeRigs: activeRigs,
+    );
+  }
+
   Future<void> _saveProject() async {
     _ensureReferenceHierarchyEntries();
     _rebuildCompositeFrames();
@@ -1215,6 +1250,9 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
       referenceOpacity: _referenceOpacity,
       referenceFrameTimesMs: _referenceFrameTimesMs,
       previewImagePath: _projectPreviewImagePath,
+      characterRig: _workingCharacterRig,
+      activeRigSession: _captureActiveRigSession(),
+      rigPoses: _workingRigPoses,
     );
 
     await ProjectStorageService().saveProject(project);
@@ -1658,6 +1696,16 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
         ],
       );
 
+      // Keep this registered deformation active across stroke selection
+      // and Flex Rig preview changes.
+      if (_activeCharacterPoseFrameIndex != _selectedFrameIndex) {
+        _activeCharacterPoseRigs.clear();
+      }
+      _activeCharacterPoseFrameIndex = _selectedFrameIndex;
+      _activeCharacterPoseRigs[registeredRig.strokeId] = StrokeRig.fromJson(
+        registeredRig.toJson(),
+      );
+
       _flexRigPreview = StrokeRig.fromJson(registeredRig.toJson());
     });
 
@@ -1721,59 +1769,53 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
       return;
     }
 
-    final controller = TextEditingController();
+    var poseName = '';
 
-    try {
-      final name = await showDialog<String>(
-        context: context,
-        builder: (dialogContext) => AlertDialog(
-          title: const Text('Save Character Pose'),
-          content: TextField(
-            controller: controller,
-            autofocus: true,
-            maxLength: 60,
-            textCapitalization: TextCapitalization.words,
-            decoration: const InputDecoration(
-              labelText: 'Pose name',
-              hintText: 'e.g. Crouch',
-            ),
-            onSubmitted: (value) {
-              Navigator.of(dialogContext).pop(value);
-            },
+    final name = await showDialog<String>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Save Character Pose'),
+        content: TextField(
+          autofocus: true,
+          maxLength: 60,
+          textCapitalization: TextCapitalization.words,
+          decoration: const InputDecoration(
+            labelText: 'Pose name',
+            hintText: 'e.g. Crouch',
           ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.of(dialogContext).pop(),
-              child: const Text('Cancel'),
-            ),
-            FilledButton(
-              onPressed: () => Navigator.of(dialogContext).pop(controller.text),
-              child: const Text('Save Pose'),
-            ),
-          ],
+          onChanged: (value) => poseName = value,
+          onSubmitted: (value) {
+            Navigator.of(dialogContext).pop(value);
+          },
         ),
-      );
-
-      if (!mounted || name == null) {
-        return;
-      }
-
-      final saved = _captureNamedRigPose(name);
-
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(
-            saved
-                ? 'Pose "${name.trim()}" captured. Save the Bag asset to keep it.'
-                : 'Pose not saved. Check its name and registered controls.',
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(),
+            child: const Text('Cancel'),
           ),
-        ),
-      );
-    } finally {
-      // The dialog owns the text field until its dismissal completes.
-      // Release the controller after the route has closed.
-      controller.dispose();
+          FilledButton(
+            onPressed: () => Navigator.of(dialogContext).pop(poseName),
+            child: const Text('Save Pose'),
+          ),
+        ],
+      ),
+    );
+
+    if (!mounted || name == null) {
+      return;
     }
+
+    final saved = _captureNamedRigPose(name);
+
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          saved
+              ? 'Pose "\${name.trim()}" captured. Save the Bag asset to keep it.'
+              : 'Pose not saved. Check its name and registered controls.',
+        ),
+      ),
+    );
   }
 
   /// Project a rig control from its owning layer into visible canvas space.
@@ -1810,7 +1852,110 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     return MatrixUtils.transformPoint(matrix, canvasPoint);
   }
 
+  /// Resolve a registered stroke to its visible, editable paint layer.
+  /// Tweened source frames are excluded until rig keyframing is supported.
+  ({int layerIndex, StrokeRig rig})? _registeredRigStrokeLocation(
+    CharacterRigTarget target,
+  ) {
+    if (target.type != RigTargetType.stroke) return null;
+
+    for (var i = 0; i < _layers.length; i++) {
+      final layer = _layers[i];
+      if (!layer.visible ||
+          _selectedFrameIndex < 0 ||
+          _selectedFrameIndex >= layer.frames.length) {
+        continue;
+      }
+
+      final strokeExists = layer.frames[_selectedFrameIndex].any(
+        (stroke) =>
+            stroke.id == target.targetId &&
+            !stroke.filled &&
+            !stroke.alphaLocked,
+      );
+
+      if (!strokeExists) continue;
+
+      final activeRig = _activeCharacterPoseFrameIndex == _selectedFrameIndex
+          ? _activeCharacterPoseRigs[target.targetId]
+          : null;
+
+      return (layerIndex: i, rig: activeRig ?? target.rig);
+    }
+
+    return null;
+  }
+
   bool _flexRigPointerDown(PointerDownEvent event, BuildContext canvasContext) {
+    // Character-wide hit testing takes priority over the individual
+    // stroke preview. A control selects its owning paint layer and
+    // begins dragging in the same pointer gesture.
+    if (_characterRigMode &&
+        _workingCharacterRig != null &&
+        !_isPlaying &&
+        _activePointerCount == 1 &&
+        _flexRigDragPointer == null) {
+      final renderBox = canvasContext.findRenderObject();
+
+      if (renderBox is RenderBox) {
+        final position = renderBox.globalToLocal(event.position);
+        final hitRadius = 22.0 / math.max(0.1, _transformViewScale);
+
+        int? hitLayerIndex;
+        int? hitControlIndex;
+        StrokeRig? hitRig;
+        var closest = double.infinity;
+
+        for (final target in _workingCharacterRig!.targets) {
+          final location = _registeredRigStrokeLocation(target);
+          if (location == null) continue;
+
+          final candidateRig = location.rig;
+          final candidateLayerId = _layers[location.layerIndex].id;
+
+          for (var i = 0; i < candidateRig.controls.length; i++) {
+            final control = candidateRig.controls[i];
+            if (control.locked) continue;
+
+            final handle = _flexRigAuthoredToCanvas(
+              candidateLayerId,
+              Offset(control.x, control.y),
+            );
+
+            final distance = (handle - position).distance;
+
+            if (distance <= hitRadius && distance < closest) {
+              closest = distance;
+              hitLayerIndex = location.layerIndex;
+              hitControlIndex = i;
+              hitRig = candidateRig;
+            }
+          }
+        }
+
+        if (hitLayerIndex != null &&
+            hitControlIndex != null &&
+            hitRig != null) {
+          _cancelCanvasAssetLongPress();
+          _selectLayer(hitLayerIndex);
+
+          setState(() {
+            _flexRigPreview = StrokeRig.fromJson(hitRig!.toJson());
+            _flexRigPreviewLayerId = _layers[hitLayerIndex!].id;
+            _flexRigPreviewSourceFrameIndex = _selectedFrameIndex;
+            _flexRigDragPointer = event.pointer;
+            _flexRigDragControlIndex = hitControlIndex;
+          });
+
+          return true;
+        }
+      }
+    }
+
+    // Empty-space touches in Character Rig Mode are consumed.
+    // Never fall back to editing the previously selected stroke.
+    if (_characterRigMode) return true;
+
     final rig = _flexRigPreview;
     final layerId = _flexRigPreviewLayerId;
 
@@ -1854,6 +1999,10 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
   }
 
   bool _flexRigPointerMove(PointerMoveEvent event, BuildContext canvasContext) {
+    if (_characterRigMode && _flexRigDragPointer == null) {
+      return true;
+    }
+
     final rig = _flexRigPreview;
     if (rig == null) return false;
 
@@ -1893,18 +2042,41 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     );
 
     setState(() {
-      _flexRigPreview = StrokeRig(
+      final updatedRig = StrokeRig(
         id: rig.id,
         strokeId: rig.strokeId,
         controls: controls,
       );
+
+      _flexRigPreview = updatedRig;
+
+      // Registered strokes retain their deformation as part of the
+      // active character pose, even when another stroke is selected.
+      final isRegistered =
+          _workingCharacterRig?.targets.any(
+            (target) =>
+                target.type == RigTargetType.stroke &&
+                target.targetId == updatedRig.strokeId,
+          ) ??
+          false;
+
+      if (isRegistered) {
+        if (_activeCharacterPoseFrameIndex != _selectedFrameIndex) {
+          _activeCharacterPoseRigs.clear();
+        }
+
+        _activeCharacterPoseFrameIndex = _selectedFrameIndex;
+        _activeCharacterPoseRigs[updatedRig.strokeId] = updatedRig;
+      }
     });
 
     return true;
   }
 
   bool _flexRigPointerEnd(int pointer) {
-    if (_flexRigPreview == null && _flexRigDragPointer == null) {
+    if (!_characterRigMode &&
+        _flexRigPreview == null &&
+        _flexRigDragPointer == null) {
       return false;
     }
 
@@ -1916,7 +2088,55 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     return true;
   }
 
-  /// Choose a saved pose belonging to the current character rig.
+  /// Restore every registered character control to its authored rest
+  /// position without changing the rig definition or named pose library.
+  void _resetCharacterRigToRest() {
+    final character = _workingCharacterRig;
+    if (character == null || _isPlaying || _flexRigDragPointer != null) {
+      return;
+    }
+
+    final restRigs = <String, StrokeRig>{};
+
+    for (final target in character.targets) {
+      if (target.type != RigTargetType.stroke) continue;
+
+      final rig = target.rig;
+
+      restRigs[target.targetId] = StrokeRig(
+        id: rig.id,
+        strokeId: rig.strokeId,
+        controls: [
+          for (final control in rig.controls)
+            RigControlPoint(
+              id: control.id,
+              restX: control.restX,
+              restY: control.restY,
+              x: control.restX,
+              y: control.restY,
+              radius: control.radius,
+              locked: control.locked,
+            ),
+        ],
+      );
+    }
+
+    setState(() {
+      _flexRigPreview = null;
+      _flexRigPreviewLayerId = null;
+      _flexRigPreviewSourceFrameIndex = null;
+      _flexRigDragPointer = null;
+      _flexRigDragControlIndex = null;
+
+      _activeCharacterPoseRigs
+        ..clear()
+        ..addAll(restRigs);
+
+      _activeCharacterPoseFrameIndex = _selectedFrameIndex;
+    });
+  }
+
+  /// Browse and apply saved poses belonging to the current character.
   Future<void> _showApplyRigPoseDialog() async {
     final character = _workingCharacterRig;
 
@@ -1928,53 +2148,105 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
         .where((pose) => pose.characterRigId == character.id)
         .toList();
 
-    if (poses.isEmpty) {
-      return;
-    }
-
-    final selected = await showDialog<RigPose>(
+    final action = await showDialog<String>(
       context: context,
-      builder: (dialogContext) => AlertDialog(
-        title: const Text('Apply Character Pose'),
-        content: SizedBox(
-          width: 320,
-          child: ListView.builder(
-            shrinkWrap: true,
-            itemCount: poses.length,
-            itemBuilder: (context, index) {
-              final pose = poses[index];
+      builder: (dialogContext) {
+        String? selectedId = poses.isEmpty ? null : poses.first.id;
 
-              return ListTile(
-                leading: const Icon(Icons.accessibility_new_outlined),
-                title: Text(pose.name),
-                subtitle: Text(
-                  '${pose.controls.length} saved control positions',
-                ),
-                onTap: () => Navigator.of(dialogContext).pop(pose),
-              );
-            },
+        return StatefulBuilder(
+          builder: (dialogContext, updateDialog) => AlertDialog(
+            title: const Text('Character Pose Library'),
+            content: SizedBox(
+              width: 340,
+              child: poses.isEmpty
+                  ? const Text(
+                      'No saved poses yet. Create your first character pose.',
+                    )
+                  : ListView.builder(
+                      shrinkWrap: true,
+                      itemCount: poses.length,
+                      itemBuilder: (context, index) {
+                        final pose = poses[index];
+
+                        final selected = selectedId == pose.id;
+
+                        return ListTile(
+                          selected: selected,
+                          leading: Icon(
+                            selected
+                                ? Icons.radio_button_checked
+                                : Icons.radio_button_unchecked,
+                          ),
+                          title: Text(pose.name),
+                          subtitle: Text(
+                            '${pose.controls.length} rig controls',
+                          ),
+                          onTap: () {
+                            updateDialog(() => selectedId = pose.id);
+                          },
+                        );
+                      },
+                    ),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.of(dialogContext).pop('clear'),
+                child: const Text('Clear Preview'),
+              ),
+              TextButton(
+                onPressed: () => Navigator.of(dialogContext).pop('save'),
+                child: const Text('Save New'),
+              ),
+              TextButton(
+                onPressed: () => Navigator.of(dialogContext).pop(),
+                child: const Text('Cancel'),
+              ),
+              FilledButton(
+                onPressed: selectedId == null
+                    ? null
+                    : () =>
+                          Navigator.of(dialogContext).pop('apply:$selectedId'),
+                child: const Text('Apply Pose'),
+              ),
+            ],
           ),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(dialogContext).pop(),
-            child: const Text('Cancel'),
-          ),
-        ],
-      ),
+        );
+      },
     );
 
-    if (!mounted || selected == null) {
+    if (!mounted || action == null) {
       return;
     }
 
-    final applied = _applyNamedRigPose(selected);
+    if (action == 'save') {
+      await _showSaveRigPoseDialog();
+      return;
+    }
+
+    if (action == 'clear') {
+      _clearCharacterPosePreview();
+      return;
+    }
+
+    if (!action.startsWith('apply:')) {
+      return;
+    }
+
+    final poseId = action.substring(6);
+    final matches = poses.where((pose) => pose.id == poseId);
+
+    if (matches.length != 1) {
+      return;
+    }
+
+    final pose = matches.single;
+    final applied = _applyNamedRigPose(pose);
 
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
         content: Text(
           applied
-              ? 'Pose "${selected.name}" applied'
+              ? 'Pose "${pose.name}" applied'
               : 'Could not apply pose: registered controls have changed',
         ),
       ),
@@ -3956,6 +4228,14 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
 
     final rootGroup = _layerGroups[groupIndex];
 
+    // Keep only rig targets and pose controls belonging to strokes
+    // actually present in the rebuilt Bag composite.
+    final rigExport = captureRigExport(
+      composite,
+      _workingCharacterRig,
+      _workingRigPoses,
+    );
+
     final updated = BagItem(
       // Preserve the original Bag identity so BagService replaces the
       // source item instead of creating a duplicate.
@@ -3968,8 +4248,8 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
       motion: motion,
       // Persist the editable character rig and named pose collection.
       // These were copied from the source Bag item at Workspace startup.
-      characterRig: _workingCharacterRig,
-      rigPoses: _workingRigPoses,
+      characterRig: rigExport.rig,
+      rigPoses: rigExport.poses,
       createdAt: sourceItem.createdAt,
       imagePath: sourceItem.imagePath,
       authoredWidth: sourceItem.authoredWidth,
@@ -5862,6 +6142,8 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
       return '${kind}_duplicate_${stamp}_${serial++}';
     }
 
+    final duplicatedStrokeIds = <String, String>{};
+
     final duplicatedLayers = <DrawingLayer>[];
     final duplicatedReferences = <ReferenceLayer>[];
     final duplicatedGroups = <LayerGroup>[];
@@ -5881,13 +6163,14 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
 
         final copiedFrames = source.frames
             .map(
-              (frame) => frame
-                  .map(
-                    (stroke) => VectorStroke.fromJson(
-                      Map<String, dynamic>.from(stroke.toJson()),
-                    ),
-                  )
-                  .toList(),
+              (frame) => frame.map((stroke) {
+                final json = Map<String, dynamic>.from(stroke.toJson());
+                json['id'] = duplicatedStrokeIds.putIfAbsent(
+                  stroke.id,
+                  () => freshId('stroke'),
+                );
+                return VectorStroke.fromJson(json);
+              }).toList(),
             )
             .toList();
 
@@ -6464,6 +6747,16 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     _projectName = project.name;
     _projectPreviewImagePath = project.previewImagePath;
 
+    // Restore the editable character rig and named poses.
+    // Older projects without rig fields remain supported.
+    _workingCharacterRig = project.characterRig;
+    _workingRigPoses = List<RigPose>.from(project.rigPoses);
+    _activeCharacterPoseRigs.clear();
+    _activeCharacterPoseFrameIndex = null;
+    _flexRigPreview = null;
+    _flexRigPreviewLayerId = null;
+    _flexRigPreviewSourceFrameIndex = null;
+
     setState(() {
       _brushColor = Color(project.brushColor);
       _paletteEyedropperTarget = null;
@@ -6596,7 +6889,26 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
       _activeReferenceLayerId = project.activeReferenceLayerId;
 
       _loadLegacyReferenceStateFromActiveLayer();
-      _selectedFrameIndex = 0;
+
+      final savedSession = project.activeRigSession;
+      final restoredRigs = validateCharacterRigSession(
+        savedSession,
+        _workingCharacterRig,
+        _frameIds,
+        _layers,
+      );
+
+      if (restoredRigs != null && savedSession != null) {
+        final restoredFrameIndex = _frameIds.indexOf(savedSession.frameId);
+        _selectedFrameIndex = restoredFrameIndex;
+
+        _activeCharacterPoseRigs
+          ..clear()
+          ..addAll(restoredRigs);
+        _activeCharacterPoseFrameIndex = restoredFrameIndex;
+      } else {
+        _selectedFrameIndex = 0;
+      }
       _draftStroke = const <VectorPoint>[];
     });
 
@@ -12628,7 +12940,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
       '${event.position.dy.toStringAsFixed(1)}',
     );
 
-    if (_flexRigPreview != null) {
+    if (_characterRigMode || _flexRigPreview != null) {
       _activePointerCount += 1;
       _flexRigPointerDown(event, canvasContext);
       return;
@@ -19462,7 +19774,74 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                                                       const SizedBox.expand(),
                                                 ),
                                               ),
-                                            if (_flexRigPreview != null &&
+                                            if (_characterRigMode &&
+                                                _workingCharacterRig != null &&
+                                                _workingCharacterRig!
+                                                    .targets
+                                                    .isNotEmpty &&
+                                                !_isPlaying &&
+                                                !_isCompositePngCapture)
+                                              ValueListenableBuilder<int>(
+                                                valueListenable:
+                                                    _sceneMotionTick,
+                                                builder: (context, tick, child) {
+                                                  final positions =
+                                                      <List<Offset>>[];
+
+                                                  for (final target
+                                                      in _workingCharacterRig!
+                                                          .targets) {
+                                                    final location =
+                                                        _registeredRigStrokeLocation(
+                                                          target,
+                                                        );
+
+                                                    if (location == null ||
+                                                        location
+                                                                .rig
+                                                                .controls
+                                                                .length !=
+                                                            3) {
+                                                      continue;
+                                                    }
+
+                                                    final layerId =
+                                                        _layers[location
+                                                                .layerIndex]
+                                                            .id;
+
+                                                    positions.add(
+                                                      location.rig.controls
+                                                          .map(
+                                                            (control) =>
+                                                                _flexRigAuthoredToCanvas(
+                                                                  layerId,
+                                                                  Offset(
+                                                                    control.x,
+                                                                    control.y,
+                                                                  ),
+                                                                ),
+                                                          )
+                                                          .toList(),
+                                                    );
+                                                  }
+
+                                                  return IgnorePointer(
+                                                    child: CustomPaint(
+                                                      painter:
+                                                          _UnifiedRigOverlayPainter(
+                                                            rigs: positions,
+                                                            viewScale:
+                                                                _transformViewScale,
+                                                          ),
+                                                      child:
+                                                          const SizedBox.expand(),
+                                                    ),
+                                                  );
+                                                },
+                                              ),
+                                            if (!_characterRigMode &&
+                                                _flexRigPreview != null &&
                                                 _flexRigPreviewLayerId !=
                                                     null &&
                                                 !_isPlaying &&
@@ -19979,6 +20358,37 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                                             ),
                                             const SizedBox(height: 2),
                                             IconButton(
+                                              tooltip: _characterRigMode
+                                                  ? 'Exit Character Rig Mode'
+                                                  : 'Character Rig Mode',
+                                              visualDensity:
+                                                  VisualDensity.compact,
+                                              onPressed: _isPlaying
+                                                  ? null
+                                                  : () {
+                                                      setState(() {
+                                                        _characterRigMode =
+                                                            !_characterRigMode;
+                                                        _flexRigDragPointer =
+                                                            null;
+                                                        _flexRigDragControlIndex =
+                                                            null;
+                                                        _flexRigPreview = null;
+                                                        _flexRigPreviewLayerId =
+                                                            null;
+                                                        _flexRigPreviewSourceFrameIndex =
+                                                            null;
+                                                      });
+                                                    },
+                                              icon: Icon(
+                                                Icons.account_tree_outlined,
+                                                color: _characterRigMode
+                                                    ? Colors.amberAccent
+                                                    : Colors.white70,
+                                              ),
+                                            ),
+                                            const SizedBox(height: 2),
+                                            IconButton(
                                               tooltip: _flexRigPreview == null
                                                   ? 'Flex Rig · Select one stroke first'
                                                   : 'Exit Flex Rig Preview',
@@ -20071,6 +20481,23 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                                                     true) ...[
                                               const SizedBox(height: 2),
                                               IconButton(
+                                                tooltip:
+                                                    'Reset Character to Rest',
+                                                visualDensity:
+                                                    VisualDensity.compact,
+                                                onPressed:
+                                                    _isPlaying ||
+                                                        _flexRigDragPointer !=
+                                                            null
+                                                    ? null
+                                                    : _resetCharacterRigToRest,
+                                                icon: const Icon(
+                                                  Icons.restart_alt,
+                                                  color: Colors.orangeAccent,
+                                                ),
+                                              ),
+                                              const SizedBox(height: 2),
+                                              IconButton(
                                                 tooltip: 'Save Character Pose',
                                                 visualDensity:
                                                     VisualDensity.compact,
@@ -20091,14 +20518,14 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                                                         .initialBagItem
                                                         ?.isComposite ==
                                                     true &&
-                                                _workingRigPoses.any(
-                                                  (pose) =>
-                                                      pose.characterRigId ==
-                                                      _workingCharacterRig?.id,
-                                                )) ...[
+                                                _workingCharacterRig
+                                                        ?.targets
+                                                        .isNotEmpty ==
+                                                    true) ...[
                                               const SizedBox(height: 2),
                                               IconButton(
-                                                tooltip: 'Apply Character Pose',
+                                                tooltip:
+                                                    'Character Pose Library',
                                                 visualDensity:
                                                     VisualDensity.compact,
                                                 onPressed: _isPlaying
@@ -23472,6 +23899,46 @@ class _FlexRigOverlayPainter extends CustomPainter {
 
     for (var i = 0; i < positions.length; i++) {
       if (positions[i] != oldDelegate.positions[i]) return true;
+    }
+
+    return false;
+  }
+}
+
+class _UnifiedRigOverlayPainter extends CustomPainter {
+  const _UnifiedRigOverlayPainter({
+    required this.rigs,
+    required this.viewScale,
+  });
+
+  final List<List<Offset>> rigs;
+  final double viewScale;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    for (final positions in rigs) {
+      if (positions.length != 3) continue;
+
+      _FlexRigOverlayPainter(
+        positions: positions,
+        viewScale: viewScale,
+      ).paint(canvas, size);
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant _UnifiedRigOverlayPainter oldDelegate) {
+    if (viewScale != oldDelegate.viewScale ||
+        rigs.length != oldDelegate.rigs.length) {
+      return true;
+    }
+
+    for (var i = 0; i < rigs.length; i++) {
+      if (rigs[i].length != oldDelegate.rigs[i].length) return true;
+
+      for (var j = 0; j < rigs[i].length; j++) {
+        if (rigs[i][j] != oldDelegate.rigs[i][j]) return true;
+      }
     }
 
     return false;

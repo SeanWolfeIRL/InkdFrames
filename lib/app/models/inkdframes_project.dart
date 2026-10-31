@@ -1,3 +1,6 @@
+import 'character_rig.dart';
+import 'character_rig_editing_session.dart';
+import 'rig_pose.dart';
 import 'drawing_layer.dart';
 import 'group_animation_track.dart';
 import 'scene_motion_instance.dart';
@@ -6,6 +9,20 @@ import 'reference_layer.dart';
 import 'transform_keyframe.dart';
 import 'variant_slot.dart';
 import 'vector_stroke.dart';
+
+CharacterRigEditingSession? _parseOptionalRigSession(Object? value) {
+  if (value is! Map) return null;
+
+  try {
+    return CharacterRigEditingSession.fromJson(
+      Map<String, dynamic>.from(value),
+    );
+  } on FormatException {
+    return null;
+  } on TypeError {
+    return null;
+  }
+}
 
 class InkdFramesProject {
   InkdFramesProject({
@@ -36,7 +53,11 @@ class InkdFramesProject {
     this.referenceVisible = true,
     this.referenceOpacity = 1.0,
     this.previewImagePath,
-  }) : recentColors = List<int>.from(recentColors ?? const <int>[]),
+    this.characterRig,
+    this.activeRigSession,
+    List<RigPose>? rigPoses,
+  }) : rigPoses = rigPoses ?? <RigPose>[],
+       recentColors = List<int>.from(recentColors ?? const <int>[]),
        colorPalettes = (colorPalettes ?? const <Map<String, dynamic>>[])
            .map(
              (palette) => <String, dynamic>{
@@ -284,8 +305,26 @@ class InkdFramesProject {
           (referenceLayers.isNotEmpty ? referenceLayers.first.id : null),
       referenceFrameTimesMs: legacyReferenceFrameTimesMs,
       previewImagePath: json['previewImagePath'] as String?,
+      characterRig: json['characterRig'] is Map
+          ? CharacterRig.fromJson(
+              Map<String, dynamic>.from(json['characterRig'] as Map),
+            )
+          : null,
+      activeRigSession: _parseOptionalRigSession(json['activeRigSession']),
+      rigPoses: json['rigPoses'] is List
+          ? (json['rigPoses'] as List)
+                .whereType<Map>()
+                .map(
+                  (entry) => RigPose.fromJson(Map<String, dynamic>.from(entry)),
+                )
+                .toList()
+          : <RigPose>[],
     );
   }
+
+  final CharacterRig? characterRig;
+  final CharacterRigEditingSession? activeRigSession;
+  final List<RigPose> rigPoses;
 
   final String id;
   final String name;
@@ -421,6 +460,11 @@ class InkdFramesProject {
       'referenceOpacity': referenceOpacity,
       'referenceFrameTimesMs': referenceFrameTimesMs,
       'previewImagePath': previewImagePath,
+      if (characterRig != null) 'characterRig': characterRig!.toJson(),
+      if (activeRigSession != null)
+        'activeRigSession': activeRigSession!.toJson(),
+      if (rigPoses.isNotEmpty)
+        'rigPoses': rigPoses.map((pose) => pose.toJson()).toList(),
     };
   }
 
