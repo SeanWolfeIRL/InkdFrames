@@ -2986,6 +2986,43 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
 
     final rootGroupId = rootEntry.substring(6);
 
+    // Restore rig metadata when importing into a project without a
+    // registered character. Existing character rigs are never overwritten.
+    final importedRig = item.characterRig;
+    final importedStrokeIds = <String>{
+      for (final layer in rebuiltLayers)
+        for (final frame in layer.frames)
+          for (final stroke in frame) stroke.id,
+    };
+
+    final restoredRigTargets = importedRig == null
+        ? <CharacterRigTarget>[]
+        : importedRig.targets
+              .where((target) {
+                if (target.type == RigTargetType.stroke) {
+                  return importedStrokeIds.contains(target.targetId);
+                }
+                return localAuthoredToRuntime.containsKey(target.targetId);
+              })
+              .map(
+                (target) => CharacterRigTarget(
+                  id: target.id,
+                  type: target.type,
+                  targetId: target.type == RigTargetType.group
+                      ? localAuthoredToRuntime[target.targetId]!
+                      : target.targetId,
+                  rig: target.rig,
+                ),
+              )
+              .toList();
+
+    final restoredRig =
+        importedRig != null &&
+            restoredRigTargets.length == importedRig.targets.length &&
+            restoredRigTargets.isNotEmpty
+        ? CharacterRig(id: importedRig.id, targets: restoredRigTargets)
+        : null;
+
     // Only direct Bag -> Workspace editing restores the asset's own
     // animation timeline. Inserting into an existing project must not
     // replace that project's timeline.
@@ -3132,6 +3169,14 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
             motion: remappedMotion,
           ),
         );
+      }
+
+      if (_workingCharacterRig == null && restoredRig != null) {
+        _workingCharacterRig = restoredRig;
+        _workingRigPoses = item.rigPoses
+            .where((pose) => pose.characterRigId == restoredRig.id)
+            .map((pose) => RigPose.fromJson(pose.toJson()))
+            .toList();
       }
 
       _layers.insertAll(0, rebuiltLayers);
@@ -20514,14 +20559,10 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                                               ),
                                             ],
 
-                                            if (widget
-                                                        .initialBagItem
-                                                        ?.isComposite ==
-                                                    true &&
-                                                _workingCharacterRig
-                                                        ?.targets
-                                                        .isNotEmpty ==
-                                                    true) ...[
+                                            if (_workingCharacterRig
+                                                    ?.targets
+                                                    .isNotEmpty ==
+                                                true) ...[
                                               const SizedBox(height: 2),
                                               IconButton(
                                                 tooltip:
