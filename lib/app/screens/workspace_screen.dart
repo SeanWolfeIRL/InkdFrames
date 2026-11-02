@@ -36,6 +36,7 @@ import '../models/vector_stroke.dart';
 import '../models/rig_deformer.dart';
 import '../models/stroke_rig.dart';
 import '../painters/animation_canvas_painter.dart';
+import '../painters/bag_item_preview_painter.dart';
 import '../painters/frame_thumbnail_painter.dart';
 import '../services/animation_export_service.dart';
 import '../services/brush_preset_service.dart';
@@ -2136,17 +2137,275 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     });
   }
 
-  /// Browse and apply saved poses belonging to the current character.
-  Future<void> _showApplyRigPoseDialog() async {
-    final character = _workingCharacterRig;
+  /// Rename a saved pose without modifying its controls or source artwork.
+  Future<void> _renameRigPose(RigPose pose) async {
+    final name = await showDialog<String>(
+      context: context,
+      builder: (_) => _RigPoseRenameDialog(initialName: pose.name),
+    );
 
-    if (character == null || _isPlaying) {
+    if (!mounted || name == null) return;
+
+    final trimmed = name.trim();
+    if (trimmed.isEmpty || trimmed.length > 60) return;
+
+    final duplicate = _workingRigPoses.any(
+      (other) =>
+          other.id != pose.id &&
+          other.characterRigId == pose.characterRigId &&
+          other.name.toLowerCase() == trimmed.toLowerCase(),
+    );
+
+    if (duplicate) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('A pose already has that name')),
+      );
       return;
     }
 
-    final poses = _workingRigPoses
+    if (!_workingRigPoses.any((item) => item.id == pose.id)) return;
+
+    setState(() {
+      _workingRigPoses = [
+        for (final item in _workingRigPoses)
+          if (item.id == pose.id)
+            RigPose(
+              id: item.id,
+              name: trimmed,
+              characterRigId: item.characterRigId,
+              controls: item.controls,
+            )
+          else
+            item,
+      ];
+    });
+
+    _scheduleAutosave();
+  }
+
+  /// Delete only the saved pose entry, never the rig or vector artwork.
+  Future<void> _deleteRigPose(RigPose pose) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Delete Pose?'),
+        content: Text(
+          'Delete "\${pose.name}" from this project? '
+          'The character artwork and existing Bag assets will remain unchanged.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(dialogContext).pop(true),
+            child: const Text('Delete'),
+          ),
+        ],
+      ),
+    );
+
+    if (!mounted || confirmed != true) return;
+
+    if (!_workingRigPoses.any((item) => item.id == pose.id)) return;
+
+    setState(() {
+      _workingRigPoses = [
+        for (final item in _workingRigPoses)
+          if (item.id != pose.id) item,
+      ];
+    });
+
+    _scheduleAutosave();
+
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(SnackBar(content: Text('Pose "\${pose.name}" deleted')));
+  }
+
+  /// Build read-only thumbnail artwork for a saved character pose.
+  ///
+  /// Only registered stroke targets are included. No live rig state,
+  /// project artwork or Bag asset is modified.
+  List<VectorStroke> _rigPoseThumbnailStrokes(
+    CharacterRig character,
+    RigPose pose,
+  ) {
+    if (pose.characterRigId != character.id) {
+      debugPrint(
+        'INKDFRAMES_POSE_THUMB_REJECT pose=${pose.name} reason=character_mismatch',
+      );
+      return const <VectorStroke>[];
+    }
+
+    final positions = <String, RigControlPose>{};
+
+    for (final control in pose.controls) {
+      final key = '${control.targetId}:${control.controlId}';
+      if (positions.containsKey(key)) {
+        debugPrint(
+          'INKDFRAMES_POSE_THUMB_REJECT pose=${pose.name} reason=duplicate_control key=$key',
+        );
+        return const <VectorStroke>[];
+      }
+      positions[key] = control;
+    }
+
+    final rigs = <String, StrokeRig>{};
+    var matchedControls = 0;
+
+    for (final target in character.targets) {
+      if (target.type != RigTargetType.stroke) continue;
+
+      if (rigs.containsKey(target.targetId)) {
+        debugPrint(
+          'INKDFRAMES_POSE_THUMB_REJECT pose=${pose.name} reason=duplicate_stroke target=${target.targetId}',
+        );
+        return const <VectorStroke>[];
+      }
+
+      final controls = <RigControlPoint>[];
+
+      for (final original in target.rig.controls) {
+        final saved = positions['${target.id}:${original.id}'];
+
+        if (saved == null) {
+          debugPrint(
+            'INKDFRAMES_POSE_THUMB_REJECT pose=${pose.name} reason=missing_control target=${target.id} control=${original.id}',
+          );
+          return const <VectorStroke>[];
+        }
+
+        matchedControls++;
+
+        controls.add(
+          RigControlPoint(
+            id: original.id,
+            restX: original.restX,
+            restY: original.restY,
+            x: saved.x,
+            y: saved.y,
+            radius: original.radius,
+            locked: original.locked,
+          ),
+        );
+      }
+
+      rigs[target.targetId] = StrokeRig(
+        id: target.rig.id,
+        strokeId: target.rig.strokeId,
+        controls: controls,
+      );
+    }
+
+    if (rigs.isEmpty || matchedControls != positions.length) {
+      debugPrint(
+        'INKDFRAMES_POSE_THUMB_REJECT pose=${pose.name} reason=control_count rigs=${rigs.length} matched=$matchedControls saved=${positions.length}',
+      );
+      return const <VectorStroke>[];
+    }
+
+    final result = <VectorStroke>[];
+    final remaining = rigs.keys.toSet();
+
+    // Match the workspace's bottom-to-top drawing order.
+    for (final layer in _orderedDrawingLayers().reversed) {
+      if (!_isLayerEffectivelyVisible(layer) ||
+          _selectedFrameIndex < 0 ||
+          _selectedFrameIndex >= layer.frames.length) {
+        continue;
+      }
+
+      for (final stroke in layer.frames[_selectedFrameIndex]) {
+        final rig = rigs[stroke.id];
+        if (rig == null) continue;
+
+        remaining.remove(stroke.id);
+
+        if (stroke.filled || stroke.alphaLocked) {
+          result.add(_strokeWithOpacity(stroke, layer.opacity));
+          continue;
+        }
+
+        final points = BezierRigDeformer.deform(stroke.points, rig.controls);
+
+        result.add(
+          VectorStroke(
+            id: stroke.id,
+            points: points,
+            strokeWidth: stroke.strokeWidth,
+            color: stroke.color.withValues(
+              alpha: (stroke.color.a * layer.opacity).clamp(0.0, 1.0),
+            ),
+            filled: stroke.filled,
+            brushType: stroke.brushType,
+            alphaLocked: stroke.alphaLocked,
+          ),
+        );
+      }
+    }
+
+    // Do not display incomplete character geometry as a valid pose.
+    debugPrint(
+      'INKDFRAMES_POSE_THUMB '
+      'pose=${pose.name} '
+      'frame=$_selectedFrameIndex '
+      'targets=${rigs.length} '
+      'savedControls=${pose.controls.length} '
+      'matchedControls=$matchedControls '
+      'found=${rigs.length - remaining.length} '
+      'missing=${remaining.length} '
+      'rendered=${result.length}',
+    );
+
+    if (remaining.isNotEmpty) {
+      return const <VectorStroke>[];
+    }
+
+    return result;
+  }
+
+  /// Browse, manage and apply saved character poses.
+  int _rigPoseThumbnailFoundCount(CharacterRig character) {
+    final ids = character.targets
+        .where((target) => target.type == RigTargetType.stroke)
+        .map((target) => target.targetId)
+        .toSet();
+
+    final found = <String>{};
+
+    for (final layer in _layers) {
+      if (!_isLayerEffectivelyVisible(layer)) continue;
+      if (_selectedFrameIndex >= layer.frames.length) continue;
+
+      for (final stroke in layer.frames[_selectedFrameIndex]) {
+        if (ids.contains(stroke.id)) found.add(stroke.id);
+      }
+    }
+
+    return found.length;
+  }
+
+  bool get _poseGalleryIsolationMode => false;
+
+  Future<void> _showApplyRigPoseDialog() async {
+    final character = _workingCharacterRig;
+
+    if (character == null || _isPlaying) return;
+
+    List<RigPose> currentPoses() => _workingRigPoses
         .where((pose) => pose.characterRigId == character.id)
         .toList();
+
+    final poses = currentPoses();
+
+    // Prepare thumbnails before building the dialog widget tree.
+    // Selection changes must not repeatedly reconstruct geometry.
+    final poseThumbnails = <String, List<VectorStroke>>{
+      for (final pose in poses)
+        pose.id: _rigPoseThumbnailStrokes(character, pose),
+    };
 
     final action = await showDialog<String>(
       context: context,
@@ -2162,51 +2421,179 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                   ? const Text(
                       'No saved poses yet. Create your first character pose.',
                     )
-                  : ListView.builder(
-                      shrinkWrap: true,
-                      itemCount: poses.length,
-                      itemBuilder: (context, index) {
-                        final pose = poses[index];
+                  : SizedBox(
+                      height: (((poses.length + 1) ~/ 2).clamp(1, 3) * 170.0),
+                      child: _poseGalleryIsolationMode
+                          ? const Center(
+                              child: Text('Gallery lifecycle isolation test'),
+                            )
+                          : GridView.builder(
+                              itemCount: poses.length,
+                              gridDelegate:
+                                  const SliverGridDelegateWithFixedCrossAxisCount(
+                                    crossAxisCount: 2,
+                                    crossAxisSpacing: 8,
+                                    mainAxisSpacing: 8,
+                                    childAspectRatio: 0.8,
+                                  ),
+                              itemBuilder: (context, index) {
+                                final pose = poses[index];
+                                final selected = selectedId == pose.id;
+                                final strokes =
+                                    poseThumbnails[pose.id] ??
+                                    const <VectorStroke>[];
 
-                        final selected = selectedId == pose.id;
-
-                        return ListTile(
-                          selected: selected,
-                          leading: Icon(
-                            selected
-                                ? Icons.radio_button_checked
-                                : Icons.radio_button_unchecked,
-                          ),
-                          title: Text(pose.name),
-                          subtitle: Text(
-                            '${pose.controls.length} rig controls',
-                          ),
-                          onTap: () {
-                            updateDialog(() => selectedId = pose.id);
-                          },
-                        );
-                      },
+                                return Card(
+                                  clipBehavior: Clip.antiAlias,
+                                  color: selected
+                                      ? Theme.of(
+                                          context,
+                                        ).colorScheme.primaryContainer
+                                      : null,
+                                  child: InkWell(
+                                    onTap: () {
+                                      updateDialog(() => selectedId = pose.id);
+                                    },
+                                    child: Column(
+                                      children: [
+                                        Expanded(
+                                          child: Padding(
+                                            padding: const EdgeInsets.all(6),
+                                            child: strokes.isEmpty
+                                                ? Center(
+                                                    child: Column(
+                                                      mainAxisSize:
+                                                          MainAxisSize.min,
+                                                      children: [
+                                                        const Icon(
+                                                          Icons
+                                                              .image_not_supported_outlined,
+                                                        ),
+                                                        const SizedBox(
+                                                          height: 8,
+                                                        ),
+                                                        Text(
+                                                          'Found: ${_rigPoseThumbnailFoundCount(character)}'
+                                                          ' | Controls: ${pose.controls.length}/'
+                                                          '${character.targets.where((t) => t.type == RigTargetType.stroke).fold<int>(0, (sum, t) => sum + t.rig.controls.length)}'
+                                                          '/${character.targets.where((t) => t.type == RigTargetType.stroke).length}',
+                                                          style:
+                                                              const TextStyle(
+                                                                fontSize: 11,
+                                                              ),
+                                                        ),
+                                                      ],
+                                                    ),
+                                                  )
+                                                : ClipRRect(
+                                                    borderRadius:
+                                                        BorderRadius.circular(
+                                                          8,
+                                                        ),
+                                                    child: ColoredBox(
+                                                      color: const Color(
+                                                        0xFFE8E6E1,
+                                                      ),
+                                                      child: CustomPaint(
+                                                        painter:
+                                                            BagItemPreviewPainter(
+                                                              strokes: strokes,
+                                                              fitFraction: 0.90,
+                                                            ),
+                                                        child:
+                                                            const SizedBox.expand(),
+                                                      ),
+                                                    ),
+                                                  ),
+                                          ),
+                                        ),
+                                        Padding(
+                                          padding: const EdgeInsets.only(
+                                            left: 8,
+                                            right: 2,
+                                            bottom: 4,
+                                          ),
+                                          child: Row(
+                                            children: [
+                                              Expanded(
+                                                child: Text(
+                                                  pose.name,
+                                                  maxLines: 1,
+                                                  overflow:
+                                                      TextOverflow.ellipsis,
+                                                ),
+                                              ),
+                                              PopupMenuButton<String>(
+                                                tooltip: 'Manage pose',
+                                                onSelected: (value) {
+                                                  Navigator.of(
+                                                    dialogContext,
+                                                    rootNavigator: true,
+                                                  ).pop('$value:${pose.id}');
+                                                },
+                                                itemBuilder: (_) => const [
+                                                  PopupMenuItem(
+                                                    value: 'rename',
+                                                    child: Text('Rename'),
+                                                  ),
+                                                  PopupMenuItem(
+                                                    value: 'delete',
+                                                    child: Text('Delete'),
+                                                  ),
+                                                ],
+                                              ),
+                                            ],
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+                                );
+                              },
+                            ),
                     ),
             ),
             actions: [
-              TextButton(
-                onPressed: () => Navigator.of(dialogContext).pop('clear'),
-                child: const Text('Clear Preview'),
-              ),
-              TextButton(
-                onPressed: () => Navigator.of(dialogContext).pop('save'),
-                child: const Text('Save New'),
-              ),
-              TextButton(
-                onPressed: () => Navigator.of(dialogContext).pop(),
-                child: const Text('Cancel'),
-              ),
-              FilledButton(
-                onPressed: selectedId == null
-                    ? null
-                    : () =>
-                          Navigator.of(dialogContext).pop('apply:$selectedId'),
-                child: const Text('Apply Pose'),
+              SizedBox(
+                width: 340,
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        TextButton(
+                          onPressed: () =>
+                              Navigator.of(dialogContext).pop('clear'),
+                          child: const Text('Clear Preview'),
+                        ),
+                        TextButton(
+                          onPressed: () =>
+                              Navigator.of(dialogContext).pop('save'),
+                          child: const Text('Save New'),
+                        ),
+                      ],
+                    ),
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.end,
+                      children: [
+                        TextButton(
+                          onPressed: () => Navigator.of(dialogContext).pop(),
+                          child: const Text('Cancel'),
+                        ),
+                        const SizedBox(width: 8),
+                        FilledButton(
+                          onPressed: selectedId == null
+                              ? null
+                              : () => Navigator.of(
+                                  dialogContext,
+                                ).pop('apply:$selectedId'),
+                          child: const Text('Apply Pose'),
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
               ),
             ],
           ),
@@ -2214,9 +2601,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
       },
     );
 
-    if (!mounted || action == null) {
-      return;
-    }
+    if (!mounted || action == null) return;
 
     if (action == 'save') {
       await _showSaveRigPoseDialog();
@@ -2228,18 +2613,32 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
       return;
     }
 
-    if (!action.startsWith('apply:')) {
-      return;
-    }
+    final separator = action.indexOf(':');
+    if (separator < 0) return;
 
-    final poseId = action.substring(6);
-    final matches = poses.where((pose) => pose.id == poseId);
+    final operation = action.substring(0, separator);
+    final poseId = action.substring(separator + 1);
 
-    if (matches.length != 1) {
-      return;
-    }
+    final matches = _workingRigPoses.where(
+      (pose) => pose.id == poseId && pose.characterRigId == character.id,
+    );
+
+    if (matches.length != 1) return;
 
     final pose = matches.single;
+
+    if (operation == 'rename') {
+      await _renameRigPose(pose);
+      return;
+    }
+
+    if (operation == 'delete') {
+      await _deleteRigPose(pose);
+      return;
+    }
+
+    if (operation != 'apply') return;
+
     final applied = _applyNamedRigPose(pose);
 
     ScaffoldMessenger.of(context).showSnackBar(
@@ -24514,4 +24913,54 @@ class _SketchbookPaperPainter extends CustomPainter {
 
   @override
   bool shouldRepaint(covariant _SketchbookPaperPainter oldDelegate) => false;
+}
+
+class _RigPoseRenameDialog extends StatefulWidget {
+  const _RigPoseRenameDialog({required this.initialName});
+
+  final String initialName;
+
+  @override
+  State<_RigPoseRenameDialog> createState() => _RigPoseRenameDialogState();
+}
+
+class _RigPoseRenameDialogState extends State<_RigPoseRenameDialog> {
+  late final TextEditingController _controller;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = TextEditingController(text: widget.initialName);
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: const Text('Rename Pose'),
+      content: TextField(
+        controller: _controller,
+        autofocus: true,
+        maxLength: 60,
+        textCapitalization: TextCapitalization.words,
+        decoration: const InputDecoration(labelText: 'Pose name'),
+        onSubmitted: (value) => Navigator.of(context).pop(value),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('Cancel'),
+        ),
+        FilledButton(
+          onPressed: () => Navigator.of(context).pop(_controller.text),
+          child: const Text('Rename'),
+        ),
+      ],
+    );
+  }
 }
